@@ -1,4 +1,4 @@
-import { BaseExecutor } from "./base.js";
+import { BaseExecutor, betaFlagsKey } from "./base.js";
 import { PROVIDERS, PROVIDER_OAUTH } from "../config/providers.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_API_HOST, ANTHROPIC_COMPAT_BASE, selectAnthropicBeta } from "../providers/shared.js";
 import { appendUrlPath, resolveOpenAICompatibleApiType, getTargetFormat } from "../services/provider.js";
@@ -19,6 +19,9 @@ import { installEndpointOverrides } from "../handlers/chatCore/endpointOverrides
 
 // Named-flag retries before the last-resort attempt with no anthropic-beta at all.
 const MAX_BETA_RETRIES = 1;
+
+// The methods transformRequest and finalizeBody call on `this`.
+const BODY_HELPERS = ["applyJsonSchemaFallback", "targetFormat", "onMessagesPath"];
 
 // Auth header descriptors — derived from registry transport.auth, fallback to hardcoded defaults.
 const BEARER = { combined: true, header: "Authorization", scheme: "bearer" };
@@ -148,6 +151,24 @@ export class DefaultExecutor extends BaseExecutor {
     if (format === FORMATS.OPENAI) return relaxForcedChatToolChoiceForClaude(out, this.provider, out?.model);
     if (format !== FORMATS.CLAUDE) return out;
     return relaxForcedToolChoiceForThinking(dropFirstPartyFieldsWithoutBeta(out, headers), this.provider);
+  }
+
+  // transformRequest (with its endpoint overrides) reads the connection's
+  // settings and the runtime route, never the token; finalizeBody reads the
+  // beta flags and the target format. A subclass that swaps a helper either
+  // one calls gets no reuse.
+  transformRequestInputs(model, stream, credentials) {
+    if (!this.runsOwnBodyHelpers()) return null;
+    return JSON.stringify([credentials?.providerSpecificData ?? null, credentials?.runtimeTransport ?? null]);
+  }
+
+  finalizeBodyInputs(headers, credentials) {
+    if (!this.runsOwnBodyHelpers()) return null;
+    return JSON.stringify([betaFlagsKey(headers), this.targetFormat(credentials)]);
+  }
+
+  runsOwnBodyHelpers() {
+    return BODY_HELPERS.every((name) => this[name] === DefaultExecutor.prototype[name]);
   }
 
   // Fallback json_schema → json_object for openai-compatible providers without native Structured Output.

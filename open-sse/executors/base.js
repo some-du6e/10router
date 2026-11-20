@@ -5,7 +5,35 @@ import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { dbg } from "../utils/debugLog.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from "../providers/shared.js";
 import { appendUrlPath, resolveOpenAICompatibleApiType } from "../services/provider.js";
-import { inlineToolChangesWithoutBeta } from "../utils/anthropicBeta.js";
+import { inlineToolChangesWithoutBeta, sentBetas } from "../utils/anthropicBeta.js";
+
+// The beta flags in `headers`, in a fixed order: all that the beta-gated body
+// edits read from the headers.
+export function betaFlagsKey(headers) {
+  return [...sentBetas(headers)].sort().join(",");
+}
+
+// What `describe` says `method` reads, called on `executor`. null when the
+// executor runs a `method` other than the one defined next to `describe`
+// (a subclass or instance override that doesn't restate it).
+function statedInputs(executor, describe, method, args) {
+  let owner = executor;
+  while (owner && !Object.hasOwn(owner, describe)) owner = Object.getPrototypeOf(owner);
+  if (!owner || !Object.hasOwn(owner, method) || executor[method] !== owner[method]) return null;
+  return owner[describe].apply(executor, args);
+}
+
+// One built body: the object (for request logs) and, once serialized, the
+// exact string sent.
+function builtBody(value, key = null, source = null) {
+  return {
+    key, source, value, text: null,
+    serialize() {
+      if (this.text === null) this.text = JSON.stringify(this.value);
+      return this.text;
+    },
+  };
+}
 
 /**
  * BaseExecutor - Base class for provider executors
@@ -81,8 +109,8 @@ export class BaseExecutor {
   }
 
   // Last change to the body, once the outgoing headers are final (e.g. drop a
-  // field whose beta flag isn't going out). Called by execute() below, once
-  // per URL attempt, with that attempt's headers; by the Translator preview
+  // field whose beta flag isn't going out). Called by execute() below for
+  // each body it builds, with that send's headers; by the Translator preview
   // with the headers it shows; and by chatCore with headers = null for its
   // error log. An executor that overrides execute() and sends Claude-format
   // bodies must call it itself.
@@ -90,6 +118,42 @@ export class BaseExecutor {
   // them; otherwise they're folded into tools[].
   finalizeBody(body, headers, credentials) {
     return inlineToolChangesWithoutBeta(body, headers);
+  }
+
+  // What transformRequest and finalizeBody read besides the body, the model
+  // and the stream flag, as strings: equal strings mean the same bytes go out,
+  // so a resend (retry, next base URL, the send after a token refresh) reuses
+  // the serialized body. null: unknown, the body is built for every send. A
+  // class that overrides either method without restating its inputs next to it
+  // gets null (see statedInputs).
+  transformRequestInputs(model, stream, credentials) {
+    return "";
+  }
+
+  finalizeBodyInputs(headers, credentials) {
+    return betaFlagsKey(headers);
+  }
+
+  // The headers and body for one send. `cache` (one per account's request)
+  // holds the last body built; it is handed back while its key and source body
+  // are the same. Executors with unknown inputs keep the old order, transform
+  // before headers (some set state there that buildHeaders reads), and a fresh
+  // body every send.
+  prepareSend({ model, body, stream, credentials, url, cache }) {
+    const transformInputs = statedInputs(this, "transformRequestInputs", "transformRequest", [model, stream, credentials]);
+    if (transformInputs == null) {
+      const transformed = this.transformRequest(model, body, stream, credentials);
+      const headers = this.buildHeaders(credentials, stream, url, model);
+      return { headers, built: builtBody(this.finalizeBody(transformed, headers, credentials)) };
+    }
+    const headers = this.buildHeaders(credentials, stream, url, model);
+    const finalizeInputs = statedInputs(this, "finalizeBodyInputs", "finalizeBody", [headers, credentials]);
+    const key = finalizeInputs == null ? null : JSON.stringify([this.provider, model, stream, transformInputs, finalizeInputs]);
+    const last = cache?.last;
+    if (key !== null && last?.key === key && last.source === body) return { headers, built: last };
+    const built = builtBody(this.finalizeBody(this.transformRequest(model, body, stream, credentials), headers, credentials), key, body);
+    if (key !== null && cache) cache.last = built;
+    return { headers, built };
   }
 
   shouldRetry(status, urlIndex) {
@@ -112,7 +176,10 @@ export class BaseExecutor {
   // `onUpstreamAttempt(ts)`: when the attempt now in flight was sent, or 0 when
   // none is (backing off before a retry, or the last attempt came back with an
   // error). A client that hangs up is charged only while one is in flight.
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, onHeadersBudget = null, onUpstreamAttempt = null }) {
+  // `bodyCache`: chatCore's, so the send after a token refresh can reuse this
+  // call's body; without one, reuse stays within this call.
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, onHeadersBudget = null, onUpstreamAttempt = null, bodyCache = null }) {
+    const cache = bodyCache || {};
     const fallbackCount = this.getFallbackCount();
     // How long each URL waits for response headers; the caller learns the
     // whole call's (a hung model's probe goes by it).
@@ -146,9 +213,8 @@ export class BaseExecutor {
 
     for (let urlIndex = 0; urlIndex < fallbackCount; urlIndex++) {
       const url = this.buildUrl(model, stream, urlIndex, credentials);
-      const transformed = this.transformRequest(model, body, stream, credentials);
-      const headers = this.buildHeaders(credentials, stream, url, model);
-      const transformedBody = this.finalizeBody(transformed, headers, credentials);
+      const { headers, built } = this.prepareSend({ model, body, stream, credentials, url, cache });
+      const transformedBody = built.value;
 
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;
 
@@ -156,7 +222,7 @@ export class BaseExecutor {
       const headersTimeout = headersTimer(timeoutMs, signal, { stream, setBy });
 
       try {
-        const bodyStr = JSON.stringify(transformedBody);
+        const bodyStr = built.serialize();
         const fetchT0 = Date.now();
         dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${bodyStr.length}B | headersTimeout=${timeoutMs}ms`);
         onUpstreamAttempt?.(signal?.aborted ? 0 : fetchT0);

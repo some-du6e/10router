@@ -1,0 +1,275 @@
+// A resend of the same request to the same account (an in-place retry, the
+// next base URL, the send after a token refresh) reuses the serialized body
+// when nothing it is built from changed, instead of building and stringifying
+// a 1-4 MB prompt again. Executors whose body depends on the URL, the token or
+// per-send state still build it for every send.
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const fetchMock = vi.fn();
+vi.mock("../../open-sse/utils/proxyFetch.js", () => ({ proxyAwareFetch: (...a) => fetchMock(...a) }));
+// chatCore's logging and usage side effects.
+vi.mock("../../open-sse/utils/requestLogger.js", () => ({
+  createRequestLogger: vi.fn(async () => new Proxy({}, {
+    get: (target, key) => (key === "then" ? undefined : (target[key] ??= vi.fn())),
+  })),
+}));
+vi.mock("../../open-sse/translator/concerns/prefetch.js", () => ({ prefetchRemoteImages: vi.fn(async () => 0) }));
+vi.mock("@/lib/usageDb.js", () => ({
+  trackPendingRequest: vi.fn(), appendRequestLog: vi.fn(async () => {}),
+  saveRequestDetail: vi.fn(async () => {}), saveRequestUsage: vi.fn(async () => {}),
+}));
+
+const { BaseExecutor } = await import("../../open-sse/executors/base.js");
+const { DefaultExecutor } = await import("../../open-sse/executors/default.js");
+const { KiroExecutor } = await import("../../open-sse/executors/kiro.js");
+const { getExecutor } = await import("../../open-sse/executors/index.js");
+const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
+
+const A = "https://a.example.test/v1";
+const B = "https://b.example.test/v1";
+const C = "https://c.example.test/v1";
+const MODEL = "test-model";
+const COMPATIBLE = "openai-compatible-reuse-test";
+
+const res = (status) => ({ status, ok: status >= 200 && status < 300, headers: { get: () => "" } });
+const jsonRes = (status, payload) => new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
+const networkError = async () => { throw new Error("ECONNRESET"); };
+const sentUrls = () => fetchMock.mock.calls.map(([url]) => url);
+const sentBodies = () => fetchMock.mock.calls.map(([, init]) => init.body);
+const prompt = () => ({ model: MODEL, stream: true, messages: [{ role: "user", content: "x".repeat(64 * 1024) }] });
+
+// How many times JSON.stringify was called on this very object: each call is
+// another body-sized string.
+function stringifyCounter() {
+  const spy = vi.spyOn(JSON, "stringify");
+  return (value) => spy.mock.calls.filter(([v]) => v === value).length;
+}
+
+beforeEach(() => fetchMock.mockReset());
+afterEach(() => vi.restoreAllMocks());
+
+describe("an executor whose body doesn't depend on the URL", () => {
+  it("serializes once across in-place retries and base-URL fallbacks, and sends the same bytes each time", async () => {
+    const ex = new BaseExecutor("test", { baseUrls: [A, B, C], retry: { 502: { attempts: 2, delayMs: 0 }, 503: { attempts: 2, delayMs: 0 } } });
+    fetchMock
+      .mockResolvedValueOnce(res(502)) // A: retried in place
+      .mockResolvedValueOnce(res(503)) // A: retried in place
+      .mockResolvedValueOnce(res(429)) // A → B
+      .mockImplementationOnce(networkError) // B: retried in place
+      .mockResolvedValueOnce(res(429)) // B → C
+      .mockResolvedValueOnce(res(200));
+    const stringified = stringifyCounter();
+    const body = prompt();
+
+    const out = await ex.execute({ model: MODEL, body, stream: true, credentials: { apiKey: "k" } });
+
+    expect(out.response.status).toBe(200);
+    expect(sentUrls()).toEqual([A, A, A, B, B, C]);
+    expect(stringified(out.transformedBody)).toBe(1);
+    const bodies = sentBodies();
+    expect(new Set(bodies).size).toBe(1);
+    expect(bodies[0]).toBe(JSON.stringify(body));
+  });
+
+  it("Kiro: one body for every surface it falls back across, though each send gets its own headers", async () => {
+    const ex = new KiroExecutor();
+    ex.config = { ...ex.config, retry: { 502: { attempts: 1, delayMs: 0 } } };
+    const urls = ex.getBaseUrls();
+    expect(urls.length).toBeGreaterThanOrEqual(3);
+    fetchMock
+      .mockResolvedValueOnce(res(502)) // first surface: retried in place
+      .mockResolvedValueOnce(res(429)) // → second
+      .mockResolvedValueOnce(res(429)) // → third
+      .mockResolvedValueOnce(res(400)); // last surface: returned as is
+    const stringified = stringifyCounter();
+    const body = { conversationState: { currentMessage: { userInputMessage: { content: "x".repeat(64 * 1024) } } } };
+
+    const out = await ex.execute({ model: MODEL, body, stream: true, credentials: { accessToken: "t", providerSpecificData: {} } });
+
+    expect(out.response.status).toBe(400);
+    expect(sentUrls()).toEqual([urls[0], urls[0], urls[1], urls[2]]);
+    const invocationIds = fetchMock.mock.calls.map(([, init]) => init.headers["Amz-Sdk-Invocation-Id"]);
+    expect(new Set(invocationIds).size).toBe(4);
+    expect(stringified(out.transformedBody)).toBe(1);
+    const bodies = sentBodies();
+    expect(new Set(bodies).size).toBe(1);
+    expect(bodies[0]).toBe(JSON.stringify(body));
+  });
+});
+
+describe("an executor whose body depends on the URL or on per-send state", () => {
+  it("builds the body again for every send when finalizeBody puts the URL in it", async () => {
+    let builds = 0;
+    class HostInBody extends BaseExecutor {
+      buildHeaders(credentials, stream, url) {
+        return { ...super.buildHeaders(credentials, stream), "X-Host": new URL(url).host };
+      }
+      finalizeBody(body, headers) {
+        builds++;
+        return { ...body, host: headers["X-Host"] };
+      }
+    }
+    const ex = new HostInBody("test", { baseUrls: [A, B], retry: { 502: { attempts: 1, delayMs: 0 } } });
+    fetchMock.mockResolvedValueOnce(res(502)).mockResolvedValueOnce(res(429)).mockResolvedValueOnce(res(200));
+    const stringified = stringifyCounter();
+
+    const out = await ex.execute({ model: MODEL, body: prompt(), stream: true, credentials: { apiKey: "k" } });
+
+    expect(builds).toBe(3);
+    expect(sentBodies().map((b) => JSON.parse(b).host)).toEqual(["a.example.test", "a.example.test", "b.example.test"]);
+    expect(out.transformedBody.host).toBe("b.example.test");
+    expect(stringified(out.transformedBody)).toBe(1);
+  });
+
+  it("keeps a per-send transformRequest per send, still run before the headers", async () => {
+    const order = [];
+    let n = 0;
+    class PerSend extends BaseExecutor {
+      transformRequest(model, body) {
+        order.push("transform");
+        return { ...body, send: ++n };
+      }
+      buildHeaders(credentials, stream) {
+        order.push("headers");
+        return super.buildHeaders(credentials, stream);
+      }
+    }
+    const ex = new PerSend("test", { baseUrl: A, retry: { 503: { attempts: 2, delayMs: 0 } } });
+    fetchMock.mockResolvedValueOnce(res(503)).mockResolvedValueOnce(res(503)).mockResolvedValueOnce(res(200));
+
+    await ex.execute({ model: MODEL, body: prompt(), stream: true, credentials: { apiKey: "k" } });
+
+    expect(sentBodies().map((b) => JSON.parse(b).send)).toEqual([1, 2, 3]);
+    expect(order).toEqual(["transform", "headers", "transform", "headers", "transform", "headers"]);
+  });
+
+  it("gets no reuse from DefaultExecutor once a subclass or instance overrides transformRequest", async () => {
+    let subclassCalls = 0;
+    class Sub extends DefaultExecutor {
+      transformRequest(...args) {
+        subclassCalls++;
+        return super.transformRequest(...args);
+      }
+    }
+    const sub = new Sub(COMPATIBLE);
+    sub.config = { ...sub.config, retry: { 503: { attempts: 2, delayMs: 0 } } };
+    const instance = new DefaultExecutor(COMPATIBLE);
+    instance.config = { ...instance.config, retry: { 503: { attempts: 2, delayMs: 0 } } };
+    const instanceTransform = vi.fn((model, body) => ({ ...body }));
+    instance.transformRequest = instanceTransform;
+    fetchMock.mockResolvedValueOnce(res(503)).mockResolvedValueOnce(res(503)).mockResolvedValueOnce(res(200))
+      .mockResolvedValueOnce(res(503)).mockResolvedValueOnce(res(503)).mockResolvedValueOnce(res(200));
+    const credentials = { apiKey: "k", providerSpecificData: { baseUrl: A } };
+
+    await sub.execute({ model: MODEL, body: prompt(), stream: true, credentials });
+    await instance.execute({ model: MODEL, body: prompt(), stream: true, credentials });
+
+    expect(subclassCalls).toBe(3);
+    expect(instanceTransform).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("DefaultExecutor", () => {
+  const creds = () => ({ accessToken: "old-access", providerSpecificData: { baseUrl: A } });
+  const exec = () => {
+    const ex = new DefaultExecutor(COMPATIBLE);
+    ex.config = { ...ex.config, retry: { 502: { attempts: 2, delayMs: 0 }, 503: { attempts: 2, delayMs: 0 } } };
+    return ex;
+  };
+
+  it("serializes once across its retries, and sends the bytes a fresh build of the request gives", async () => {
+    const ex = exec();
+    fetchMock.mockResolvedValueOnce(res(503)).mockResolvedValueOnce(res(502)).mockResolvedValueOnce(res(200));
+    const stringified = stringifyCounter();
+    // json_schema on a compatible node makes transformRequest build a new body.
+    const body = { ...prompt(), response_format: { type: "json_schema", json_schema: { schema: { type: "object" } } } };
+    const untouched = structuredClone(body);
+
+    const out = await ex.execute({ model: MODEL, body, stream: true, credentials: creds() });
+
+    expect(out.response.status).toBe(200);
+    expect(out.transformedBody).not.toBe(body);
+    expect(stringified(out.transformedBody)).toBe(1);
+    const bodies = sentBodies();
+    expect(bodies).toHaveLength(3);
+    expect(new Set(bodies).size).toBe(1);
+    // The per-send pipeline, run on an untouched copy of the request.
+    const c = creds();
+    const headers = ex.buildHeaders(c, true, sentUrls()[0], MODEL);
+    expect(bodies[0]).toBe(JSON.stringify(ex.finalizeBody(ex.transformRequest(MODEL, untouched, true, c), headers, c)));
+  });
+
+  it("reuses the body for the send after a token refresh: same bytes, new token", async () => {
+    const ex = exec();
+    fetchMock.mockResolvedValueOnce(res(401)).mockResolvedValueOnce(res(200));
+    const stringified = stringifyCounter();
+    const body = prompt();
+    const credentials = creds();
+    const bodyCache = {};
+
+    const first = await ex.execute({ model: MODEL, body, stream: true, credentials, bodyCache });
+    credentials.accessToken = "new-access"; // what chatCore's applyRefreshedCredentials does
+    const second = await ex.execute({ model: MODEL, body, stream: true, credentials, bodyCache });
+
+    expect(second.transformedBody).toBe(first.transformedBody);
+    expect(stringified(first.transformedBody)).toBe(1);
+    const [a, b] = fetchMock.mock.calls;
+    expect(b[1].body).toBe(a[1].body);
+    expect(a[1].headers.Authorization).toBe("Bearer old-access");
+    expect(b[1].headers.Authorization).toBe("Bearer new-access");
+  });
+
+  it("builds again when the connection's settings or the body changed", async () => {
+    const ex = exec();
+    fetchMock.mockResolvedValue(res(200));
+    const body = { ...prompt(), max_tokens: 100 };
+    const credentials = creds();
+    const bodyCache = {};
+
+    await ex.execute({ model: MODEL, body, stream: true, credentials, bodyCache });
+    credentials.providerSpecificData = { ...credentials.providerSpecificData, maxCompletionTokens: true };
+    await ex.execute({ model: MODEL, body, stream: true, credentials, bodyCache });
+    await ex.execute({ model: MODEL, body: { ...body, messages: [{ role: "user", content: "other" }] }, stream: true, credentials, bodyCache });
+
+    const [first, second, third] = sentBodies().map((b) => JSON.parse(b));
+    expect(first.max_tokens).toBe(100);
+    expect(first.max_completion_tokens).toBeUndefined();
+    expect(second.max_completion_tokens).toBe(100);
+    expect(second.max_tokens).toBeUndefined();
+    expect(third.messages[0].content).toBe("other");
+  });
+});
+
+describe("chatCore's send after a 401 token refresh", () => {
+  it("reuses the body the first send built", async () => {
+    const ex = getExecutor(COMPATIBLE);
+    vi.spyOn(ex, "refreshCredentials").mockResolvedValue({ accessToken: "new-access" });
+    const transform = vi.spyOn(DefaultExecutor.prototype, "transformRequest");
+    const finalize = vi.spyOn(DefaultExecutor.prototype, "finalizeBody");
+    fetchMock
+      .mockResolvedValueOnce(jsonRes(401, { error: { message: "expired" } }))
+      .mockResolvedValueOnce(jsonRes(200, {
+        id: "c1", object: "chat.completion", model: MODEL,
+        choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      }));
+    const body = { ...prompt(), stream: false };
+
+    await handleChatCore({
+      body: structuredClone(body),
+      modelInfo: { provider: COMPATIBLE, model: MODEL },
+      credentials: { accessToken: "old-access", refreshToken: "refresh", providerSpecificData: { baseUrl: A } },
+      clientRawRequest: { endpoint: "/v1/chat/completions", body, headers: {} },
+      connectionId: "conn-1",
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [first, second] = fetchMock.mock.calls;
+    expect(first[1].headers.Authorization).toBe("Bearer old-access");
+    expect(second[1].headers.Authorization).toBe("Bearer new-access");
+    expect(second[1].body).toBe(first[1].body);
+    expect(transform).toHaveBeenCalledTimes(1);
+    expect(finalize).toHaveBeenCalledTimes(1);
+  });
+});

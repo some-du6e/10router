@@ -325,6 +325,11 @@ export class KiroExecutor extends BaseExecutor {
     return body;
   }
 
+  // The body goes out as the translator built it, whatever the URL or token.
+  transformRequestInputs() {
+    return "";
+  }
+
   /**
    * Kiro execute — delegate to BaseExecutor for endpoint fallback + retry, then
    * transform the binary AWS EventStream into OpenAI-shaped SSE on success.
