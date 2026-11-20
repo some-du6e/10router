@@ -306,19 +306,26 @@ export function createSSEStream(options = {}) {
   // and its usage. A chat stream that never sent its finish chunk was cut
   // short, so an error frame goes first rather than passing it off as finished.
   // Claude, Gemini and other Responses clients end on their own terminal events.
+  // The chunk that carries the stream's [DONE], so the pipe can tell when it has
+  // reached the client rather than only been queued (an upstream error discards the queue).
+  let terminalBytes = null;
+  const enqueueTerminal = (controller, text, bytes = sharedEncoder.encode(text)) => {
+    reqLogger?.appendConvertedChunk?.(text);
+    streamDoneSent = true;
+    terminalBytes = bytes;
+    controller.enqueue(bytes);
+  };
+
   const keepsResponses = mode === STREAM_MODE.TRANSLATE && targetFormat === FORMATS.OPENAI_RESPONSES && sourceFormat === FORMATS.OPENAI_RESPONSES;
   const sendDone = (controller, cutShortReason = "upstream stream ended before it finished") => {
     if (mode !== STREAM_MODE.TRANSLATE || streamDoneSent) return;
     if (!keepsResponses && sourceFormat !== FORMATS.OPENAI) return;
-    streamDoneSent = true;
     if (keepsResponses || chatFinishSent) {
-      reqLogger?.appendConvertedChunk?.(SSE_DONE);
-      controller.enqueue(sharedEncoder.encode(SSE_DONE));
+      enqueueTerminal(controller, SSE_DONE);
       return;
     }
     const bytes = buildStreamErrorBytes(HTTP_STATUS.BAD_GATEWAY, cutShortReason, FORMATS.OPENAI);
-    if (reqLogger?.appendConvertedChunk) reqLogger.appendConvertedChunk(new TextDecoder().decode(bytes));
-    controller.enqueue(bytes);
+    enqueueTerminal(controller, new TextDecoder().decode(bytes), bytes);
   };
 
   // A Responses-to-Responses stream that ends before its terminal event gets
@@ -366,10 +373,7 @@ export function createSSEStream(options = {}) {
         if (trimmed.startsWith("data:") && trimmed.slice(5).trim() === "[DONE]") {
           finishSeen = true;
           finalUsageSeen = true;
-          const doneOutput = (passthroughFrameOpen ? "\n" : "") + SSE_DONE;
-          reqLogger?.appendConvertedChunk?.(doneOutput);
-          controller.enqueue(sharedEncoder.encode(doneOutput));
-          streamDoneSent = true;
+          enqueueTerminal(controller, (passthroughFrameOpen ? "\n" : "") + SSE_DONE);
           finalizeStream();
           continue;
         }
@@ -645,12 +649,13 @@ export function createSSEStream(options = {}) {
           const isGeminiFamily = provider === "antigravity" || provider === "gemini" || provider === "vertex";
           // A tail frame still open gets its closing blank line either way.
           if (!streamDoneSent) {
-            const doneOutput = (passthroughFrameOpen ? "\n" : "") + (isGeminiFamily ? "" : SSE_DONE);
-            if (doneOutput) {
-              reqLogger?.appendConvertedChunk?.(doneOutput);
-              controller.enqueue(sharedEncoder.encode(doneOutput));
+            const frameClose = passthroughFrameOpen ? "\n" : "";
+            if (!isGeminiFamily) {
+              enqueueTerminal(controller, frameClose + SSE_DONE);
+            } else if (frameClose) {
+              reqLogger?.appendConvertedChunk?.(frameClose);
+              controller.enqueue(sharedEncoder.encode(frameClose));
             }
-            if (!isGeminiFamily) streamDoneSent = true;
           }
 
           finalizeStream();
@@ -701,9 +706,11 @@ export function createSSEStream(options = {}) {
   // The stall watchdog ended the stream: the floor stops at the last upstream byte.
   sse.markStalled = (lastByteAt) => { floorEndAt = lastByteAt; };
   sse.finalizeNow = () => finalizeStream();
-  // The stream already wrote its [DONE] (or error frame and [DONE]): the pipe's
-  // abort terminal must not add a second one.
+  // The stream queued its [DONE] (or error frame and [DONE]), and the exact
+  // chunk that carries it: the pipe adds no abort terminal once that chunk has
+  // reached the client.
   sse.terminalSent = () => streamDoneSent;
+  sse.terminalChunk = () => terminalBytes;
   return sse;
 }
 
