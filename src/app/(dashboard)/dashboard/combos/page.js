@@ -55,6 +55,9 @@ export default function CombosPage() {
   const [capacityAdapter, setCapacityAdapter] = useState(EMPTY_CAPACITY_ADAPTER);
   const { getCaps } = useModelCaps();
   const [confirmState, setConfirmState] = useState(null);
+  // Load errors stay until that load succeeds; a save or delete never clears them.
+  const [combosError, setCombosError] = useState("");
+  const [providersError, setProvidersError] = useState("");
   const [actionError, setActionError] = useState("");
   // Strategy and capacity saves send back the whole stored map, so they stay
   // blocked until a settings read has filled savedSettingsRef.
@@ -63,60 +66,48 @@ export default function CombosPage() {
   const { copied, copy } = useCopyToClipboard();
   const savedSettingsRef = useRef({ comboStrategies: {}, capacityAdapter: EMPTY_CAPACITY_ADAPTER });
   const settingsSaveRef = useRef(Promise.resolve());
-  const acceptedSavesRef = useRef(0);
 
   useEffect(() => {
-    fetchData();
+    Promise.all([loadSettings(), loadCombos(), loadProviders()]).finally(() => setLoading(false));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const blockSettings = (message) => {
-    setSettingsLoaded(false);
-    setSettingsError(`Could not load combo settings, so strategies and the capacity adapter can't be changed: ${message}`);
+  // Read once, on mount: creating or editing a combo doesn't change these settings.
+  const loadSettings = async () => {
+    try {
+      const data = (await api.get("/api/settings")) || {};
+      const strategies = data.comboStrategies || {};
+      const rawAdapter = data.capacityAdapter || {};
+      const normalized = {};
+      for (const cap of CAPACITY_ADAPTER_CAPS) {
+        normalized[cap.key] = normalizeCapEntry(rawAdapter[cap.key]);
+      }
+      savedSettingsRef.current = { comboStrategies: strategies, capacityAdapter: normalized };
+      setComboStrategies(strategies);
+      setCapacityAdapter(normalized);
+      setSettingsLoaded(true);
+    } catch (error) {
+      setSettingsError(`Could not load combo settings, so strategies and the capacity adapter can't be changed: ${error.message}`);
+    }
   };
 
-  const fetchData = async () => {
-    const acceptedAtStart = acceptedSavesRef.current;
-    let settingsSettled = false;
+  const loadCombos = async () => {
     try {
-      const [combosRes, providersRes, settings] = await Promise.all([
-        fetch("/api/combos"),
-        fetch("/api/providers"),
-        api.get("/api/settings").then((data) => ({ data }), (error) => ({ error })),
-      ]);
-      settingsSettled = true;
-      if (settings.error) {
-        blockSettings(settings.error.message);
-      } else {
-        // A save accepted after this read began is newer than what it returned.
-        if (acceptedSavesRef.current === acceptedAtStart) {
-          const settingsData = settings.data || {};
-          const strategies = settingsData.comboStrategies || {};
-          const rawAdapter = settingsData.capacityAdapter || {};
-          const normalized = {};
-          for (const cap of CAPACITY_ADAPTER_CAPS) {
-            normalized[cap.key] = normalizeCapEntry(rawAdapter[cap.key]);
-          }
-          savedSettingsRef.current = { comboStrategies: strategies, capacityAdapter: normalized };
-          setComboStrategies(strategies);
-          setCapacityAdapter(normalized);
-        }
-        setSettingsLoaded(true);
-        setSettingsError("");
-      }
-
-      const combosData = await combosRes.json();
-      const providersData = await providersRes.json();
+      const data = await api.get("/api/combos");
       // Only LLM combos here - webSearch/webFetch combos belong to media-providers/web
-      if (combosRes.ok) setCombos((combosData.combos || []).filter(c => !c.kind || c.kind === "llm"));
-      if (providersRes.ok) {
-        setActiveProviders(providersData.connections || []);
-      }
+      setCombos((data?.combos || []).filter(c => !c.kind || c.kind === "llm"));
+      setCombosError("");
     } catch (error) {
-      console.log("Error fetching data:", error);
-      if (settingsSettled) setActionError(`Could not load combos: ${error.message}`);
-      else blockSettings(error.message);
-    } finally {
-      setLoading(false);
+      setCombosError(`Could not load combos: ${error.message}`);
+    }
+  };
+
+  const loadProviders = async () => {
+    try {
+      const data = await api.get("/api/providers");
+      setActiveProviders(data?.connections || []);
+      setProvidersError("");
+    } catch (error) {
+      setProvidersError(`Could not load providers: ${error.message}`);
     }
   };
 
@@ -131,7 +122,6 @@ export default function CombosPage() {
         const next = update(current);
         if (next === current) return;
         await api.patch("/api/settings", { [key]: next });
-        acceptedSavesRef.current += 1;
         savedSettingsRef.current = { ...savedSettingsRef.current, [key]: next };
         apply(next);
       } catch (error) {
@@ -146,13 +136,13 @@ export default function CombosPage() {
 
   const handleCreate = async (data) => {
     await api.post("/api/combos", data);
-    await fetchData();
+    await loadCombos();
     setShowCreateModal(false);
   };
 
   const handleUpdate = async (id, data) => {
     await api.put(`/api/combos/${id}`, data);
-    await fetchData();
+    await loadCombos();
     setEditingCombo(null);
   };
 
@@ -215,8 +205,9 @@ export default function CombosPage() {
         </Button>
       </div>
 
-      {settingsError && <p role="alert" className="text-sm text-red-500">{settingsError}</p>}
-      {actionError && <p role="alert" className="text-sm text-red-500">{actionError}</p>}
+      {[settingsError, combosError, providersError, actionError].filter(Boolean).map((message) => (
+        <p key={message} role="alert" className="text-sm text-red-500">{message}</p>
+      ))}
 
       {/* Combos List */}
       {combos.length === 0 ? (

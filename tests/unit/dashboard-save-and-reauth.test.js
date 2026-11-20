@@ -67,13 +67,15 @@ describe("combos page saves", () => {
   });
 
   const savedComboSettings = () => Response.json({ comboStrategies: {}, capacityAdapter: {} });
-  const combosPage = async (writeError, { write, settingsError, readSettings = savedComboSettings, readProviders } = {}) => {
+  const combosPage = async (writeError, { write, settingsError, readSettings = savedComboSettings, readCombos, readProviders } = {}) => {
     const fetch = vi.fn(async (url, init = {}) => {
       if (init.method && init.method !== "GET") {
         if (write) return write(init);
         return writeError ? Response.json({ error: writeError }, { status: 500 }) : Response.json({ success: true });
       }
-      if (url === "/api/combos") return Response.json({ combos: [{ id: "combo-1", name: "alpha", models: ["provider/model"] }] });
+      if (url === "/api/combos") {
+        return readCombos ? readCombos() : Response.json({ combos: [{ id: "combo-1", name: "alpha", models: ["provider/model"] }] });
+      }
       if (url === "/api/providers") return readProviders ? readProviders() : Response.json({ connections: [] });
       if (settingsError) return Response.json({ error: settingsError }, { status: 503 });
       return readSettings();
@@ -86,6 +88,7 @@ describe("combos page saves", () => {
     return { page, fetch, render: () => page.render({}) };
   };
   const patches = (fetch) => fetch.mock.calls.filter(([, init]) => init?.method === "PATCH");
+  const reads = (fetch, path) => fetch.mock.calls.filter(([url, init]) => url === path && (init?.method || "GET") === "GET");
   const card = (tree) => elements(tree, (element) => element.props?.onSetStrategy)[0];
   const capacity = (tree) => elements(tree, (element) => element.props?.capacityAdapter)[0];
   // Renders the page's capacity section, then one capability's card, from the page tree.
@@ -130,8 +133,8 @@ describe("combos page saves", () => {
     expect(card(render()).props.strategy).toEqual({});
   });
 
-  it("blocks capacity saves when the page's load fails before settings are read", async () => {
-    const { render, fetch } = await combosPage(null, { readProviders: () => Promise.reject(new Error("Network down")) });
+  it("blocks capacity saves when the settings read itself fails", async () => {
+    const { render, fetch } = await combosPage(null, { readSettings: () => Promise.reject(new Error("Network down")) });
     expect(alerts(render())).toContain("Could not load combo settings");
     expect(alerts(render())).toContain("Network down");
     const vision = capacityCap(render(), "vision").render();
@@ -140,35 +143,47 @@ describe("combos page saves", () => {
     expect(patches(fetch)).toEqual([]);
   });
 
-  it("keeps settings loaded when only the providers list is not JSON", async () => {
-    const { render, fetch } = await combosPage(null, { readProviders: () => new Response("<html>Bad gateway</html>", { status: 502 }) });
-    expect(alerts(render())).toContain("Could not load combos");
+  it.each([
+    ["is rejected", () => Promise.reject(new Error("Network down")), "Network down"],
+    ["is not JSON", () => new Response("<html>Bad gateway</html>", { status: 502 }), "Request failed (502)"],
+  ])("keeps settings loaded and editable when the providers list %s", async (_, readProviders, reason) => {
+    const { render, fetch } = await combosPage(null, { readProviders });
+    expect(alerts(render())).toContain(`Could not load providers: ${reason}`);
     expect(alerts(render())).not.toContain("Could not load combo settings");
-    await enableToggle(capacityCap(render(), "vision").render()).props.onChange(false);
+
+    const comboCard = dashboardComponent(combosPath, componentImports, "ComboCard").render(card(render()).props);
+    expect(elements(comboCard, (element) => element.type === "Select")[0].props.disabled).toBe(false);
+    const vision = capacityCap(render(), "vision").render();
+    expect(enableToggle(vision).props.disabled).toBe(false);
+    expect(button(vision, "Add Model").props.disabled).toBe(false);
+    await enableToggle(vision).props.onChange(false);
     expect(patches(fetch)).toHaveLength(1);
   });
 
-  it("does not let a reload revert a capacity save accepted while it was reading settings", async () => {
-    let reads = 0;
-    let finishReload;
-    const readSettings = () => {
-      reads += 1;
-      if (reads === 1) return savedComboSettings();
-      return new Promise((resolve) => { finishReload = () => resolve(savedComboSettings()); });
-    };
-    const { render, fetch } = await combosPage(null, { readSettings });
-    button(render(), "Create Combo").props.onClick();
-    const creating = elements(render(), (element) => element.key === "create")[0].props.onSave({ name: "beta", models: [] });
-    await vi.waitFor(() => expect(finishReload).toBeTypeOf("function"));
-
+  it("keeps a combos load error after a capacity save succeeds", async () => {
+    const { render, fetch } = await combosPage(null, { readCombos: () => new Response("<html>Bad gateway</html>", { status: 502 }) });
+    expect(alerts(render())).toContain("Could not load combos: Request failed (502)");
     await enableToggle(capacityCap(render(), "vision").render()).props.onChange(false);
+    expect(patches(fetch)).toHaveLength(1);
     expect(capacity(render()).props.capacityAdapter.vision.enabled).toBe(false);
-    finishReload();
-    await creating;
-    expect(capacity(render()).props.capacityAdapter.vision.enabled).toBe(false);
+    expect(alerts(render())).toContain("Could not load combos: Request failed (502)");
+  });
 
-    await enableToggle(capacityCap(render(), "audioInput").render()).props.onChange(false);
-    expect(JSON.parse(patches(fetch).at(-1)[1].body).capacityAdapter).toMatchObject({ vision: { enabled: false }, audioInput: { enabled: false } });
+  it("reloads only the combos, not the settings, after a combo is created or edited", async () => {
+    const { render, fetch } = await combosPage(null);
+    expect(reads(fetch, "/api/settings")).toHaveLength(1);
+    expect(reads(fetch, "/api/combos")).toHaveLength(1);
+
+    button(render(), "Create Combo").props.onClick();
+    await elements(render(), (element) => element.key === "create")[0].props.onSave({ name: "beta", models: [] });
+    expect(elements(render(), (element) => element.key === "create")).toHaveLength(0);
+    card(render()).props.onEdit();
+    await elements(render(), (element) => element.key === "combo-1" && element.props.onSave)[0].props.onSave({ name: "alpha", models: [] });
+    expect(elements(render(), (element) => element.key === "combo-1" && element.props.onSave)).toHaveLength(0);
+
+    expect(reads(fetch, "/api/combos")).toHaveLength(3);
+    expect(reads(fetch, "/api/settings")).toHaveLength(1);
+    expect(reads(fetch, "/api/providers")).toHaveLength(1);
   });
 
   it("keeps every capacity change made while an earlier one is still saving", async () => {
