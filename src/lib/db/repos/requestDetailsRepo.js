@@ -3,6 +3,8 @@ import { promisify } from "node:util";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { structuredPreview } from "../../../shared/utils/requestConversation.js";
+import { measureJson } from "../../../shared/utils/jsonMeasure.js";
+import { readCgroupMemoryLimit } from "../../../shared/utils/cgroupMemory.js";
 import { dropSensitiveHeaders, isBinaryBody, binaryBodyMarker } from "../../../../open-sse/utils/redact.js";
 
 const DEFAULT_MAX_RECORDS = 200;
@@ -28,6 +30,12 @@ const FULL_RING_MAX_BYTES = 256 * 1024 * 1024;
 // so a stream's end save can be lost and its row left looking unfinished.
 const SAVES_PER_ROW = 2;
 const QUEUED_RECORDS_MAX_BYTES = 128 * 1024 * 1024;
+// In a container, both caps are also held to a share of its memory limit
+// (cgroup memory.max): a 2 GiB container gets a 102 MB ring and 61 MB of
+// queued records. The values above are the ceilings, and apply as they are
+// without a limit.
+const FULL_RING_LIMIT_FRACTION = 0.05;
+const QUEUED_RECORDS_LIMIT_FRACTION = 0.03;
 // Rows written per transaction, so a catch-up write stays bounded.
 const MAX_ROWS_PER_WRITE = 200;
 const gzipAsync = promisify(gzip);
@@ -123,8 +131,20 @@ let activeFlush = null;
 let shuttingDown = false;
 // The database driver, read once (sql.js never stores full copies).
 let dbDriver = null;
-// The byte caps; tests set smaller ones.
-const limits = { fullRingMaxBytes: FULL_RING_MAX_BYTES, queuedRecordsMaxBytes: QUEUED_RECORDS_MAX_BYTES };
+/**
+ * The byte caps for a container memory limit of `limitBytes` (null: none).
+ * @param {number | null} limitBytes
+ */
+export function memoryCaps(limitBytes) {
+  const cap = (ceiling, fraction) => (limitBytes > 0 ? Math.min(ceiling, Math.floor(limitBytes * fraction)) : ceiling);
+  return {
+    fullRingMaxBytes: cap(FULL_RING_MAX_BYTES, FULL_RING_LIMIT_FRACTION),
+    queuedRecordsMaxBytes: cap(QUEUED_RECORDS_MAX_BYTES, QUEUED_RECORDS_LIMIT_FRACTION),
+  };
+}
+
+// The byte caps in force; tests set smaller ones.
+const limits = memoryCaps(readCgroupMemoryLimit());
 
 // Credential headers never reach a stored request detail (the dashboard renders
 // them and cloud sync uploads them).
@@ -143,10 +163,11 @@ const sameCapped = (a, b) => a.length === b.length && a.every((c, i) => c === b[
 
 // What a row's full copy is made from: the untruncated payloads that
 // truncateField cut, as JSON, or null when there is none or it is over
-// FULL_DATA_MAX_BYTES. For the same capped objects as an earlier save (a
+// FULL_DATA_MAX_BYTES or the ring's byte cap. For the same capped objects as an earlier save (a
 // stream's start save), that save's packed copy, or its JSON when it is still
-// waiting (`earlier`), so nothing is serialized again. `fieldJson` holds the
-// compact JSON truncateField already built for each field. The capped objects
+// waiting (`earlier`), so nothing is serialized again. Otherwise the fields
+// are serialized here, once the copy is known to fit; `fieldJson` holds any
+// compact JSON a caller already built. The capped objects
 // are kept only as WeakRefs (`cappedRefs`), so a waiting copy never keeps them,
 // or the strings their previews came from, alive.
 function fullCopySource(item, record, fieldJson = {}, earlier = null) {
@@ -160,8 +181,9 @@ function fullCopySource(item, record, fieldJson = {}, earlier = null) {
   }
   if (!parts.length) return null;
   // UTF-8 never takes fewer bytes than characters, so this skips oversized
-  // payloads without serializing them a second time.
-  if (chars > FULL_DATA_MAX_BYTES) return null;
+  // payloads without serializing them. Nor is a copy built that the ring
+  // couldn't hold.
+  if (chars > FULL_DATA_MAX_BYTES || chars * JSON_BYTES_PER_CHAR > limits.fullRingMaxBytes) return null;
   const keys = parts.map(([key]) => key).join();
   const capped = parts.map(([key]) => record[key]);
   const prior = packedFullData.get(capped[0]);
@@ -198,7 +220,7 @@ async function packSource(source) {
 // on: row id → the source of its newest save's copy (that save is
 // `source.save`), oldest-inserted first. Only FULL_DATA_KEEP_ROWS rows keep a
 // copy after the trim, so a 26th id pushes the oldest out. Going over
-// FULL_RING_MAX_BYTES does too, so with large payloads fewer than 25 rows get
+// limits.fullRingMaxBytes does too, so with large payloads fewer than 25 rows get
 // a new copy. Queued saves hold only their capped record.
 const fullRing = new Map();
 let fullRingBytes = 0;
@@ -232,7 +254,7 @@ async function unpackFullData(value) {
   return JSON.parse((await gunzipAsync(Buffer.from(value, "base64"))).toString("utf8"));
 }
 
-export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField, prettyJsonPrefix, measureJson, fullCopySource, packSource, unpackFullData, limits,
+export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField, prettyJsonPrefix, fullCopySource, packSource, unpackFullData, limits,
   queued: () => writeBuffer.length, queuedBytes: () => queuedBytes, inFlightBytes: () => inFlightBytes,
   ringSize: () => fullRing.size, ringBytes: () => fullRingBytes,
   flush: () => flushToDatabase(), shutdown: () => _shutdownHandler() };
@@ -284,96 +306,6 @@ function prettyJsonPrefix(json, limit) {
   return out.substring(0, limit);
 }
 
-// Characters JSON.stringify gives the string `s`, quotes included.
-function quotedLength(s) {
-  let n = s.length + 2;
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c < 0x20) n += c === 8 || c === 9 || c === 10 || c === 12 || c === 13 ? 1 : 5;
-    else if (c === 0x22 || c === 0x5c) n += 1;
-    else if (c >= 0xd800 && c <= 0xdfff) {
-      const next = s.charCodeAt(i + 1);
-      // A pair is copied as is; a lone half is written \udxxx.
-      if (c <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) i++;
-      else n += 5;
-    }
-  }
-  return n;
-}
-
-const UNSUPPORTED = Symbol("unsupported");
-
-/**
- * The length of JSON.stringify(value) and at least its first `prefixChars`
- * characters, without building the whole string. Plain JSON data only (a
- * parsed request is); undefined for anything else (a toJSON, a class instance,
- * a BigInt, a cycle, nesting past the stack), which the caller serializes.
- */
-function measureJson(value, prefixChars) {
-  let length = 0;
-  let prefix = "";
-  const ancestors = new Set();
-  const emit = (text) => {
-    length += text.length;
-    if (prefix.length < prefixChars) prefix += text;
-  };
-  const emitString = (s) => {
-    const n = quotedLength(s);
-    const need = prefixChars - prefix.length;
-    // One extra character, so a surrogate pair at the cut is escaped as a pair.
-    if (need > 0) prefix += n <= need ? JSON.stringify(s) : JSON.stringify(s.slice(0, need + 1)).slice(0, need);
-    length += n;
-  };
-  const skipped = (v) => v === undefined || typeof v === "function" || typeof v === "symbol";
-  const walk = (v) => {
-    if (v === null) return emit("null");
-    switch (typeof v) {
-      case "string": return emitString(v);
-      case "number": return emit(Number.isFinite(v) ? String(v) : "null");
-      case "boolean": return emit(v ? "true" : "false");
-      case "object": break;
-      default:
-        // undefined, a function or a symbol in an array; a BigInt throws in JSON.stringify.
-        if (skipped(v)) return emit("null");
-        throw UNSUPPORTED;
-    }
-    if (ancestors.has(v) || Object.hasOwn(v, "toJSON")) throw UNSUPPORTED;
-    const proto = Object.getPrototypeOf(v);
-    ancestors.add(v);
-    if (Array.isArray(v)) {
-      if (proto !== Array.prototype) throw UNSUPPORTED;
-      emit("[");
-      for (let i = 0; i < v.length; i++) {
-        if (i > 0) emit(",");
-        walk(v[i]);
-      }
-      emit("]");
-    } else {
-      if (proto !== Object.prototype && proto !== null) throw UNSUPPORTED;
-      emit("{");
-      let first = true;
-      for (const key of Object.keys(v)) {
-        const child = v[key];
-        if (skipped(child)) continue;
-        if (!first) emit(",");
-        first = false;
-        emitString(key);
-        emit(":");
-        walk(child);
-      }
-      emit("}");
-    }
-    ancestors.delete(v);
-  };
-  try {
-    if (skipped(value)) return undefined;
-    walk(value);
-  } catch {
-    return undefined;
-  }
-  return { length, prefix };
-}
-
 function truncateField(obj, maxSize, fieldJson, key) {
   if (obj === undefined || obj === null) return {};
   const cached = typeof obj === "object" ? cappedPayloads.get(obj) : undefined;
@@ -381,9 +313,9 @@ function truncateField(obj, maxSize, fieldJson, key) {
   // reuses an earlier save's, or serializes again when it can't.
   if (cached?.maxSize === maxSize) return cached.truncated;
   const previewChars = Math.min(2000, Math.max(0, maxSize - 256));
-  // Only a full copy needs the whole JSON. A capped record needs its length
-  // and head, which measureJson reads without putting a body-sized string on
-  // the heap for every account a request tries.
+  // A capped record needs only the JSON's length and head, which measureJson
+  // reads without putting a body-sized string on the heap for every account a
+  // request tries. A caller passing `fieldJson` gets the whole JSON in it.
   let measured = fieldJson ? undefined : measureJson(obj, previewChars + 1);
   if (!measured) {
     let str;
@@ -497,7 +429,8 @@ function buildSave(item, maxJsonSize, keepFull) {
   // stored as its size only.
   for (const key of PAYLOAD_KEYS) if (isBinaryBody(item[key])) item[key] = binaryBodyMarker(item[key]);
 
-  const fieldJson = keepFull ? {} : undefined;
+  // Capped without the full JSON, even with `keepFull`: fullCopySource
+  // serializes the cut fields only once it knows the copy is kept.
   const record = {
     id: item.id,
     provider: item.provider || null,
@@ -507,10 +440,10 @@ function buildSave(item, maxJsonSize, keepFull) {
     status: item.status || null,
     latency: item.latency || {},
     tokens: item.tokens || {},
-    request: truncateField(item.request, maxJsonSize, fieldJson, "request"),
-    providerRequest: truncateField(item.providerRequest, maxJsonSize, fieldJson, "providerRequest"),
-    providerResponse: truncateField(item.providerResponse, maxJsonSize, fieldJson, "providerResponse"),
-    response: truncateField(item.response, maxJsonSize, fieldJson, "response"),
+    request: truncateField(item.request, maxJsonSize),
+    providerRequest: truncateField(item.providerRequest, maxJsonSize),
+    providerResponse: truncateField(item.providerResponse, maxJsonSize),
+    response: truncateField(item.response, maxJsonSize),
     errorClass: item.errorClass || undefined,
   };
   const data = stringifyJson(record);
@@ -518,7 +451,7 @@ function buildSave(item, maxJsonSize, keepFull) {
     id: record.id, timestamp: record.timestamp, provider: record.provider, model: record.model,
     connectionId: record.connectionId, status: record.status, data, bytes: data.length * JSON_BYTES_PER_CHAR,
   };
-  return { save, source: keepFull ? fullCopySource(item, record, fieldJson, fullRing.get(item.id)) : null };
+  return { save, source: keepFull ? fullCopySource(item, record, {}, fullRing.get(item.id)) : null };
 }
 
 function armFlushTimer() {

@@ -11,7 +11,7 @@
 // which the agents' SDKs retry. With nothing in flight a request is always let
 // in, however big, so one huge prompt is never starved. Limits are in
 // MEMORY_ADMISSION (open-sse/config/runtimeConfig.js).
-import { readFileSync } from "node:fs";
+import { readCgroupMemoryLimit } from "@/shared/utils/cgroupMemory.js";
 import { HTTP_STATUS, MEMORY_ADMISSION } from "open-sse/config/runtimeConfig.js";
 import { CLAUDE_RETRYABLE_STREAM_ERROR_TYPE } from "open-sse/config/errorConfig.js";
 import { FORMATS, detectFormatByEndpoint } from "open-sse/translator/formats.js";
@@ -22,24 +22,8 @@ const MB = 1024 * 1024;
 const TAG = "MEMORY";
 const mb = (bytes) => `${Math.round(bytes / MB)}MB`;
 
-// Above this a cgroup v1 limit means "no limit" (the kernel's page-rounded max).
-const CGROUP_V1_UNLIMITED = 2 ** 60;
-
-/**
- * The container's memory limit in bytes, from cgroup v2 memory.max or cgroup v1
- * memory.limit_in_bytes, or null when there is none or it can't be read.
- * @param {(path: string) => string} [read]
- */
-export function readCgroupMemoryLimit(read = (path) => readFileSync(path, "utf8")) {
-  for (const path of ["/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"]) {
-    let raw;
-    try { raw = read(path).trim(); } catch { continue; }
-    if (!/^\d+$/.test(raw)) return null; // "max": no limit
-    const n = Number(raw);
-    return n > 0 && n < CGROUP_V1_UNLIMITED ? n : null;
-  }
-  return null;
-}
+// Shared with request details, which size their buffers to the same limit.
+export { readCgroupMemoryLimit };
 
 /**
  * The resident-memory high-water mark in bytes, or 0 for none: MEMORY_HIGH_WATER_MB

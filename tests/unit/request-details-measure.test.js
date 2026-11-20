@@ -1,21 +1,47 @@
-// Every account a request tries saves a request detail holding the client's
-// request and the body sent upstream, each capped to a few KB. Capping one must
-// not serialize the whole prompt: a 3 MB prompt tried on several accounts would
-// put two full-size strings on the heap per try.
+// Every account a request tries saves a request detail with the client's
+// request and the body sent upstream, each capped to a few KB. Capping must
+// not serialize the whole prompt, and with full details on, the full copies
+// kept for the dashboard must fit the container.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { __test__ } from "../../src/lib/db/repos/requestDetailsRepo.js";
+import { measureJson, quotedLength, MAX_MEASURE_DEPTH } from "../../src/shared/utils/jsonMeasure.js";
+import { __test__, memoryCaps } from "../../src/lib/db/repos/requestDetailsRepo.js";
 
-const { measureJson, truncateField, prettyJsonPrefix } = __test__;
+const MB = 1024 * 1024;
+const GiB = 1024 * MB;
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.doUnmock("../../src/shared/utils/cgroupMemory.js");
+});
 
-function rng(seed) { return () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648; }
+// mulberry32: 32-bit integer math, so the draws don't collapse to a few values.
+function rng(seed) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Pieces that need escaping, or look like they might: lone and paired
+// surrogates (a lone high before a quote, a newline or another high), control
+// characters, and U+2028/2029, which JSON.stringify leaves as they are.
+const PIECES = ["x", "\"", "\\", "\n", "\u0001", "\u001f", "\b", "\f", "\r", "\t", "\u007f", "{[,:]}", "é", "✓", "😀", "𐀀",
+  "\ud800", "\udc00", "\udfff", "\ud800\"", "\ud800\n", "\ud800\ud800", "\udc00\ud800", " ", " ", " "];
+
+function randomString(r) {
+  let s = "";
+  const n = Math.floor(r() * 80);
+  for (let i = 0; i < n; i++) s += PIECES[Math.floor(r() * PIECES.length)];
+  return r() < 0.1 ? s.repeat(40) : s;
+}
+
 function randomValue(r, depth = 0) {
   const pick = r();
   if (depth > 4 || pick < 0.3) {
     const s = r();
-    if (s < 0.4) return "x\"\\\n\u0001\u001f\b\f\r\t\u007f {[,:]}é✓😀𐀀\udbff".repeat(Math.floor(r() * 40));
-    if (s < 0.5) return "😀".repeat(Math.floor(r() * 1500));
+    if (s < 0.45) return randomString(r);
     if (s < 0.6) return [Infinity, -Infinity, NaN, -0, 1e21, 1.5e-7, 42, 0.1][Math.floor(r() * 8)];
     if (s < 0.7) return r() < 0.5;
     if (s < 0.8) return null;
@@ -23,40 +49,17 @@ function randomValue(r, depth = 0) {
     return [() => 1, Symbol("s")][Math.floor(r() * 2)];
   }
   if (pick < 0.6) return Array.from({ length: Math.floor(r() * 6) }, () => randomValue(r, depth + 1));
-  const keys = ["role", "type", "a\"b", "é", "x\n", "content", "😀k", "\ud800"];
-  return Object.fromEntries(Array.from({ length: Math.floor(r() * 6) }, () => [keys[Math.floor(r() * keys.length)], randomValue(r, depth + 1)]));
-}
-
-function makePrompt(messages) {
-  return {
-    model: "claude-model",
-    stream: true,
-    system: [{ type: "text", text: "You are a coding agent.\n".repeat(200) }],
-    tools: Array.from({ length: 20 }, (_, i) => ({ name: `tool_${i}`, description: "Does a thing", input_schema: { type: "object", properties: { path: { type: "string" } } } })),
-    messages: Array.from({ length: messages }, (_, i) => (i % 2
-      ? { role: "assistant", content: [{ type: "tool_use", id: `toolu_${i}`, name: "tool_1", input: { path: `/src/${i}.js` } }] }
-      : { role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_${i - 1}`, content: `const x = "${i}"; // é ✓\n`.repeat(120) }] })),
-  };
-}
-
-// Counts strings JSON.stringify returns that are over `limit` characters.
-function countLargeStringifies(limit) {
-  const real = JSON.stringify;
-  const counter = { large: 0 };
-  vi.spyOn(JSON, "stringify").mockImplementation(function (value, ...rest) {
-    const out = real.call(JSON, value, ...rest);
-    if (typeof out === "string" && out.length > limit) counter.large++;
-    return out;
-  });
-  return counter;
+  return Object.fromEntries(Array.from({ length: Math.floor(r() * 6) }, () => [randomString(r).slice(0, 12), randomValue(r, depth + 1)]));
 }
 
 describe("measureJson", () => {
   it("gives JSON.stringify's length and head for plain JSON data", () => {
     const r = rng(3);
+    const seen = new Set();
     for (let n = 0; n < 2000; n++) {
       const value = { m: randomValue(r) };
       const json = JSON.stringify(value);
+      seen.add(json);
       for (const prefixChars of [0, 1, 2, 7, 100, 2001]) {
         const measured = measureJson(value, prefixChars);
         expect(measured.length).toBe(json.length);
@@ -64,13 +67,33 @@ describe("measureJson", () => {
         expect(measured.prefix.length).toBeGreaterThanOrEqual(Math.min(prefixChars, json.length));
       }
     }
+    // Empty lists, objects and the few scalars repeat; the rest don't.
+    expect(seen.size).toBeGreaterThan(1000);
+  });
+
+  it("measures every escape the way JSON.stringify writes it", () => {
+    for (const piece of PIECES) {
+      for (const s of [piece, `a${piece}`, `${piece}b`, piece.repeat(3)]) expect(quotedLength(s)).toBe(JSON.stringify(s).length);
+    }
   });
 
   it("escapes a surrogate pair cut by the head as a pair", () => {
-    const value = { t: "a😀b" };
+    const value = { t: "a😀b\ud800\"c" };
     const json = JSON.stringify(value);
     for (let prefixChars = 0; prefixChars <= json.length; prefixChars++) {
       expect(json.startsWith(measureJson(value, prefixChars).prefix)).toBe(true);
+    }
+  });
+
+  it("keeps the head short when one string over 1 MB crosses the cut", () => {
+    const value = { model: "m", messages: [{ role: "user", content: `${"line \"é\" 😀\n".repeat(120_000)}end` }] };
+    const json = JSON.stringify(value);
+    expect(json.length).toBeGreaterThan(MB);
+    for (const prefixChars of [1, 30, 2001]) {
+      const measured = measureJson(value, prefixChars);
+      expect(measured.length).toBe(json.length);
+      expect(json.startsWith(measured.prefix)).toBe(true);
+      expect(measured.prefix.length).toBeLessThanOrEqual(prefixChars + 8);
     }
   });
 
@@ -83,56 +106,70 @@ describe("measureJson", () => {
     }
   });
 
-  it("measures an object seen twice that is not a cycle", () => {
-    const shared = { role: "user", content: "hi" };
-    const value = { messages: [shared, shared] };
-    expect(measureJson(value, 5000)).toEqual({ length: JSON.stringify(value).length, prefix: JSON.stringify(value) });
+  it("stops at MAX_MEASURE_DEPTH, well inside what JSON.stringify can serialize", () => {
+    const nest = (levels) => {
+      let v = "leaf";
+      for (let i = 0; i < levels; i++) v = [v];
+      return v;
+    };
+    const ok = nest(MAX_MEASURE_DEPTH);
+    expect(measureJson(ok, 10).length).toBe(JSON.stringify(ok).length);
+    expect(measureJson(nest(MAX_MEASURE_DEPTH + 1), 10)).toBeUndefined();
+    expect(measureJson(nest(50_000), 10)).toBeUndefined();
   });
 });
 
-describe("truncateField on a large prompt", () => {
-  const max = 5 * 1024;
-
-  it("caps it without serializing it whole, to the same record", () => {
-    const body = makePrompt(800);
-    const json = JSON.stringify(body);
-    expect(json.length).toBeGreaterThan(1e6);
-    const counter = countLargeStringifies(2 * max);
-    const stored = truncateField(body, max);
-    vi.restoreAllMocks();
-    expect(counter.large).toBe(0);
-    expect(stored._truncated).toBe(true);
-    expect(stored._originalSize).toBe(json.length);
-    expect(stored._omittedSize).toBe(json.length - max);
-    expect(JSON.stringify(stored).length).toBeLessThanOrEqual(max);
-    // The head of the same pretty-printed JSON the full string gives.
-    expect(json.length > 2000 && prettyJsonPrefix(json, 2000).startsWith(stored._preview)).toBe(true);
-    expect(stored._preview.length).toBeGreaterThan(0);
+describe("request details memory caps", () => {
+  it("hold the ring and the queue to a share of the container's memory", () => {
+    expect(memoryCaps(2 * GiB)).toEqual({ fullRingMaxBytes: Math.floor(2 * GiB * 0.05), queuedRecordsMaxBytes: Math.floor(2 * GiB * 0.03) });
+    // The old fixed values are the ceilings, and what applies without a limit.
+    expect(memoryCaps(64 * GiB)).toEqual({ fullRingMaxBytes: 256 * MB, queuedRecordsMaxBytes: 128 * MB });
+    expect(memoryCaps(null)).toEqual({ fullRingMaxBytes: 256 * MB, queuedRecordsMaxBytes: 128 * MB });
   });
 
-  it("builds no full-size string across a request's account attempts", () => {
-    // chatCore saves a new request object per attempt, around the client's
-    // messages and tools, and a new upstream body per attempt.
-    const body = makePrompt(800);
-    const counter = countLargeStringifies(2 * max);
-    for (let attempt = 0; attempt < 5; attempt++) {
-      truncateField({ model: body.model, messages: body.messages, tools: body.tools, stream: true }, max);
-      truncateField({ ...body, messages: body.messages.map((m) => ({ ...m })) }, max);
+  it("are read from the cgroup limit when the module loads", async () => {
+    vi.resetModules();
+    vi.doMock("../../src/shared/utils/cgroupMemory.js", () => ({ readCgroupMemoryLimit: () => 2 * GiB }));
+    const repo = await import("../../src/lib/db/repos/requestDetailsRepo.js");
+    expect({ ...repo.__test__.limits }).toEqual(memoryCaps(2 * GiB));
+    vi.resetModules();
+  });
+
+  it("build no full copy the ring couldn't hold, and don't serialize it", () => {
+    const { limits, truncateField, fullCopySource } = __test__;
+    const cap = limits.fullRingMaxBytes;
+    const request = { messages: [{ role: "user", content: "q".repeat(300_000) }] };
+    const record = { request: truncateField(request, 5 * 1024) };
+    expect(record.request._truncated).toBe(true);
+    try {
+      // 2 bytes a character: 600 KB.
+      limits.fullRingMaxBytes = 500 * 1024;
+      const stringify = vi.spyOn(JSON, "stringify");
+      expect(fullCopySource({ request }, record)).toBeNull();
+      expect(stringify.mock.calls.some(([value]) => value === request)).toBe(false);
+      stringify.mockRestore();
+      limits.fullRingMaxBytes = 700 * 1024;
+      const source = fullCopySource({ request }, record);
+      expect(source.bytes).toBeLessThanOrEqual(limits.fullRingMaxBytes);
+      expect(JSON.parse(source.json)).toEqual({ request });
+    } finally {
+      limits.fullRingMaxBytes = cap;
     }
+  });
+
+  it("cap a large payload without serializing it whole, even when a full copy may follow", () => {
+    const { truncateField } = __test__;
+    const request = { messages: Array.from({ length: 400 }, (_, i) => ({ role: "user", content: `const x = "${i}"; // é ✓\n`.repeat(120) })) };
+    const real = JSON.stringify;
+    let large = 0;
+    vi.spyOn(JSON, "stringify").mockImplementation(function (value, ...rest) {
+      const out = real.call(JSON, value, ...rest);
+      if (typeof out === "string" && out.length > 64 * 1024) large++;
+      return out;
+    });
+    const stored = truncateField(request, 5 * 1024);
     vi.restoreAllMocks();
-    expect(counter.large).toBe(0);
-  });
-
-  it("still keeps the whole JSON when a full copy is kept", () => {
-    const body = makePrompt(200);
-    const fieldJson = {};
-    const stored = truncateField(body, max, fieldJson, "providerRequest");
-    expect(stored._truncated).toBe(true);
-    expect(fieldJson.providerRequest).toBe(JSON.stringify(body));
-  });
-
-  it("returns a prompt that fits unchanged", () => {
-    const body = makePrompt(2);
-    expect(truncateField(body, 64 * 1024)).toBe(body);
+    expect(stored._originalSize).toBe(JSON.stringify(request).length);
+    expect(large).toBe(0);
   });
 });
