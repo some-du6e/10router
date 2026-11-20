@@ -4,6 +4,7 @@ import { createDisconnectAwareStream, pipeWithDisconnect, createStreamController
 import { buildAbortedResponsesTerminalBytes } from "../../open-sse/utils/responsesStreamHelpers.js";
 import { buildStreamErrorBytes } from "../../open-sse/utils/streamHelpers.js";
 import { FORMATS } from "../../open-sse/translator/formats.js";
+import { createSSEStream } from "../../open-sse/utils/stream.js";
 
 // Minimal stream controller stub
 function makeController() {
@@ -138,5 +139,36 @@ describe("stall abort through pipeWithDisconnect", () => {
     expect(seen).toBe("stream stall timeout");
     expect(text).toContain('"stream stall timeout"');
     expect(text).toContain("data: [DONE]");
+  });
+
+  // Kiro, grok-web and perplexity-web catch the aborted read and end their body
+  // cleanly, so the translate stream's flush() writes its own terminal first.
+  it("sends one [DONE] when the upstream closes cleanly on the abort", async () => {
+    const ctrl = createStreamController({ provider: "kiro", model: "test" });
+    const claude = (data) => `event: ${data.type}\ndata: ${JSON.stringify(data)}\n\n`;
+    const upstream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          claude({ type: "message_start", message: { id: "msg_abcdefgh", model: "claude-x", usage: { input_tokens: 5, output_tokens: 1 } } })
+          + claude({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })
+          + claude({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hello" } }),
+        ));
+        ctrl.signal.addEventListener("abort", () => controller.close(), { once: true });
+      },
+    });
+
+    const out = pipeWithDisconnect(
+      { body: upstream },
+      createSSEStream({ mode: "translate", targetFormat: FORMATS.CLAUDE, sourceFormat: FORMATS.OPENAI, provider: "kiro", model: "test" }),
+      ctrl,
+      (message) => buildStreamErrorBytes(504, message, FORMATS.OPENAI),
+      50
+    );
+
+    const text = await readAll(out);
+    expect(text).toContain('"content":"hello"');
+    expect(text.match(/data: \[DONE\]/g)).toHaveLength(1);
+    expect(text.match(/data: \{"error"/g)).toHaveLength(1);
+    expect(text.endsWith("data: [DONE]\n\n")).toBe(true);
   });
 });
