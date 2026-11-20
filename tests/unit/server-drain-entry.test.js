@@ -69,7 +69,10 @@ afterAll(() => {
 function runEntry(env, dir = appDir) {
   const childEnv = { ...process.env, ...env };
   delete childEnv.NEXT_MANUAL_SIG_HANDLE;
-  const child = spawn(process.execPath, ["custom-server.js"], { cwd: dir, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
+  // stderr (the [Shutdown] and [Exit] lines) into the stdout pipe, so the
+  // output keeps the order the lines were written in. `exec` keeps node the
+  // process that gets the signal.
+  const child = spawn("/bin/sh", ["-c", 'exec "$0" custom-server.js 2>&1', process.execPath], { cwd: dir, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
   children.push(child);
   let stdout = "";
   child.stdout.setEncoding("utf8");
@@ -198,7 +201,9 @@ describe("custom-server.js drain on SIGTERM", () => {
     await new Promise((res) => child.stdout.once("close", res));
 
     expect(code).toBe(0);
-    // console.log would have queued it behind the flood, and the exit drops that queue.
-    expect(stdout + stderr).toMatch(/\[Exit\] exiting with code 0 [^\n]*\n {2}process\.exit\(\) called from:\n[^\n]*exitAfterFlood/);
+    // console.log would have queued it behind the flood, and the exit drops
+    // that queue. It goes to stderr instead, whole.
+    expect(stderr).toMatch(/^\[Exit\] exiting with code 0 [^\n]*\n {2}process\.exit\(\) called from:\n[^\n]*exitAfterFlood/);
+    expect(stdout).not.toContain("[Exit]");
   }, 20_000);
 });
