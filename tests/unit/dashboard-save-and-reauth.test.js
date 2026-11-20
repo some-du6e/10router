@@ -386,7 +386,8 @@ describe("Cowork combo create", () => {
 
     const formProps = comboForm().props;
     const form = dashboardComponent("src/shared/components/ComboFormModal.js");
-    elements(form.render(formProps), (element) => element.type === "Input")[0].props.onChange({ target: { value: "mix" } });
+    expect(formProps.forcePrefix).toBe("claude-");
+    elements(form.render(formProps), (element) => element.type === "input" && element.props.placeholder === "my-combo")[0].props.onChange({ target: { value: "mix" } });
     await button(form.render(formProps), "Create").props.onClick();
     expect(fetch).toHaveBeenLastCalledWith("/api/combos", expect.objectContaining({ method: "POST", body: JSON.stringify({ name: "claude-mix", models: [] }) }));
     expect(alerts(form.render(formProps))).toContain("Combo refused");
