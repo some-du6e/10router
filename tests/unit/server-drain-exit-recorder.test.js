@@ -195,7 +195,7 @@ describe("writeLineSync", () => {
     });
     const sleep = vi.fn();
 
-    expect(writeLineSync("[Exit] exiting with code 0", { writeSync, sleep, now: () => 0 })).toBe(true);
+    expect(writeLineSync("[Exit] exiting with code 0", { writeSync, sleep, now: () => 0, backlogged: () => false })).toBe(true);
 
     expect(writeSync.mock.calls.every(([fd]) => fd === 2)).toBe(true);
     expect(got.map(([, text]) => text).join("")).toBe("[Exit] exiting with code 0\n");
@@ -212,6 +212,18 @@ describe("writeLineSync", () => {
     expect(clock).toBeGreaterThanOrEqual(50);
     expect(clock).toBeLessThan(60);
     expect(writeSync.mock.calls.every(([fd]) => fd === 2)).toBe(true);
+  });
+
+  it("starts on a new line when stderr still has queued output", () => {
+    const got = [];
+    const writeSync = vi.fn((fd, buf) => { got.push(buf.toString()); return buf.length; });
+
+    expect(writeLineSync("[Exit] exiting with code 0", { writeSync, now: () => 0, backlogged: () => true })).toBe(true);
+    expect(got.join("")).toBe("\n[Exit] exiting with code 0\n");
+
+    got.length = 0;
+    expect(writeLineSync("[Exit] exiting with code 0", { writeSync, now: () => 0, backlogged: () => false })).toBe(true);
+    expect(got.join("")).toBe("[Exit] exiting with code 0\n");
   });
 
   it("gives up at once on an error other than EAGAIN", () => {

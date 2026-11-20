@@ -373,11 +373,17 @@ function pause(ms) {
  * the queue, so the line that names the exit is the one lost. stdout is the
  * full pipe then, and a direct write to it would land ahead of the queue, mid
  * line; stderr is its own pipe (and the CLI launcher's crash log). A write that
- * finds it full (EAGAIN) is retried for up to `budgetMs`. Returns false when
- * the whole line didn't get out.
+ * finds it full (EAGAIN) is retried for up to `budgetMs`. When process.stderr
+ * still has queued output, part of a line may already be in the pipe, so the
+ * write starts with a newline to end it. Returns false when the whole line
+ * didn't get out.
  */
-function writeLineSync(line, { writeSync = fs.writeSync, budgetMs = WRITE_BUDGET_MS, now = Date.now, sleep = pause } = {}) {
-  let rest = Buffer.from(`${line}\n`, "utf8");
+function stderrBacklogged() {
+  return (process.stderr && process.stderr.writableLength) > 0;
+}
+
+function writeLineSync(line, { writeSync = fs.writeSync, budgetMs = WRITE_BUDGET_MS, now = Date.now, sleep = pause, backlogged = stderrBacklogged } = {}) {
+  let rest = Buffer.from(`${backlogged() ? "\n" : ""}${line}\n`, "utf8");
   const deadline = now() + budgetMs;
   try {
     while (rest.length) {
