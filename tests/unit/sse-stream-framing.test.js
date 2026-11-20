@@ -182,6 +182,145 @@ describe("a Chat Completions upstream whose [DONE] has no trailing newline", () 
   });
 });
 
+describe("the [DONE] sentinel on translated streams", () => {
+  const frames = (text) => text.split("\n\n").filter(Boolean);
+  const doneCount = (text) => (text.match(/data: \[DONE\]/g) || []).length;
+  // The upstream's events as one body; "" leaves the last event as the EOF tail.
+  const join = (events, ending) => events.map((e, i) => (i === events.length - 1 ? `${e}${ending}` : `${e}\n\n`)).join("");
+  const translate = (events, ending, formats) => runStream(join(events, ending), { mode: "translate", body, ...formats });
+
+  const claudeReply = [
+    claudeEvent({ type: "message_start", message: { id: "msg_abcdefgh", model: "claude-x", usage: { input_tokens: 25, output_tokens: 1 } } }),
+    claudeEvent({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+    claudeEvent({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hello" } }),
+    claudeEvent({ type: "content_block_stop", index: 0 }),
+    claudeEvent({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 9 } }),
+    claudeEvent({ type: "message_stop" }),
+  ];
+  const chatReply = [
+    chatData({ delta: { role: "assistant", content: "hello" } }),
+    chatData({ delta: {}, finish_reason: "stop" }, { usage: { prompt_tokens: 25, completion_tokens: 9, total_tokens: 34 } }),
+    "data: [DONE]",
+  ];
+  const responsesEvent = (data) => `event: ${data.type}\ndata: ${JSON.stringify(data)}`;
+  const responsesDelta = responsesEvent({ type: "response.output_text.delta", item_id: "msg_1", output_index: 0, content_index: 0, delta: "hello" });
+  const responsesCompleted = responsesEvent({ type: "response.completed", response: { id: "resp_12345678", output: [], usage: { input_tokens: 25, output_tokens: 9, total_tokens: 34 } } });
+
+  // The frame before [DONE] is the finish chunk, so the sentinel comes after the final usage.
+  const expectOneDoneAfterFinish = (text) => {
+    expect(doneCount(text)).toBe(1);
+    const all = frames(text);
+    expect(all.at(-1)).toBe("data: [DONE]");
+    expect(JSON.parse(all.at(-2).slice(6)).choices[0].finish_reason).toBe("stop");
+  };
+
+  it.each(["\n\n", ""])("ends a Claude upstream to an OpenAI chat client with one [DONE] after the finish chunk and its usage (ending %j)", async (ending) => {
+    const { text, onStreamComplete } = await translate(claudeReply, ending, { targetFormat: FORMATS.CLAUDE, sourceFormat: FORMATS.OPENAI });
+    expectOneDoneAfterFinish(text);
+    expect(JSON.parse(frames(text).at(-2).slice(6)).usage).toEqual(expect.objectContaining({ prompt_tokens: expect.any(Number), completion_tokens: expect.any(Number) }));
+    expect(onStreamComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["a Chat Completions upstream", FORMATS.OPENAI, chatReply],
+    ["a Responses upstream", FORMATS.OPENAI_RESPONSES, [responsesDelta, responsesCompleted, "data: [DONE]"]],
+    // No response.completed: the finish chunk only comes out of flush(), and the sentinel follows it.
+    ["a Responses upstream that never completes", FORMATS.OPENAI_RESPONSES, [responsesDelta, "data: [DONE]"]],
+  ])("sends an OpenAI chat client one [DONE] when %s sends its own", async (_name, targetFormat, events) => {
+    for (const ending of ["\n\n", ""]) {
+      const { text } = await translate(events, ending, { targetFormat, sourceFormat: FORMATS.OPENAI });
+      expectOneDoneAfterFinish(text);
+    }
+  });
+
+  // A chat stream that never sent its finish chunk must not look finished:
+  // an error frame, then the one [DONE], and no finish_reason anywhere.
+  const expectErrorThenDone = (text) => {
+    expect(doneCount(text)).toBe(1);
+    const all = frames(text);
+    expect(all.at(-1)).toBe("data: [DONE]");
+    expect(JSON.parse(all.at(-2).slice(6)).error).toEqual(expect.objectContaining({ message: expect.any(String) }));
+    expect(dataObjects(text).some((c) => c.choices?.[0]?.finish_reason)).toBe(false);
+  };
+  const claudeToolStart = claudeEvent({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_abcdefgh", name: "lookup", input: {} } });
+
+  it("ends a Claude upstream that errors mid tool call with an error frame and one [DONE]", async () => {
+    const events = [
+      claudeReply[0],
+      claudeToolStart,
+      claudeEvent({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{\"q\":" } }),
+      claudeEvent({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }),
+    ];
+    const { text } = await translate(events, "\n\n", { targetFormat: FORMATS.CLAUDE, sourceFormat: FORMATS.OPENAI });
+    expect(text).toContain("tool_calls");
+    expectErrorThenDone(text);
+  });
+
+  it("ends a Responses upstream that closes with no response.completed and no [DONE] with an error frame and one [DONE]", async () => {
+    const { text } = await translate([responsesDelta], "\n\n", { targetFormat: FORMATS.OPENAI_RESPONSES, sourceFormat: FORMATS.OPENAI });
+    expect(text).toContain("\"content\":\"hello\"");
+    expectErrorThenDone(text);
+  });
+
+  it("ends the stream with an error frame and one [DONE] when flush() throws", async () => {
+    const flushErrors = spyFlushErrors();
+    // The tool_use start is the EOF tail, so it is translated inside flush(), where the lookup throws.
+    const toolNameMap = { size: 1, get: () => { throw new Error("tool map broke"); } };
+    const { text } = await runStream(join([claudeReply[0], claudeToolStart], ""), {
+      mode: "translate", body, toolNameMap, targetFormat: FORMATS.CLAUDE, sourceFormat: FORMATS.OPENAI,
+    });
+    expect(flushErrors()).toHaveLength(1);
+    expectErrorThenDone(text);
+  });
+
+  it("fails a Responses-to-Responses stream before its [DONE] when flush() throws", async () => {
+    const flushErrors = spyFlushErrors();
+    // The delta is the EOF tail, so it is sent from flush(), where logging it throws once.
+    let thrown = false;
+    const reqLogger = {
+      appendConvertedChunk: (chunk) => {
+        if (!thrown && chunk.includes("response.output_text.delta")) { thrown = true; throw new Error("log broke"); }
+      },
+    };
+    const { text } = await runStream(join([responsesDelta], ""), {
+      mode: "translate", body, reqLogger, targetFormat: FORMATS.OPENAI_RESPONSES, sourceFormat: FORMATS.OPENAI_RESPONSES,
+    });
+    expect(flushErrors()).toHaveLength(1);
+    expect(doneCount(text)).toBe(1);
+    const all = frames(text);
+    expect(all.at(-1)).toBe("data: [DONE]");
+    expect(all.at(-2)).toMatch(/^event: response\.failed\n/);
+    expect(text).not.toContain("event: response.completed");
+  });
+
+  it.each([
+    ["a Claude client", "a Claude upstream", FORMATS.CLAUDE, FORMATS.CLAUDE, claudeReply],
+    ["a Claude client", "a Chat Completions upstream", FORMATS.CLAUDE, FORMATS.OPENAI, chatReply],
+    ["a Responses client", "a Claude upstream", FORMATS.OPENAI_RESPONSES, FORMATS.CLAUDE, claudeReply],
+    ["a Responses client", "a Chat Completions upstream", FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI, chatReply],
+  ])("adds no [DONE] for %s on %s", async (_client, _upstream, sourceFormat, targetFormat, events) => {
+    for (const ending of ["\n\n", ""]) {
+      const { text } = await translate(events, ending, { targetFormat, sourceFormat });
+      expect(doneCount(text)).toBe(0);
+      const all = frames(text);
+      if (sourceFormat === FORMATS.CLAUDE) expect(all.at(-1)).toMatch(/^event: message_stop\n/);
+      else expect(all.some((f) => /^event: response\.completed\n/.test(f))).toBe(true);
+    }
+  });
+
+  it.each([
+    ["with", [responsesDelta, responsesCompleted, "data: [DONE]"]],
+    ["without", [responsesDelta, responsesCompleted]],
+  ])("keeps one [DONE] after response.completed for Responses to Responses %s an upstream [DONE]", async (_name, events) => {
+    const { text } = await translate(events, "\n\n", { targetFormat: FORMATS.OPENAI_RESPONSES, sourceFormat: FORMATS.OPENAI_RESPONSES });
+    expect(doneCount(text)).toBe(1);
+    const all = frames(text);
+    expect(all.at(-1)).toBe("data: [DONE]");
+    expect(all.at(-2)).toMatch(/^event: response\.completed\n/);
+    expect(text).not.toContain("response.failed");
+  });
+});
+
 describe("a translated final chunk without a trailing newline", () => {
   // 20 s between chunks: if the tail's final usage were missed, the stream
   // would be billed as cut short at 150 output tokens per second.

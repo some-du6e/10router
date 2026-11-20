@@ -4,6 +4,7 @@ import { createDisconnectAwareStream, pipeWithDisconnect, createStreamController
 import { buildAbortedResponsesTerminalBytes } from "../../open-sse/utils/responsesStreamHelpers.js";
 import { buildStreamErrorBytes } from "../../open-sse/utils/streamHelpers.js";
 import { FORMATS } from "../../open-sse/translator/formats.js";
+import { createSSEStream } from "../../open-sse/utils/stream.js";
 
 // Minimal stream controller stub
 function makeController() {
@@ -138,5 +139,103 @@ describe("stall abort through pipeWithDisconnect", () => {
     expect(seen).toBe("stream stall timeout");
     expect(text).toContain('"stream stall timeout"');
     expect(text).toContain("data: [DONE]");
+  });
+
+  // Kiro, grok-web and perplexity-web catch the aborted read and end their body
+  // cleanly, so the translate stream's flush() writes its own terminal first.
+  it("sends one [DONE] when the upstream closes cleanly on the abort", async () => {
+    const ctrl = createStreamController({ provider: "kiro", model: "test" });
+    const claude = (data) => `event: ${data.type}\ndata: ${JSON.stringify(data)}\n\n`;
+    const upstream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          claude({ type: "message_start", message: { id: "msg_abcdefgh", model: "claude-x", usage: { input_tokens: 5, output_tokens: 1 } } })
+          + claude({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })
+          + claude({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hello" } }),
+        ));
+        ctrl.signal.addEventListener("abort", () => controller.close(), { once: true });
+      },
+    });
+
+    const out = pipeWithDisconnect(
+      { body: upstream },
+      createSSEStream({ mode: "translate", targetFormat: FORMATS.CLAUDE, sourceFormat: FORMATS.OPENAI, provider: "kiro", model: "test" }),
+      ctrl,
+      (message) => buildStreamErrorBytes(504, message, FORMATS.OPENAI),
+      50
+    );
+
+    const text = await readAll(out);
+    expect(text).toContain('"content":"hello"');
+    expect(text.match(/data: \[DONE\]/g)).toHaveLength(1);
+    expect(text.match(/data: \{"error"/g)).toHaveLength(1);
+    expect(text.endsWith("data: [DONE]\n\n")).toBe(true);
+  });
+
+  it("sends the error frame and [DONE] when a real translate stream stalls before its terminal", async () => {
+    const ctrl = createStreamController({ provider: "claude", model: "test" });
+    const upstream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg_abcdefgh", model: "claude-x", usage: { input_tokens: 5, output_tokens: 1 } } })}\n\n`,
+        ));
+        ctrl.signal.addEventListener("abort", () => controller.error(new Error("aborted")), { once: true });
+      },
+    });
+
+    const out = pipeWithDisconnect(
+      { body: upstream },
+      createSSEStream({ mode: "translate", targetFormat: FORMATS.CLAUDE, sourceFormat: FORMATS.OPENAI, provider: "claude", model: "test" }),
+      ctrl,
+      (message) => buildStreamErrorBytes(504, message, FORMATS.OPENAI),
+      50
+    );
+
+    const text = await readAll(out);
+    expect(text.match(/data: \[DONE\]/g)).toHaveLength(1);
+    expect(text.match(/data: \{"error"/g)).toHaveLength(1);
+    expect(text).toContain('"stream stall timeout"');
+    expect(text.endsWith("data: [DONE]\n\n")).toBe(true);
+  });
+});
+
+// The transform's [DONE] counts only once it reaches the client: an upstream
+// error after it was queued discards the queue, and the fallback must still go out.
+describe("a terminal queued but never read", () => {
+  it("still gets the error frame and [DONE] when the upstream resets before the client reads it", async () => {
+    const ts = createSSEStream({ mode: "passthrough", provider: "openai-compatible-x", model: "test" });
+    const writer = ts.writable.getWriter();
+    const out = createDisconnectAwareStream(
+      {
+        readable: ts.readable,
+        writable: { getWriter: () => ({ abort: () => Promise.resolve() }) },
+        finalizeOnAbort: ts.finalizeOnAbort,
+        terminalSent: ts.terminalSent,
+        terminalChunk: ts.terminalChunk,
+      },
+      makeController(),
+      (message = "upstream connection lost") => buildStreamErrorBytes(502, message, FORMATS.OPENAI),
+    );
+    const reader = out.getReader();
+    const decoder = new TextDecoder();
+
+    // The usage chunk and [DONE] arrive in one network chunk.
+    const usage = { id: "chatcmpl-abc12345", object: "chat.completion.chunk", created: 1, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } };
+    await writer.write(new TextEncoder().encode(`data: ${JSON.stringify(usage)}\n\ndata: [DONE]\n\n`));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(ts.terminalSent()).toBe(true);
+    // The connection resets before the client has read the queued [DONE].
+    await writer.abort(new Error("ECONNRESET")).catch(() => {});
+
+    let text = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    expect(text).toContain('"finish_reason":"stop"');
+    expect(text.match(/data: \[DONE\]/g)).toHaveLength(1);
+    expect(text.match(/data: \{"error"/g)).toHaveLength(1);
+    expect(text.endsWith("data: [DONE]\n\n")).toBe(true);
   });
 });
