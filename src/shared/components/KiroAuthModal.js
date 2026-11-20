@@ -98,7 +98,7 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
       }
 
       // Success - notify parent to refresh connections
-      onMethodSelect("import");
+      onMethodSelect("import", data);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -128,7 +128,7 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
         throw new Error(data.error || "CLIProxyAPI import failed");
       }
 
-      onMethodSelect("import-cli-proxy");
+      onMethodSelect("import-cli-proxy", data);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -170,7 +170,7 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
       }
 
       // Success - notify parent to refresh connections
-      onMethodSelect("api-key");
+      onMethodSelect("api-key", data);
     } catch (err) {
       setError(err.message);
     } finally {

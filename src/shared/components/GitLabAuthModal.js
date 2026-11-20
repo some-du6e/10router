@@ -71,7 +71,7 @@ export default function GitLabAuthModal({ isOpen, providerInfo, onSuccess, onClo
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Authentication failed");
-      onSuccess?.();
+      onSuccess?.(data);
       handleClose();
     } catch (err) {
       setError(err.message);
@@ -90,7 +90,7 @@ export default function GitLabAuthModal({ isOpen, providerInfo, onSuccess, onClo
         provider="gitlab"
         providerInfo={providerInfo}
         oauthMeta={oauthMeta}
-        onSuccess={() => { onSuccess?.(); handleClose(); }}
+        onSuccess={(result) => { onSuccess?.(result); handleClose(); }}
         onClose={() => { setShowOAuth(false); setOauthMeta(null); }}
       />
     );

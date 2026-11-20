@@ -97,7 +97,7 @@ export default function KiroSocialOAuthModal({ isOpen, provider, onSuccess, onCl
       if (!res.ok) throw new Error(data.error);
 
       setStep("success");
-      onSuccess?.();
+      onSuccess?.(data);
     } catch (err) {
       setError(err.message);
       setStep("error");

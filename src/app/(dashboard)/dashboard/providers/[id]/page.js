@@ -15,6 +15,8 @@ import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { translate } from "@/i18n/runtime";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
 import { getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
+import { reauthOutcome } from "@/shared/utils/reauthOutcome";
+import api from "@/shared/utils/api";
 import ModelRow from "./ModelRow";
 import PassthroughModelsSection from "./PassthroughModelsSection";
 import ConnectionRow from "./ConnectionRow";
@@ -771,24 +773,11 @@ export default function ProviderDetailPage() {
     });
   };
 
-  const handleOAuthSuccess = async () => {
-    if (reauthConnectionId) {
+  const handleOAuthSuccess = async (result) => {
+    const outcome = reauthOutcome(reauthConnectionId, result);
+    if (outcome === "confirmed") {
       try {
-        const res = await fetch(`/api/providers/${reauthConnectionId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ testStatus: "active", lastError: null, lastErrorAt: null, errorCode: null }),
-        });
-        if (!res.ok) {
-          let message = "Failed to clear the previous connection error";
-          try {
-            const data = await res.json();
-            if (data?.error) message = data.error;
-          } catch {
-            // Keep the fallback message when the API does not return JSON.
-          }
-          throw new Error(message);
-        }
+        await api.put(`/api/providers/${reauthConnectionId}`, { testStatus: "active", lastError: null, lastErrorAt: null, errorCode: null });
       } catch (error) {
         console.log("Error clearing re-auth status:", error);
         if (typeof window !== "undefined") {
@@ -798,6 +787,9 @@ export default function ProviderDetailPage() {
       }
     }
     await fetchConnections();
+    if (outcome === "unconfirmed") {
+      window.alert("This sign-in didn't re-authenticate the selected account, so that account keeps its error. If the sign-in added another account you don't need, remove it.");
+    }
     setShowOAuthModal(false);
     setReauthConnectionId(null);
   };

@@ -6,6 +6,7 @@ import Image from "next/image";
 import BaseUrlSelect from "./BaseUrlSelect";
 import { rememberEndpoint } from "./cliEndpointPresets";
 import ApiKeySelect from "./ApiKeySelect";
+import api from "@/shared/utils/api";
 
 const ENDPOINT = "/api/cli-tools/cowork-settings";
 
@@ -166,25 +167,12 @@ export default function CoworkToolCard({
   };
 
   const handleCreateCombo = async ({ name, models }) => {
-    try {
-      const res = await fetch("/api/combos", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, models }),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        setMessage({ type: "error", text: err.error || "Failed to create combo" });
-        return;
-      }
-      if (!selectedModels.includes(name)) {
-        setSelectedModels([...selectedModels, name]);
-      }
-      setComboModalOpen(false);
-      setMessage({ type: "success", text: `Combo "${name}" created and added.` });
-    } catch (error) {
-      setMessage({ type: "error", text: error.message });
+    await api.post("/api/combos", { name, models });
+    if (!selectedModels.includes(name)) {
+      setSelectedModels([...selectedModels, name]);
     }
+    setComboModalOpen(false);
+    setMessage({ type: "success", text: `Combo "${name}" created and added.` });
   };
 
   const handleAddModel = (model) => {
