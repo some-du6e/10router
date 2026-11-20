@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "src/sse/services/memoryAdmission.js"
+      - "src/shared/utils/cgroupMemory.ts"
       - "src/sse/handlers/chat.ts"
       - "src/app/api/v1/codex/responses/route.js"
       - "src/app/api/v1/codex/responses/compact/route.js"

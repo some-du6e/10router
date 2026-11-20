@@ -9,6 +9,8 @@ on:
       - "src/lib/requestDetailLabels.ts"
       - "src/lib/db/**"
       - "src/shared/utils/requestConversation.js"
+      - "src/shared/utils/jsonMeasure.ts"
+      - "src/shared/utils/cgroupMemory.ts"
       - "open-sse/utils/redact.js"
       - "src/shared/constants/providers.js"
       - "open-sse/handlers/chatCore.js"
@@ -55,6 +57,8 @@ jobs:
           unit/request-details-logging.test.js
           unit/request-details-stream-reuse.test.js
           unit/request-details-backlog.test.js
+          unit/request-details-single-stringify.test.js
+          unit/request-details-measure.test.js
       # set-state-in-effect: RequestDetailsTab.js's data-loading effects, which
       # predate this check.
       - name: Lint
@@ -66,9 +70,12 @@ jobs:
           src/app/api/usage/providers/route.js
           src/lib/requestDetailLabels.ts
           src/lib/db/repos/requestDetailsRepo.js
+          src/shared/utils/jsonMeasure.ts
+          src/shared/utils/cgroupMemory.ts
           tests/unit/request-details-tab.test.js
           tests/unit/request-details-backlog.test.js
           tests/unit/request-details-shutdown.test.js
+          tests/unit/request-details-measure.test.js
       # Fails only on errors in the new .ts files, so unrelated type errors
       # elsewhere don't block it.
       - name: Type check
@@ -79,7 +86,7 @@ jobs:
           set -e
           tail -5 tsc.log
           if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
-          if grep -E "requestDetailLabels\.ts|request-details/\[id\]/route\.ts" tsc.log; then exit 1; fi
+          if grep -E "requestDetailLabels\.ts|request-details/\[id\]/route\.ts|jsonMeasure\.ts|cgroupMemory\.ts" tsc.log; then exit 1; fi
 
   # Informational, for the PR's "Before": this branch's test against the base
   # branch's code. Every source file under open-sse/ and src/ that this branch
@@ -117,7 +124,7 @@ jobs:
         run: |
           status=0
           ./node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/before.json" \
-            unit/request-details-backlog.test.js || status=$?
+            unit/request-details-backlog.test.js unit/request-details-single-stringify.test.js unit/request-details-measure.test.js || status=$?
           VITEST_STATUS="$status" node --input-type=module -e '
             import { existsSync, readFileSync, appendFileSync } from "node:fs";
             const file = process.env.RUNNER_TEMP + "/before.json";

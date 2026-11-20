@@ -138,28 +138,68 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
     expect(idsWithFullData()).toEqual(ids(150, "many-", 3).slice(-25));
   });
 
-  it("holds no payload once a save returns, with full details on", async () => {
+  it("holds only the ring's rows' cut payloads once a save returns, and none after the write", async () => {
+    // Six refs per row (see saveTracked): the 15 rows pushed out of the ring hold nothing.
     const refs = await saveTracked(ids(40, "held-"), (id) => at(2, lastNumber(id)));
-    expect(await aliveAfterGc(refs)).toBe(0);
     expect(repo.__test__.ringSize()).toBe(25);
+    expect(await aliveAfterGc(refs.slice(0, 15 * 6))).toBe(0);
+    // The reply small enough to be stored as it is isn't held either.
+    expect(await aliveAfterGc(refs.filter((_, i) => i % 6 === 5))).toBe(0);
     await repo.__test__.flush();
+    expect(await aliveAfterGc(refs)).toBe(0);
     expect(idsWithFullData()).toContain("held-39");
   });
 
-  it("reuses a waiting start save's JSON for its stream's end save", async () => {
-    const request = bigRequest("reuse");
-    await db.saveRequestDetail(detail("reuse", at(2, 50), request));
-    // Through the end save and the flush that packs it.
-    const stringify = vi.spyOn(JSON, "stringify");
-    let serialized;
+  it("serializes no body when it saves, and none whose copy was pushed out", async () => {
+    const requests = Array.from({ length: 30 }, (_, i) => bigRequest(`lazy-${pad(i)}`, MB));
+    const providerRequests = requests.map((r, i) => bigRequest(`lazy-${pad(i)}-upstream`, MB));
+    const serialized = new Map();
+    const real = JSON.stringify;
+    let longest = 0;
+    const stringify = vi.spyOn(JSON, "stringify").mockImplementation(function (value, ...rest) {
+      if (requests.includes(value) || providerRequests.includes(value)) serialized.set(value, (serialized.get(value) || 0) + 1);
+      const out = real.call(JSON, value, ...rest);
+      if (typeof out === "string") longest = Math.max(longest, out.length);
+      return out;
+    });
     try {
-      await db.saveRequestDetail({ ...detail("reuse", at(2, 51), request), status: "ok", tokens: { prompt_tokens: 3, completion_tokens: 2 } });
+      for (let i = 0; i < 30; i++) {
+        await db.saveRequestDetail({ ...detail(`lazy-${pad(i)}`, at(2, 100 + i), requests[i]), providerRequest: providerRequests[i] });
+      }
+      // Whatever was serialized while saving, nothing near a body's size (1 MB
+      // here): the capped record, at most 128 KB a field, is the largest.
+      expect(longest).toBeLessThan(512 * 1024);
+      expect(serialized.size).toBe(0);
       await repo.__test__.flush();
-      serialized = stringify.mock.calls.filter(([value]) => value === request).length;
     } finally {
       stringify.mockRestore();
     }
-    expect(serialized).toBe(0);
+    // The newest 25 rows' payloads, once each, when the write packed them.
+    for (let i = 0; i < 30; i++) {
+      const expected = i < 5 ? undefined : 1;
+      expect(serialized.get(requests[i])).toBe(expected);
+      expect(serialized.get(providerRequests[i])).toBe(expected);
+    }
+    expect((await db.getRequestDetailFullData("lazy-29")).providerRequest).toEqual(providerRequests[29]);
+  });
+
+  it("serializes a stream's body once when its end save lands before its start save is written", async () => {
+    const request = bigRequest("reuse");
+    const stringify = vi.spyOn(JSON, "stringify");
+    let atSave;
+    let atWrite;
+    try {
+      // Newer than the rows above, so the trim keeps this row's full copy.
+      await db.saveRequestDetail(detail("reuse", at(2, 300), request));
+      await db.saveRequestDetail({ ...detail("reuse", at(2, 301), request), status: "ok", tokens: { prompt_tokens: 3, completion_tokens: 2 } });
+      atSave = stringify.mock.calls.filter(([value]) => value === request).length;
+      await repo.__test__.flush();
+      atWrite = stringify.mock.calls.filter(([value]) => value === request).length - atSave;
+    } finally {
+      stringify.mockRestore();
+    }
+    expect(atSave).toBe(0);
+    expect(atWrite).toBe(1);
     expect((await db.getRequestDetailFullData("reuse")).request).toEqual(request);
   });
 
@@ -321,15 +361,15 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
     }
   });
 
-  it("lets a dropped body's message strings go while its full copy waits", async () => {
+  it("holds a waiting copy's message once, not again as JSON or in its preview", async () => {
     // A save whose message is one 12 MB string (under the 16 MB copy limit): its
-    // copy waits in the ring, but neither the ring nor the capped preview may
-    // keep the original string as well.
+    // copy waits in the ring, which holds the message itself; neither its JSON
+    // nor a slice of it in the capped preview may be held as well.
     const CHARS = 12 * MB;
     const before = await heapAfterGc();
     await saveHugeMessage("huge-message", CHARS);
     expect(repo.__test__.ringSize()).toBeGreaterThan(0);
-    // The waiting copy's JSON (one byte a char here), not the string twice.
+    // The message (one byte a char here), not twice.
     expect((await heapAfterGc()) - before).toBeLessThan(CHARS * 1.5);
     await repo.__test__.flush();
     expect((await db.getRequestDetailFullData("huge-message")).request.messages[0].content).toHaveLength(CHARS);

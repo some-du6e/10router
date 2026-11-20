@@ -17,6 +17,7 @@ The codebase is moving from JavaScript to TypeScript one file at a time:
 - Write new code in `src/` and `open-sse/` as `.ts`, or `.tsx` when it renders JSX.
 - When a change substantially rewrites an existing `.js` module, convert that module in the same change, provided the conversion stays contained to it.
 - Keep import specifiers ending in `.js`. Bundler resolution maps `./foo.js` to `./foo.ts`, so converting a file changes none of its importers.
+- Plain-node entry points, such as the `.github/e2e/*/seed.mjs` seeds, `scripts/seed-demo.mjs` and `npm run dev:demo`, get that `.js`→`.ts` mapping and the `@/` alias only through `node --experimental-loader=./scripts/resolve-src-alias.mjs`. Node strips the types itself, which needs Node 22.18+.
 - Finish with `bun run typecheck` green. Converted files are checked under `strict`; untouched JavaScript is unchecked (`checkJs: false`).
 - Everything outside `src/` and `open-sse/` stays JavaScript: `cli/`, `tests/`, `scripts/`, `gitbook/`, and root config files. `custom-server.js` and `cli/` are CommonJS that ships uncompiled, so converting them would break publishing.
 - `scripts/generate-registry-index.mjs` only lists `.js` files in `open-sse/providers/registry/`. Update its filter before converting a registry entry, or the provider silently disappears.
