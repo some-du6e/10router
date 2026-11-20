@@ -6,6 +6,8 @@ on:
       - "src/lib/db/**"
       - "src/lib/usageDb.js"
       - "open-sse/handlers/chatCore.js"
+      - "package.json"
+      - "Dockerfile"
       - "tests/package.json"
       - "tests/vitest.config.js"
       - "tests/vitest.shared.js"
