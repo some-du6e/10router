@@ -186,6 +186,69 @@ describe("request details memory caps", () => {
     expect(stringify.mock.calls.some(([value]) => value === request)).toBe(false);
   });
 
+  it("make no full copy of a payload they can't measure that is over 16 MB of UTF-8", () => {
+    const { limits, truncateField, fullCopySource } = __test__;
+    const cap = limits.fullRingMaxBytes;
+    // A Date sends the cap through JSON.stringify; 6M three-byte characters are 18 MB of UTF-8.
+    const request = { at: new Date(0), content: "€".repeat(6 * MB) };
+    try {
+      // Room for it in the ring, so only the UTF-8 limit can refuse it.
+      limits.fullRingMaxBytes = 256 * MB;
+      const record = { request: truncateField(request, 5 * 1024) };
+      expect(record.request._originalSize).toBeLessThan(16 * MB);
+      const stringify = vi.spyOn(JSON, "stringify");
+      expect(fullCopySource({ request }, record)).toBeNull();
+      expect(stringify.mock.calls.some(([value]) => value === request)).toBe(false);
+    } finally {
+      limits.fullRingMaxBytes = cap;
+    }
+  });
+
+  it("size a full copy from the walk that capped it, and walk nothing again on a stream's end save", () => {
+    const { limits, truncateField, fullCopySource } = __test__;
+    const cap = limits.fullRingMaxBytes;
+    // Over 16M/3 characters, so the copy's UTF-8 size has to be known exactly.
+    const message = { role: "user", content: "a".repeat(6 * MB) };
+    const request = { messages: [message] };
+    const keys = vi.spyOn(Object, "keys");
+    const walks = () => keys.mock.calls.filter(([value]) => value === message).length;
+    try {
+      limits.fullRingMaxBytes = 256 * MB;
+      const source = fullCopySource({ request }, { request: truncateField(request, 5 * 1024) });
+      expect(source.utf8).toBe(Buffer.byteLength(JSON.stringify({ request }), "utf8"));
+      expect(walks()).toBe(1);
+      // The end save: the same request, capped and sized from the first save.
+      expect(fullCopySource({ request }, { request: truncateField(request, 5 * 1024) }).utf8).toBe(source.utf8);
+      expect(walks()).toBe(1);
+    } finally {
+      limits.fullRingMaxBytes = cap;
+    }
+  });
+
+  it("hand gzip one buffer of the copy's UTF-8, not a joined string", async () => {
+    const inputs = [];
+    vi.resetModules();
+    vi.doMock("node:zlib", async (importOriginal) => {
+      const zlib = await importOriginal();
+      return { ...zlib, gzip: (input, ...rest) => { inputs.push(input); return zlib.gzip(input, ...rest); } };
+    });
+    try {
+      const fresh = await import("../../src/lib/db/repos/requestDetailsRepo.js");
+      const { truncateField, fullCopySource, packSource } = fresh.__test__;
+      const request = { messages: [{ role: "user", content: "ü😀\n".repeat(20000) }] };
+      const providerRequest = { messages: [{ role: "user", content: "x".repeat(50000) }] };
+      const item = { request, providerRequest };
+      const record = { request: truncateField(request, 1024), providerRequest: truncateField(providerRequest, 1024) };
+      expect(await packSource(fullCopySource(item, record))).toEqual(expect.any(String));
+      expect(inputs).toHaveLength(1);
+      expect(Buffer.isBuffer(inputs[0])).toBe(true);
+      expect(inputs[0].length).toBe(Buffer.byteLength(JSON.stringify(item), "utf8"));
+    } finally {
+      vi.doUnmock("node:zlib");
+      vi.resetModules();
+    }
+  });
+
   it("pack the same bytes the joined JSON gives, measured or not", async () => {
     const { truncateField, fullCopySource, packSource } = __test__;
     const { gunzipSync } = await import("node:zlib");

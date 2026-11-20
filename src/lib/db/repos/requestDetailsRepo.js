@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { structuredPreview } from "../../../shared/utils/requestConversation.js";
-import { jsonUtf8Length, measureJson } from "../../../shared/utils/jsonMeasure.js";
+import { measureJson } from "../../../shared/utils/jsonMeasure.js";
 import { readCgroupMemoryLimit } from "../../../shared/utils/cgroupMemory.js";
 import { dropSensitiveHeaders, isBinaryBody, binaryBodyMarker } from "../../../../open-sse/utils/redact.js";
 
@@ -19,7 +19,7 @@ const FULL_DATA_KEEP_ROWS = 25;
 const FULL_DATA_MAX_BYTES = 16 * 1024 * 1024;
 // JSON sizes are counted at 2 bytes a character: V8 stores a whole string that
 // way once it holds any character above U+00FF, which prompts almost always do.
-// A packed copy is base64, one byte a character.
+// The ring's entries and the queued capped records are counted this way.
 const JSON_BYTES_PER_CHAR = 2;
 // The most the payloads waiting for a full copy may take, counted by the
 // size of their JSON (see fullRing).
@@ -161,18 +161,21 @@ function sanitizeHeaders(headers) {
 // the costly part of a save, so the second save reuses the first's capped
 // record.
 const cappedPayloads = new WeakMap();   // payload object → its capped copy
+// Capped record → the UTF-8 bytes of its payload's JSON, from the same walk
+// that capped it, so a full copy is sized without another one.
+const payloadBytes = new WeakMap();
 
 // The text a full copy's JSON has around its payloads: `{"key":`, `,"key":`
 // and the closing `}`. Keys are ASCII, so these are their UTF-8 bytes too.
 const partHead = (key, i) => `${i ? "," : "{"}${JSON.stringify(key)}:`;
 const PARTS_TAIL = "}";
 
-// UTF-8 bytes of a full copy's JSON, read off its payloads without serializing
-// them, or undefined when one can't be measured that way.
+// UTF-8 bytes of a full copy's JSON, from what truncateField recorded for
+// each cut payload, or undefined when it recorded none.
 function fullCopyBytes(parts) {
   let bytes = PARTS_TAIL.length;
   for (let i = 0; i < parts.length; i++) {
-    const n = jsonUtf8Length(parts[i][1]);
+    const n = payloadBytes.get(parts[i][2]);
     if (n === undefined) return undefined;
     bytes += partHead(parts[i][0], i).length + n;
   }
@@ -181,56 +184,58 @@ function fullCopyBytes(parts) {
 
 // What a row's full copy is made from, or null when there is none to make:
 // the payloads truncateField cut, by reference, with the size of their JSON
-// (truncateField measured it) at 2 bytes a character. Nothing is serialized
-// here: a copy that is pushed out of the ring, or replaced by a later save of
-// its row (a stream's end save), is never serialized at all. One over the
-// ring's byte cap, or over FULL_DATA_MAX_BYTES of UTF-8, is skipped.
+// at 2 bytes a character and its exact UTF-8 size. Nothing is serialized or
+// walked here: a copy that is pushed out of the ring, or replaced by a later
+// save of its row (a stream's end save), is never serialized at all. One over
+// the ring's byte cap, or over FULL_DATA_MAX_BYTES of UTF-8, is skipped.
 function fullCopySource(item, record) {
   const parts = [];
   let chars = 0;
   for (const key of PAYLOAD_KEYS) {
     if (record[key]?._truncated === true && item[key] != null) {
-      parts.push([key, item[key]]);
+      parts.push([key, item[key], record[key]]);
       chars += record[key]._originalSize ?? 0;
     }
   }
   if (!parts.length) return null;
-  // UTF-8 takes at least a byte and at most 3 per UTF-16 unit, so the exact
-  // size is measured only when those bounds straddle the limit; a payload
-  // that can't be measured is skipped then.
   if (chars > FULL_DATA_MAX_BYTES || chars * JSON_BYTES_PER_CHAR > limits.fullRingMaxBytes) return null;
-  if (chars * 3 > FULL_DATA_MAX_BYTES && !(fullCopyBytes(parts) <= FULL_DATA_MAX_BYTES)) return null;
-  return { parts, bytes: chars * JSON_BYTES_PER_CHAR };
+  const utf8 = fullCopyBytes(parts);
+  // UTF-8 takes at most 3 bytes per UTF-16 unit, so a copy is skipped only
+  // when that bound is over the limit and its exact size is too, or unknown.
+  if (chars * 3 > FULL_DATA_MAX_BYTES && !(utf8 <= FULL_DATA_MAX_BYTES)) return null;
+  return { parts, bytes: chars * JSON_BYTES_PER_CHAR, utf8 };
 }
 
-// A full copy's JSON as UTF-8, written straight into one buffer: no joined
-// string, so nothing is flattened, and only one payload's JSON is alive at a
-// time. The same bytes Buffer.from(JSON.stringify(...)) of the joined object
-// gives. Null when it can't be serialized or is over FULL_DATA_MAX_BYTES.
-function fullCopyBuffer(parts) {
-  const total = fullCopyBytes(parts);
-  if (total !== undefined && total > FULL_DATA_MAX_BYTES) return null;
-  // Measured: one buffer of the exact size. Otherwise one per payload, joined.
-  const buffer = total === undefined ? null : Buffer.allocUnsafe(total);
-  const pieces = [];
+// A full copy's JSON as UTF-8, written straight into one buffer of its exact
+// size: no joined string, so nothing is flattened. The same bytes
+// Buffer.from(JSON.stringify(...)) of the joined object gives. With the size
+// known (`utf8`) only one payload's JSON is alive at a time; otherwise each
+// is serialized first and sized natively. Null when it can't be serialized or
+// is over FULL_DATA_MAX_BYTES.
+function fullCopyBuffer(parts, utf8) {
+  const serialize = (value) => {
+    const json = JSON.stringify(value);
+    if (typeof json !== "string") throw new Error("payload has no JSON");
+    return json;
+  };
+  const known = utf8 !== undefined;
+  const jsons = known ? null : parts.map(([, value]) => serialize(value));
+  const total = known ? utf8 : jsons.reduce((sum, json, i) => sum + partHead(parts[i][0], i).length + Buffer.byteLength(json, "utf8"), PARTS_TAIL.length);
+  if (total > FULL_DATA_MAX_BYTES) return null;
+  const buffer = Buffer.allocUnsafe(total);
   let at = 0;
   const put = (text) => {
-    if (!buffer) return pieces.push(Buffer.from(text, "utf8"));
     const n = buffer.write(text, at, "utf8");
-    // A short write means the measured size was off; never store a cut copy.
+    // A short write means the size was off; never store a cut copy.
     if (n !== Buffer.byteLength(text, "utf8")) throw new Error("full copy size mismatch");
     at += n;
   };
   for (let i = 0; i < parts.length; i++) {
     put(partHead(parts[i][0], i));
-    const json = JSON.stringify(parts[i][1]);
-    if (typeof json !== "string") throw new Error("payload has no JSON");
-    put(json);
+    put(known ? serialize(parts[i][1]) : jsons[i]);
   }
   put(PARTS_TAIL);
-  if (buffer) return at === total ? buffer : null;
-  const joined = Buffer.concat(pieces);
-  return joined.length > FULL_DATA_MAX_BYTES ? null : joined;
+  return at === total ? buffer : null;
 }
 
 // Serializes and gzips a full copy's source, or null: only for a row being
@@ -238,7 +243,7 @@ function fullCopyBuffer(parts) {
 // streams.
 async function packSource(source) {
   try {
-    const input = fullCopyBuffer(source.parts);
+    const input = fullCopyBuffer(source.parts, source.utf8);
     if (!input) return null;
     return (await gzipAsync(input)).toString("base64");
   } catch {
@@ -356,7 +361,7 @@ function truncateField(obj, maxSize) {
     } catch {
       return { _truncated: true, _originalSize: null, _preview: "[Payload could not be serialized]" };
     }
-    measured = { length: str.length, prefix: str };
+    measured = { length: str.length, prefix: str, bytes: Buffer.byteLength(str, "utf8") };
   }
   if (measured.length > maxSize) {
     const truncated = {
@@ -371,6 +376,7 @@ function truncateField(obj, maxSize) {
     }
     const remaining = maxSize - JSON.stringify(truncated).length;
     truncated._structuredPreview = structuredPreview(obj, remaining);
+    payloadBytes.set(truncated, measured.bytes);
     if (typeof obj === "object") cappedPayloads.set(obj, { maxSize, truncated });
     return truncated;
   }

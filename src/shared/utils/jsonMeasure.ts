@@ -34,25 +34,48 @@ export function quotedLength(s: string): number {
 
 /** UTF-8 bytes of JSON.stringify(s), quotes included. */
 export function quotedUtf8Length(s: string): number {
-  if (!NOT_PLAIN_ASCII.test(s)) return s.length + 2;
-  let n = 2;
+  quotedSizes(s);
+  return sizedBytes;
+}
+
+// quotedSizes' results, in module state so a call allocates nothing.
+let sizedLength = 0;
+let sizedBytes = 0;
+
+// Both sizes of JSON.stringify(s) in one pass: characters into sizedLength,
+// UTF-8 bytes into sizedBytes.
+function quotedSizes(s: string): void {
+  if (!NOT_PLAIN_ASCII.test(s)) {
+    sizedLength = sizedBytes = s.length + 2;
+    return;
+  }
+  let length = s.length + 2;
+  let bytes = 2;
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
-    if (c < 0x20) n += shortEscape(c) ? 2 : 6;
-    else if (c === 0x22 || c === 0x5c) n += 2;
-    else if (c < 0x80) n += 1;
-    else if (c < 0x800) n += 2;
+    if (c < 0x20) {
+      const extra = shortEscape(c) ? 1 : 5;
+      length += extra;
+      bytes += extra + 1;
+    } else if (c === 0x22 || c === 0x5c) {
+      length += 1;
+      bytes += 2;
+    } else if (c < 0x80) bytes += 1;
+    else if (c < 0x800) bytes += 2;
     else if (c >= 0xd800 && c <= 0xdfff) {
       const next = s.charCodeAt(i + 1);
       if (c <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
-        n += 4;
+        bytes += 4;
         i++;
       } else {
-        n += 6; // \udxxx
+        // \udxxx
+        length += 5;
+        bytes += 6;
       }
-    } else n += 3;
+    } else bytes += 3;
   }
-  return n;
+  sizedLength = length;
+  sizedBytes = bytes;
 }
 
 // Far below the nesting JSON.stringify overflows the stack on (about 4,500
@@ -118,37 +141,44 @@ export interface JsonMeasure {
   length: number;
   /** The start of JSON.stringify(value): at least `prefixChars` characters when it has that many. */
   prefix: string;
+  /** Buffer.byteLength(JSON.stringify(value), "utf8") */
+  bytes: number;
 }
 
 /**
- * The length of JSON.stringify(value) and its first `prefixChars` characters
- * (a few more at most, where a short token crosses the cut). Plain JSON data
- * only, as a parsed request is; undefined for anything else, which the caller
- * serializes itself.
+ * The length of JSON.stringify(value), its UTF-8 size and its first
+ * `prefixChars` characters (a few more at most, where a short token crosses
+ * the cut), in one walk. Plain JSON data only, as a parsed request is;
+ * undefined for anything else, which the caller serializes itself.
  */
 export function measureJson(value: unknown, prefixChars: number): JsonMeasure | undefined {
   if (skipped(value)) return undefined;
   let length = 0;
+  let bytes = 0;
   let prefix = "";
   try {
     walkJson(
       value,
+      // Every token but a string is ASCII.
       (text) => {
         length += text.length;
+        bytes += text.length;
         if (prefix.length < prefixChars) prefix += text;
       },
       (s) => {
-        const n = quotedLength(s);
+        quotedSizes(s);
+        const n = sizedLength;
         const need = prefixChars - prefix.length;
         // One character past the cut, so a surrogate pair there is escaped as a pair.
         if (need > 0) prefix += n <= need ? JSON.stringify(s) : JSON.stringify(s.slice(0, need + 1)).slice(0, need);
         length += n;
+        bytes += sizedBytes;
       },
     );
   } catch {
     return undefined;
   }
-  return { length, prefix };
+  return { length, prefix, bytes };
 }
 
 /**
@@ -156,13 +186,5 @@ export function measureJson(value: unknown, prefixChars: number): JsonMeasure | 
  * measureJson can't measure.
  */
 export function jsonUtf8Length(value: unknown): number | undefined {
-  if (skipped(value)) return undefined;
-  let bytes = 0;
-  try {
-    // Every token but a string is ASCII.
-    walkJson(value, (text) => { bytes += text.length; }, (s) => { bytes += quotedUtf8Length(s); });
-  } catch {
-    return undefined;
-  }
-  return bytes;
+  return measureJson(value, 0)?.bytes;
 }
