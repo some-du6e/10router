@@ -5,13 +5,7 @@ import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { dbg } from "../utils/debugLog.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from "../providers/shared.js";
 import { appendUrlPath, resolveOpenAICompatibleApiType } from "../services/provider.js";
-import { inlineToolChangesWithoutBeta, sentBetas } from "../utils/anthropicBeta.js";
-
-// The beta flags in `headers`, in a fixed order: all that the beta-gated body
-// edits read from the headers.
-export function betaFlagsKey(headers) {
-  return [...sentBetas(headers)].sort().join(",");
-}
+import { betaFlagsKey, inlineToolChangesWithoutBeta } from "../utils/anthropicBeta.js";
 
 // What `describe` says `method` reads, called on `executor`. null when the
 // executor runs a `method` other than the one defined next to `describe`
@@ -149,10 +143,10 @@ export class BaseExecutor {
     const headers = this.buildHeaders(credentials, stream, url, model);
     const finalizeInputs = statedInputs(this, "finalizeBodyInputs", "finalizeBody", [headers, credentials]);
     const key = finalizeInputs == null ? null : JSON.stringify([this.provider, model, stream, transformInputs, finalizeInputs]);
-    const last = cache?.last;
+    const last = cache.last;
     if (key !== null && last?.key === key && last.source === body) return { headers, built: last };
     const built = builtBody(this.finalizeBody(this.transformRequest(model, body, stream, credentials), headers, credentials), key, body);
-    if (key !== null && cache) cache.last = built;
+    if (key !== null) cache.last = built;
     return { headers, built };
   }
 

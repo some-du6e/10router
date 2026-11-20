@@ -184,10 +184,14 @@ describe("DefaultExecutor", () => {
     // json_schema on a compatible node makes transformRequest build a new body.
     const body = { ...prompt(), response_format: { type: "json_schema", json_schema: { schema: { type: "object" } } } };
     const untouched = structuredClone(body);
+    const transform = vi.spyOn(DefaultExecutor.prototype, "transformRequest");
+    const finalize = vi.spyOn(DefaultExecutor.prototype, "finalizeBody");
 
     const out = await ex.execute({ model: MODEL, body, stream: true, credentials: creds() });
 
     expect(out.response.status).toBe(200);
+    expect(transform).toHaveBeenCalledTimes(1);
+    expect(finalize).toHaveBeenCalledTimes(1);
     expect(out.transformedBody).not.toBe(body);
     expect(stringified(out.transformedBody)).toBe(1);
     const bodies = sentBodies();
@@ -242,29 +246,58 @@ describe("DefaultExecutor", () => {
   });
 });
 
-describe("chatCore's send after a 401 token refresh", () => {
-  it("reuses the body the first send built", async () => {
+describe("Kiro's integrity gate", () => {
+  it("keeps no hold on chatCore's cache: its mid-stream repair resend builds its own", async () => {
+    const ex = new KiroExecutor();
+    const gate = vi.spyOn(KiroExecutor.prototype, "attachIntegrityGate").mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(res(200));
+    const bodyCache = {};
+
+    await ex.execute({ model: MODEL, body: { conversationState: {} }, stream: true, credentials: { accessToken: "t", providerSpecificData: {} }, bodyCache });
+
+    expect(bodyCache.last).toBeTruthy();
+    expect(gate).toHaveBeenCalledTimes(1);
+    expect(gate.mock.calls[0][1].bodyCache).toBeNull();
+  });
+});
+
+describe("chatCore", () => {
+  const quietLog = () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() });
+  const chatReply = () => jsonRes(200, {
+    id: "c1", object: "chat.completion", model: MODEL,
+    choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+    usage: { prompt_tokens: 1, completion_tokens: 1 },
+  });
+  const chat = (credentials, { stream = false, connectionId = "conn-1" } = {}) => {
+    const body = { ...prompt(), stream };
+    return handleChatCore({
+      body: structuredClone(body),
+      modelInfo: { provider: COMPATIBLE, model: MODEL },
+      credentials,
+      clientRawRequest: { endpoint: "/v1/chat/completions", body, headers: {} },
+      connectionId,
+      log: quietLog(),
+    });
+  };
+  // Every bodyCache chatCore hands this executor.
+  function cachesSeen(ex) {
+    const seen = [];
+    const execute = ex.execute;
+    vi.spyOn(ex, "execute").mockImplementation(function (args) {
+      seen.push(args.bodyCache);
+      return execute.call(this, args);
+    });
+    return seen;
+  }
+
+  it("reuses the body the first send built for the send after a 401 token refresh", async () => {
     const ex = getExecutor(COMPATIBLE);
     vi.spyOn(ex, "refreshCredentials").mockResolvedValue({ accessToken: "new-access" });
     const transform = vi.spyOn(DefaultExecutor.prototype, "transformRequest");
     const finalize = vi.spyOn(DefaultExecutor.prototype, "finalizeBody");
-    fetchMock
-      .mockResolvedValueOnce(jsonRes(401, { error: { message: "expired" } }))
-      .mockResolvedValueOnce(jsonRes(200, {
-        id: "c1", object: "chat.completion", model: MODEL,
-        choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
-        usage: { prompt_tokens: 1, completion_tokens: 1 },
-      }));
-    const body = { ...prompt(), stream: false };
+    fetchMock.mockResolvedValueOnce(jsonRes(401, { error: { message: "expired" } })).mockResolvedValueOnce(chatReply());
 
-    await handleChatCore({
-      body: structuredClone(body),
-      modelInfo: { provider: COMPATIBLE, model: MODEL },
-      credentials: { accessToken: "old-access", refreshToken: "refresh", providerSpecificData: { baseUrl: A } },
-      clientRawRequest: { endpoint: "/v1/chat/completions", body, headers: {} },
-      connectionId: "conn-1",
-      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-    });
+    await chat({ accessToken: "old-access", refreshToken: "refresh", providerSpecificData: { baseUrl: A } });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const [first, second] = fetchMock.mock.calls;
@@ -273,5 +306,85 @@ describe("chatCore's send after a 401 token refresh", () => {
     expect(second[1].body).toBe(first[1].body);
     expect(transform).toHaveBeenCalledTimes(1);
     expect(finalize).toHaveBeenCalledTimes(1);
+  });
+
+  it("empties the cache before the reply streams", async () => {
+    const caches = cachesSeen(getExecutor(COMPATIBLE));
+    const encoder = new TextEncoder();
+    const chunk = (content, finish = null) => `data: ${JSON.stringify({
+      id: "c1", object: "chat.completion.chunk", model: MODEL, choices: [{ index: 0, delta: { content }, finish_reason: finish }],
+    })}\n\n`;
+    let pulls = 0;
+    let heldWhileStreaming = "never read";
+    // The first chunk is queued as the response is made; the second is pulled
+    // only once something reads the stream, which chatCore does after its sends.
+    const upstream = new ReadableStream({
+      pull(controller) {
+        pulls++;
+        if (pulls === 1) return controller.enqueue(encoder.encode(chunk("hel")));
+        heldWhileStreaming = caches[0]?.last;
+        controller.enqueue(encoder.encode(`${chunk("lo", "stop")}data: [DONE]\n\n`));
+        controller.close();
+      },
+    });
+    fetchMock.mockResolvedValueOnce(new Response(upstream, { status: 200, headers: { "content-type": "text/event-stream" } }));
+
+    const result = await chat({ accessToken: "t", providerSpecificData: { baseUrl: A } }, { stream: true });
+    await result.response.text();
+
+    expect(caches).toHaveLength(1);
+    expect(heldWhileStreaming).toBeNull();
+  });
+
+  it("gives each account attempt a cache of its own", async () => {
+    const caches = cachesSeen(getExecutor(COMPATIBLE));
+    const finalize = vi.spyOn(DefaultExecutor.prototype, "finalizeBody");
+    fetchMock.mockResolvedValueOnce(chatReply()).mockResolvedValueOnce(chatReply());
+
+    await chat({ accessToken: "account-a", providerSpecificData: { baseUrl: A } }, { connectionId: "conn-a" });
+    await chat({ accessToken: "account-b", providerSpecificData: { baseUrl: A } }, { connectionId: "conn-b" });
+
+    expect(caches).toHaveLength(2);
+    expect(caches[0]).not.toBe(caches[1]);
+    expect(finalize).toHaveBeenCalledTimes(2);
+    expect(finalize.mock.results[1].value).not.toBe(finalize.mock.results[0].value);
+    const [a, b] = fetchMock.mock.calls;
+    expect(a[1].headers.Authorization).toBe("Bearer account-a");
+    expect(b[1].headers.Authorization).toBe("Bearer account-b");
+  });
+
+  it("drops a rejected beta's field on the executor's beta retry, which shares the cache", async () => {
+    const provider = "anthropic-compatible-reuse-test";
+    const BETA = "context-management-2025-06-27";
+    const CONTEXT_MANAGEMENT = { edits: [{ type: "clear_thinking_20251015", keep: "all" }] };
+    const BETA_400 = `{"message":"Unexpected value(s) \`${BETA}\` for the \`anthropic-beta\` header. Please consult our documentation or try again without the header."}`;
+    const ex = getExecutor(provider);
+    ex.config = { ...ex.config, headers: { ...ex.config.headers, "anthropic-beta": BETA } };
+    const caches = cachesSeen(ex);
+    fetchMock
+      .mockResolvedValueOnce(new Response(BETA_400, { status: 400, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(jsonRes(200, {
+        id: "msg_1", type: "message", role: "assistant", model: MODEL,
+        content: [{ type: "text", text: "ok" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 },
+      }));
+    const body = {
+      model: MODEL, max_tokens: 1024, stream: false, context_management: CONTEXT_MANAGEMENT,
+      messages: [{ role: "user", content: [{ type: "text", text: "x".repeat(64 * 1024) }] }],
+    };
+
+    await handleChatCore({
+      body: structuredClone(body),
+      modelInfo: { provider, model: MODEL },
+      credentials: { apiKey: "k", providerSpecificData: { baseUrl: "https://gateway.example.test/v1" } },
+      clientRawRequest: { endpoint: "/v1/messages", body, headers: {} },
+      connectionId: "conn-1",
+      log: quietLog(),
+    });
+
+    expect(caches).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [first, second] = sentBodies().map((b) => JSON.parse(b));
+    expect(first.context_management).toEqual(CONTEXT_MANAGEMENT);
+    expect(second).not.toHaveProperty("context_management");
   });
 });

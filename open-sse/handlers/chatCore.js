@@ -512,7 +512,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   let authRetried = false;
   // The last body the executor built for this account, so the send after a
   // token refresh reuses it (executors/base.js prepareSend).
-  let bodyCache = {};
+  const bodyCache = {};
   try {
     const result = await runAttempt({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected, onHeadersBudget, imageCacheKey, bodyCache });
     upstreamRespondedAt = Date.now();
@@ -601,8 +601,9 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
       log?.warn?.("TOKEN", `${provider.toUpperCase()} | refresh threw: ${e.message}`);
     }
   }
-  // No more sends from here: the body string isn't held for the stream.
-  bodyCache = null;
+  // chatCore sends nothing more, so the stream doesn't keep the body string
+  // alive. Emptied, not dropped: executor closures still hold the cache.
+  bodyCache.last = null;
 
   // Hung up with an error in hand: a disconnect, not a failure. Either during
   // the token refresh (a retry already sent with the new token is charged), or

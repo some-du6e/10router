@@ -1,4 +1,4 @@
-import { BaseExecutor, betaFlagsKey } from "./base.js";
+import { BaseExecutor } from "./base.js";
 import { PROVIDERS, PROVIDER_OAUTH } from "../config/providers.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_API_HOST, ANTHROPIC_COMPAT_BASE, selectAnthropicBeta } from "../providers/shared.js";
 import { appendUrlPath, resolveOpenAICompatibleApiType, getTargetFormat } from "../services/provider.js";
@@ -11,7 +11,7 @@ import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
 import { relaxForcedToolChoiceForThinking, relaxForcedChatToolChoiceForClaude } from "../translator/concerns/toolChoice.js";
 import { FORMATS } from "../translator/formats.js";
 import {
-  dropFirstPartyBetas, dropFirstPartyFieldsWithoutBeta, filterBetaHeaders, isAnthropicApiUrl, parseRejectedBetas, sentBetas, stripBetaBodyFields, splitBetas,
+  betaFlagsKey, dropFirstPartyBetas, dropFirstPartyFieldsWithoutBeta, filterBetaHeaders, isAnthropicApiUrl, parseRejectedBetas, sentBetas, stripBetaBodyFields, splitBetas,
   BETA_HEADER_KEYS,
 } from "../utils/anthropicBeta.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
