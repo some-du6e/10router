@@ -85,9 +85,17 @@ describe("request detail logging", () => {
   });
 
   it("skips payloads whose truncated size already exceeds the limit", async () => {
-    const record = { request: { _truncated: true, _originalSize: 17 * 1024 * 1024 } };
-    const item = { request: { toJSON() { throw new Error("should not serialize"); } } };
-    expect(await packFullData(item, record)).toBeNull();
+    // A real cut over 16M characters: rejected from its measured size, never serialized.
+    const big = { messages: [{ role: "user", content: "a".repeat(17 * 1024 * 1024) }] };
+    const record = { request: requestDetailsTest.truncateField(big, 5 * 1024) };
+    expect(record.request._truncated).toBe(true);
+    const stringify = vi.spyOn(JSON, "stringify");
+    try {
+      expect(await packFullData({ request: big }, record)).toBeNull();
+      expect(stringify.mock.calls.filter(([value]) => value === big)).toHaveLength(0);
+    } finally {
+      stringify.mockRestore();
+    }
   });
 
   it("keeps Responses API input instead of replacing it with empty messages", () => {

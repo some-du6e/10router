@@ -210,7 +210,7 @@ describe("request details memory caps", () => {
   it("size a full copy from the walk that capped it, and walk nothing again on a stream's end save", () => {
     const { limits, truncateField, fullCopySource } = __test__;
     const cap = limits.fullRingMaxBytes;
-    // Over 16M/3 characters, so the copy's UTF-8 size has to be known exactly.
+    // A big cut payload: the copy is sized from the bytes its capping walk recorded.
     const message = { role: "user", content: "a".repeat(6 * MB) };
     const request = { messages: [message] };
     const keys = vi.spyOn(Object, "keys");
