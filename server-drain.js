@@ -11,6 +11,8 @@
 // standalone build, the Docker image and the CLI package, outside Next's
 // dependency tracing.
 
+const fs = require("fs");
+
 const DEFAULT_DRAIN_TIMEOUT_MS = 180000;
 // setTimeout's ceiling; a longer delay fires at once.
 const MAX_DRAIN_TIMEOUT_MS = 2147483647;
@@ -350,12 +352,71 @@ function installShutdownDrain(proc, drain) {
 
 const mb = (bytes) => Math.round(bytes / 1048576);
 
+// How long one line may wait for room in a full stdout/stderr pipe.
+const WRITE_BUDGET_MS = 1000;
+const WRITE_RETRY_MS = 5;
+let pauseCell = null;
+
+function pause(ms) {
+  try {
+    pauseCell ||= new Int32Array(new SharedArrayBuffer(4));
+    Atomics.wait(pauseCell, 0, 0, ms);
+  } catch { /* retry at once */ }
+}
+
+/**
+ * Write one line to stdout before returning, falling back to stderr. On Linux
+ * process.stdout writes to a pipe (Docker's log stream) asynchronously: when
+ * the pipe is full, console.log queues the line in memory, and an exit right
+ * after drops the queue, so the line that names the exit is the one lost. A
+ * write that finds the pipe full (EAGAIN) is retried for `budgetMs` per fd.
+ * Returns false when neither fd took the whole line.
+ */
+function writeLineSync(line, { fds = [1, 2], writeSync = fs.writeSync, budgetMs = WRITE_BUDGET_MS, now = Date.now, sleep = pause } = {}) {
+  const text = Buffer.from(`${line}\n`, "utf8");
+  for (const fd of fds) {
+    let rest = text;
+    const deadline = now() + budgetMs;
+    try {
+      while (rest.length) {
+        let written = 0;
+        try {
+          written = writeSync(fd, rest);
+        } catch (error) {
+          if (!error || error.code !== "EAGAIN") throw error;
+        }
+        if (written > 0) rest = rest.subarray(written);
+        else if (now() >= deadline) throw new Error("pipe stayed full");
+        else sleep(WRITE_RETRY_MS);
+      }
+      return true;
+    } catch { /* try the next fd */ }
+  }
+  return false;
+}
+
+// The [Exit] and [Shutdown] lines: written now, or queued as before if no fd took them.
+function logSync(line) {
+  if (!writeLineSync(line)) console.log(line);
+}
+
 // Frames in a stack taken inside an "exit" listener: the process.exit() call,
 // and Node ending the process on an uncaught exception or rejection.
 const EXIT_FRAME = /^\s*at (?:\S+\.)?exit \(/;
 const FATAL_FRAME = /\b_fatalException\b/;
 const REJECTION_FRAME = /\b(?:processPromiseRejections|throwUnhandledRejectionsMode)\b/;
+// V8 shows it as `process.recordedReallyExit [as reallyExit] (…)`.
+const REALLY_EXIT_FRAME = /\brecordedReallyExit\b/;
 const CALLER_FRAMES = 8;
+
+// A process.reallyExit() call that no "exit" listener saw: process.exit()
+// from inside an "exit" listener that ran before this one, or a direct call.
+function reallyExitCause(lines, code) {
+  if (lines.some((line) => EXIT_FRAME.test(line))) return exitCause(lines, code);
+  const at = lines.findIndex((line) => REALLY_EXIT_FRAME.test(line));
+  const callers = at === -1 ? [] : lines.slice(at + 1, at + 1 + CALLER_FRAMES);
+  return `process.reallyExit() called directly, so no "exit" listener ran, from:\n${callers.join("\n")}`;
+}
 
 function exitCause(lines, code) {
   const at = lines.findIndex((line) => EXIT_FRAME.test(line));
@@ -375,25 +436,44 @@ function exitCause(lines, code) {
  * exit code, uptime, memory and the model requests still open, then who called
  * process.exit(). An "exit" listener runs inside that call, so its stack shows
  * the caller. Node's own exit on an uncaught exception or rejection shows as
- * `_fatalException`; with neither frame and code 0 the event loop ran empty. A kill
- * from outside (SIGKILL, the kernel's OOM killer) runs no listener, so a
- * restart with no `[Exit]` line at all points there.
+ * `_fatalException`; with neither frame and code 0 the event loop ran empty.
+ * process.reallyExit() is wrapped too, so an exit that skips the "exit"
+ * listeners is named as well. The line is written synchronously (writeLineSync),
+ * so a full log pipe can't swallow it. A kill from outside (SIGKILL, the
+ * kernel's OOM killer) runs no listener, so a restart with no `[Exit]` line at
+ * all points there.
  */
-function installExitRecorder(proc, { log = console.log, inflight = () => 0 } = {}) {
-  proc.on("exit", (code) => {
-    let memory = "";
+function installExitRecorder(proc, { log = logSync, inflight = () => 0 } = {}) {
+  let recorded = false;
+  function record(code, describe) {
+    recorded = true;
+    // Throwing here would abort the exit in progress.
     try {
-      const usage = proc.memoryUsage();
-      memory = `, rss ${mb(usage.rss)} MB, heap ${mb(usage.heapUsed)} MB`;
-    } catch { /* not available */ }
-    let open = "?";
-    try { open = inflight(); } catch { /* unknown */ }
-    const limit = Error.stackTraceLimit;
-    Error.stackTraceLimit = 40;
-    const lines = String(new Error().stack || "").split("\n");
-    Error.stackTraceLimit = limit;
-    log(`[Exit] exiting with code ${code} after ${Math.round(proc.uptime())}s with ${open} request(s) open${memory}\n  ${exitCause(lines, code)}`);
-  });
+      let memory = "";
+      try {
+        const usage = proc.memoryUsage();
+        memory = `, rss ${mb(usage.rss)} MB, heap ${mb(usage.heapUsed)} MB`;
+      } catch { /* not available */ }
+      let open = "?";
+      try { open = inflight(); } catch { /* unknown */ }
+      const limit = Error.stackTraceLimit;
+      Error.stackTraceLimit = 40;
+      const lines = String(new Error().stack || "").split("\n");
+      Error.stackTraceLimit = limit;
+      log(`[Exit] exiting with code ${code} after ${Math.round(proc.uptime())}s with ${open} request(s) open${memory}\n  ${describe(lines)}`);
+    } catch { /* nothing left to report with */ }
+  }
+  // First, so an "exit" listener that calls process.exit() can't skip it.
+  const onExit = (code) => record(code, (lines) => exitCause(lines, code));
+  if (typeof proc.prependListener === "function") proc.prependListener("exit", onExit);
+  else proc.on("exit", onExit);
+  const reallyExit = proc.reallyExit;
+  if (typeof reallyExit === "function") {
+    proc.reallyExit = function recordedReallyExit(code) {
+      if (!recorded) record(code ?? 0, (lines) => reallyExitCause(lines, code ?? 0));
+      return reallyExit.call(this, code);
+    };
+  }
 }
 
 module.exports = {
@@ -408,5 +488,7 @@ module.exports = {
   installShutdownDrain,
   isLongLived,
   isModelTraffic,
+  logSync,
   parseDrainTimeout,
+  writeLineSync,
 };

@@ -4,13 +4,14 @@ const path = require("path");
 const fs = require("fs");
 const net = require("net");
 const { pathToFileURL } = require("url");
-const { createDrain, installExitRecorder, installShutdownDrain, parseDrainTimeout } = require("./server-drain.js");
+const { createDrain, installExitRecorder, installShutdownDrain, logSync, parseDrainTimeout } = require("./server-drain.js");
 
 const origCreate = http.createServer.bind(http);
 
 // Graceful drain on SIGTERM/SIGINT (see server-drain.js). It is wired to the
 // process's signals only when this file is the entry point, at the bottom.
-const drain = createDrain({ timeoutMs: parseDrainTimeout(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS) });
+// Its [Shutdown] lines are written synchronously, like the [Exit] line.
+const drain = createDrain({ timeoutMs: parseDrainTimeout(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS), log: logSync });
 
 // ─── Codex WebSocket transport ────────────────────────────────────────────────
 //

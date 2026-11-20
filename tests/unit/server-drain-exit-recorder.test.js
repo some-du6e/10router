@@ -5,15 +5,22 @@ import { createRequire } from "node:module";
 // The exit recorder makes a restart name its cause. These drive it with a
 // stand-in process object, so nothing here can end the test runner.
 const require = createRequire(import.meta.url);
-const { createDrain, installExitRecorder, installShutdownDrain } = require("../../server-drain.js");
+const { createDrain, installExitRecorder, installShutdownDrain, writeLineSync } = require("../../server-drain.js");
 
 function fakeProcess() {
   const proc = new EventEmitter();
   proc.exited = [];
-  // Like process.exit(): emits "exit" from inside the call.
+  proc.reallyExited = [];
+  proc.reallyExit = (code) => { proc.reallyExited.push(code); };
+  // Like process.exit(): emits "exit" once from inside the call (not again
+  // from an "exit" listener), then calls process.reallyExit().
   proc.exit = function exit(code) {
     proc.exited.push(code);
-    proc.emit("exit", code ?? 0);
+    if (!proc._exiting) {
+      proc._exiting = true;
+      proc.emit("exit", code ?? 0);
+    }
+    proc.reallyExit(code ?? 0);
   };
   proc.uptime = () => 42;
   proc.memoryUsage = () => ({ rss: 300 * 1048576, heapUsed: 120 * 1048576 });
@@ -135,5 +142,109 @@ describe("installExitRecorder", () => {
     expect(exitLines[0]).toContain("process.exit() called from:");
     // The first caller frame is the drain's own exit.
     expect(exitLines[0].split("\n")[2]).toMatch(/[/\\]server-drain\.js:/);
+  });
+
+  it("logs once for a process.exit(), which also reaches process.reallyExit()", () => {
+    const proc = fakeProcess();
+    const log = vi.fn();
+    installExitRecorder(proc, { log });
+
+    proc.exit(0);
+
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(proc.reallyExited).toEqual([0]);
+  });
+
+  it("runs before an earlier \"exit\" listener that calls process.exit(), which would skip the rest", () => {
+    const proc = fakeProcess();
+    const log = vi.fn();
+    proc.on("exit", () => proc.exit(3));
+    installExitRecorder(proc, { log });
+
+    function updaterHandoff() {
+      proc.exit(0);
+    }
+    updaterHandoff();
+
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls[0][0]).toMatch(/^\[Exit\] exiting with code 0 [^\n]*\n {2}process\.exit\(\) called from:\n/);
+    expect(log.mock.calls[0][0].split("\n")[2]).toContain("updaterHandoff");
+  });
+
+  it("names a direct process.reallyExit() call, which no \"exit\" listener sees", () => {
+    const proc = fakeProcess();
+    const log = vi.fn();
+    installExitRecorder(proc, { log, inflight: () => 2 });
+
+    function nativeShim() {
+      proc.reallyExit(0);
+    }
+    nativeShim();
+
+    expect(proc.reallyExited).toEqual([0]);
+    expect(log).toHaveBeenCalledTimes(1);
+    const [line] = log.mock.calls[0];
+    expect(line).toMatch(
+      /^\[Exit\] exiting with code 0 after 42s with 2 request\(s\) open, rss 300 MB, heap 120 MB\n {2}process\.reallyExit\(\) called directly, so no "exit" listener ran, from:\n/
+    );
+    expect(line.split("\n")[2]).toContain("nativeShim");
+  });
+
+  it("never throws out of the exit, even when logging fails", () => {
+    const proc = fakeProcess();
+    installExitRecorder(proc, { log: () => { throw new Error("EPIPE"); } });
+
+    expect(() => proc.exit(0)).not.toThrow();
+    expect(proc.reallyExited).toEqual([0]);
+  });
+});
+
+describe("writeLineSync", () => {
+  const eagain = () => Object.assign(new Error("EAGAIN: resource temporarily unavailable, write"), { code: "EAGAIN" });
+
+  it("waits out a full pipe and writes the rest of a partial write", () => {
+    const got = [];
+    let calls = 0;
+    const writeSync = vi.fn((fd, buf) => {
+      calls++;
+      if (calls === 1) throw eagain();
+      // Half now, the rest on the next call.
+      const n = calls === 2 ? Math.ceil(buf.length / 2) : buf.length;
+      got.push([fd, buf.subarray(0, n).toString()]);
+      return n;
+    });
+    const sleep = vi.fn();
+
+    expect(writeLineSync("[Exit] exiting with code 0", { writeSync, sleep, now: () => 0 })).toBe(true);
+
+    expect(got.every(([fd]) => fd === 1)).toBe(true);
+    expect(got.map(([, text]) => text).join("")).toBe("[Exit] exiting with code 0\n");
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to stderr when stdout stays full past its budget", () => {
+    let clock = 0;
+    const got = [];
+    const writeSync = vi.fn((fd, buf) => {
+      if (fd === 1) throw eagain();
+      got.push([fd, buf.toString()]);
+      return buf.length;
+    });
+
+    const ok = writeLineSync("[Shutdown] SIGTERM", { writeSync, budgetMs: 50, now: () => clock, sleep: (ms) => { clock += ms; } });
+
+    expect(ok).toBe(true);
+    expect(got).toEqual([[2, "[Shutdown] SIGTERM\n"]]);
+    // Gave stdout its budget first.
+    expect(clock).toBeGreaterThanOrEqual(50);
+  });
+
+  it("moves to the next fd at once on an error other than EAGAIN, and reports when none took the line", () => {
+    const writeSync = vi.fn(() => { throw Object.assign(new Error("EPIPE"), { code: "EPIPE" }); });
+    const sleep = vi.fn();
+
+    expect(writeLineSync("x", { writeSync, sleep, now: () => 0 })).toBe(false);
+    expect(writeSync.mock.calls.map(([fd]) => fd)).toEqual([1, 2]);
+    expect(sleep).not.toHaveBeenCalled();
   });
 });

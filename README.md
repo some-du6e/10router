@@ -256,7 +256,10 @@ On `SIGTERM` or `SIGINT` (`docker stop` sends `SIGTERM`) the server drains befor
 - **A restart you didn't ask for:** every exit the process makes itself logs an `[Exit]` line
   with the exit code, uptime, memory use, the requests still open and its cause: the code that
   called `process.exit()`, an uncaught exception or unhandled rejection (Node prints it just
-  before), or "the event loop ran empty". **No `[Exit]` line at all means the process
+  before), "the event loop ran empty", or a direct `process.reallyExit()` call. The `[Exit]`
+  and `[Shutdown]` lines are written before the process goes on, not queued behind the
+  request log, so a busy server's full log pipe can't swallow them (they go to stderr if
+  stdout stays full for a second). **No `[Exit]` line at all means the process
   was killed from outside.** Check the kernel log for an out-of-memory kill (`dmesg` or
   `journalctl -k` on the host) and `docker events --filter event=die` for the real exit code,
   since `docker inspect` on a container its restart policy already started again can show 0.
