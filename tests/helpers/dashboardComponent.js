@@ -18,30 +18,47 @@ export function dashboardComponent(path, imports = {}, componentName = null) {
       [require("next/dist/compiled/babel/preset-env"), { targets: { node: "current" }, modules: "commonjs" }],
     ],
   });
-  const state = [];
-  const dependencies = [];
+  // One cell per hook call, in call order, as React keeps them.
+  const cells = [];
+  const effectCells = [];
   let cursor = 0;
-  let effects = [];
+  let pending = [];
+  const cell = (create) => {
+    const index = cursor++;
+    const isNew = !(index in cells);
+    if (isNew) cells[index] = create();
+    return [cells[index], isNew];
+  };
+  // No deps array means "changed on every render", as in React.
+  const depsChanged = (previous, next) => !previous || !next || previous.length !== next.length
+    || next.some((value, i) => !Object.is(value, previous[i]));
+  const runCleanup = (slot) => {
+    if (typeof slot.cleanup === "function") slot.cleanup();
+    slot.cleanup = undefined;
+  };
   const hooks = {
-    useCallback(callback) { return callback; },
+    useCallback(callback, deps) {
+      const [slot, isNew] = cell(() => ({ value: callback, deps }));
+      if (!isNew && depsChanged(slot.deps, deps)) Object.assign(slot, { value: callback, deps });
+      return slot.value;
+    },
     useRef(initial) {
-      const index = cursor++;
-      if (!(index in state)) state[index] = { current: initial };
-      return state[index];
+      return cell(() => ({ current: initial }))[0];
     },
     useState(initial) {
-      const index = cursor++;
-      if (!(index in state)) state[index] = typeof initial === "function" ? initial() : initial;
-      return [state[index], (value) => {
-        state[index] = typeof value === "function" ? value(state[index]) : value;
-      }];
+      const [slot] = cell(() => {
+        const created = { value: typeof initial === "function" ? initial() : initial };
+        created.set = (value) => { created.value = typeof value === "function" ? value(created.value) : value; };
+        return created;
+      });
+      return [slot.value, slot.set];
     },
     useEffect(effect, deps) {
-      const index = cursor++;
-      if (!dependencies[index] || deps.some((value, i) => value !== dependencies[index][i])) {
-        dependencies[index] = deps;
-        effects.push(effect);
-      }
+      const [slot, isNew] = cell(() => ({ deps, cleanup: undefined }));
+      if (isNew) effectCells.push(slot);
+      else if (!depsChanged(slot.deps, deps)) return;
+      slot.deps = deps;
+      pending.push({ slot, effect });
     },
   };
   const compiledModule = { exports: {} };
@@ -56,10 +73,15 @@ export function dashboardComponent(path, imports = {}, componentName = null) {
     render(props) {
       cursor = 0;
       const tree = compiledModule.exports.default(props);
-      const pending = effects;
-      effects = [];
-      pending.forEach((effect) => effect());
+      const queued = pending;
+      pending = [];
+      // Like React: every changed effect's cleanup runs before any effect re-runs.
+      queued.forEach(({ slot }) => runCleanup(slot));
+      queued.forEach(({ slot, effect }) => { slot.cleanup = effect(); });
       return tree;
+    },
+    unmount() {
+      effectCells.forEach(runCleanup);
     },
   };
 }

@@ -52,6 +52,7 @@ jobs:
         run: >
           ./node_modules/.bin/vitest run
           unit/dashboard-api.test.js
+          unit/dashboard-component.test.js
           unit/dashboard-pricing.test.js
           unit/dashboard-combo-form.test.js
           unit/dashboard-save-and-reauth.test.js
