@@ -193,6 +193,8 @@ describe("DefaultExecutor", () => {
     const bodies = sentBodies();
     expect(bodies).toHaveLength(3);
     expect(new Set(bodies).size).toBe(1);
+    // Each send used to stringify a fresh copy: count the strings, not the objects.
+    expect(JSON.stringify.mock.results.filter((r) => r.value === bodies[0])).toHaveLength(1);
     // The per-send pipeline, run on an untouched copy of the request.
     const c = creds();
     const headers = ex.buildHeaders(c, true, sentUrls()[0], MODEL);
