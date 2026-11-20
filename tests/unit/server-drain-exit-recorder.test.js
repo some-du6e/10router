@@ -226,6 +226,13 @@ describe("writeLineSync", () => {
     expect(got.join("")).toBe("[Exit] exiting with code 0\n");
   });
 
+  it("returns false instead of throwing when checking stderr's queue throws", () => {
+    const writeSync = vi.fn((fd, buf) => buf.length);
+
+    expect(writeLineSync("x", { writeSync, now: () => 0, backlogged: () => { throw new Error("ERR_TTY_INIT_FAILED"); } })).toBe(false);
+    expect(writeSync).not.toHaveBeenCalled();
+  });
+
   it("gives up at once on an error other than EAGAIN", () => {
     const writeSync = vi.fn(() => { throw Object.assign(new Error("EPIPE"), { code: "EPIPE" }); });
     const sleep = vi.fn();

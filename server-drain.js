@@ -379,13 +379,17 @@ function pause(ms) {
  * didn't get out.
  */
 function stderrBacklogged() {
-  return (process.stderr && process.stderr.writableLength) > 0;
+  try {
+    return (process.stderr && process.stderr.writableLength) > 0;
+  } catch {
+    return false; // process.stderr is built on first access and can throw (a tty that can't initialise)
+  }
 }
 
 function writeLineSync(line, { writeSync = fs.writeSync, budgetMs = WRITE_BUDGET_MS, now = Date.now, sleep = pause, backlogged = stderrBacklogged } = {}) {
-  let rest = Buffer.from(`${backlogged() ? "\n" : ""}${line}\n`, "utf8");
-  const deadline = now() + budgetMs;
   try {
+    let rest = Buffer.from(`${backlogged() ? "\n" : ""}${line}\n`, "utf8");
+    const deadline = now() + budgetMs;
     while (rest.length) {
       let written = 0;
       try {
