@@ -26,7 +26,9 @@ export async function createSqlJsAdapter(filePath) {
     const data = db.export();
     // sql.js export closes/reopens its connection, resetting connection pragmas.
     db.exec(PRAGMA_SQL);
-    fs.writeFileSync(filePath, Buffer.from(data));
+    // Owner-only from the first write: the file holds provider credentials, and
+    // on a fresh install it doesn't exist yet when the driver tightens modes.
+    fs.writeFileSync(filePath, Buffer.from(data), { mode: 0o600 });
     dirty = false;
   }
 

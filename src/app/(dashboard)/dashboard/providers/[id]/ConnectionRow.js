@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
-import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
+import { demotedLabel, isDemotionError, getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
+import { lifespanLabel } from "@/shared/utils/keyLifespan";
 import PropTypes from "prop-types";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
@@ -41,6 +42,11 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
     }
   }
 
+  // A key with its own endpoint URL shows that host, to tell the endpoints apart.
+  const ownEndpointHost = (() => {
+    if (!connection.providerSpecificData?.ownBaseUrl) return null;
+    try { return new URL(connection.providerSpecificData.baseUrl).host; } catch { return null; }
+  })();
   const noProxyText = boundProxyPool?.noProxy || connection.providerSpecificData?.connectionNoProxy || "";
 
   let proxyBadgeVariant = "default";
@@ -121,6 +127,9 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
     };
   }, [modelLockUntil]);
 
+  const demoted = demotedLabel(connection);
+  const lifespan = lifespanLabel(connection);
+
   // Determine effective status (override unavailable if cooldown expired)
   const effectiveStatus = (connection.testStatus === "unavailable" && !isCooldown)
     ? "active"  // Cooldown expired u2192 treat as active
@@ -192,9 +201,32 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
               </Badge>
             )}
             {isCooldown && connection.isActive !== false && <CooldownTimer until={modelLockUntil} />}
-            {connection.lastError && connection.isActive !== false && (
+            {demoted && (
+              <span className="max-w-full truncate text-xs text-amber-600 dark:text-amber-400 sm:max-w-[260px]" title={demoted.title}>
+                {demoted.text}
+              </span>
+            )}
+            {lifespan && (
+              <span className="max-w-full truncate text-xs text-text-muted sm:max-w-[260px]" title={lifespan.title}>
+                {lifespan.text}
+              </span>
+            )}
+            {connection.lastError && connection.isActive !== false && !isDemotionError(connection) && (
               <span className="max-w-full truncate text-xs text-red-500 sm:max-w-[300px]" title={connection.lastError}>
                 {connection.lastError}
+              </span>
+            )}
+            {connection.isActive === false && connection.autoDisabledAt && (
+              <span
+                className="max-w-full truncate text-xs text-red-500 sm:max-w-[360px]"
+                title={`Turned off automatically ${new Date(connection.autoDisabledAt).toLocaleString()}: ${connection.autoDisabledReason || ""}`}
+              >
+                Turned off automatically: {connection.autoDisabledReason}
+              </span>
+            )}
+            {ownEndpointHost && (
+              <span className="max-w-full truncate text-[11px] text-text-muted sm:max-w-[260px]" title={connection.providerSpecificData.baseUrl}>
+                {ownEndpointHost}
               </span>
             )}
             <span className="text-xs text-text-muted">#{connection.priority}</span>
@@ -314,6 +346,8 @@ ConnectionRow.propTypes = {
     testStatus: PropTypes.string,
     isActive: PropTypes.bool,
     lastError: PropTypes.string,
+    autoDisabledAt: PropTypes.string,
+    autoDisabledReason: PropTypes.string,
     priority: PropTypes.number,
     globalPriority: PropTypes.number,
   }).isRequired,

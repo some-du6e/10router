@@ -109,6 +109,19 @@ describe("Gemini native v1beta endpoint", () => {
     expect(options.headers.Authorization).toBeUndefined();
   });
 
+  it("refuses a native audio request for a router lock name before any key is tried", async () => {
+    // A lock on `__all` would cover every model of every Gemini key.
+    for (const model of ["__all", "websearch:gemini", "webfetch:gemini"]) {
+      const response = await POST(makeGeminiRequest(`${model}:generateContent`, audioBody()), {
+        params: Promise.resolve({ path: [`${model}:generateContent`] }),
+      });
+      expect(response.status).toBe(400);
+    }
+    expect(mocks.getProviderCredentials).not.toHaveBeenCalled();
+    expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   it("accepts Google-style client keys without forwarding them upstream", async () => {
     const request = makeGeminiRequest(
       "gemini-2.5-flash-preview-tts:generateContent?key=query-router-key",
@@ -188,7 +201,9 @@ describe("Gemini native v1beta endpoint", () => {
       504,
       expect.stringContaining("UND_ERR_HEADERS_TIMEOUT"),
       "gemini",
-      "gemini-3.1-flash-tts-preview"
+      "gemini-3.1-flash-tts-preview",
+      null,
+      "first-gemini-key"
     );
     expect(mocks.clearAccountError).toHaveBeenCalledWith(
       "second-conn",
@@ -215,7 +230,9 @@ describe("Gemini native v1beta endpoint", () => {
       502,
       expect.stringContaining("ECONNRESET"),
       "gemini",
-      "gemini-3.1-flash-tts-preview"
+      "gemini-3.1-flash-tts-preview",
+      null,
+      "real-gemini-key"
     );
   });
 

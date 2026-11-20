@@ -77,4 +77,13 @@ describe("Grok CLI live models", () => {
     expect(fetchFn.mock.calls[1][1].headers.Authorization).toBe("Bearer new-token");
     expect(fetchFn.mock.calls[1][1].headers["x-grok-client-version"]).toBe("0.2.99");
   });
+
+  it("hands the caller's abort signal to the model fetch, so a hung upstream can be cut off", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(jsonResponse({ data: [{ id: "grok-build" }] }));
+    const signal = new AbortController().signal;
+
+    await resolveGrokCliModels({ accessToken: "token" }, { fetchFn, signal });
+
+    expect(fetchFn.mock.calls[0][1].signal).toBe(signal);
+  });
 });

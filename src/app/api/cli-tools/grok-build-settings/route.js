@@ -13,6 +13,9 @@ import {
   parseGrokBuildConfig,
   resetGrokBuildConfig,
 } from "@/lib/grokBuildConfig";
+import { pickFields } from "@/lib/cliTools/statusFields.js";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { findUnsafeConfigValue, unsafeConfigValueError } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
 
@@ -84,9 +87,17 @@ export async function GET() {
     }
 
     const settings = parseGrokBuildConfig(await readConfigToml());
+    // A model section's api_key (and its raw body, which holds it) stays on the host.
+    const shownModel = (section) => (section ? pickFields(section, ["model", "base_url", "name", "api_backend", "context_window"]) : null);
     return NextResponse.json({
       installed: true,
-      settings,
+      settings: {
+        ...settings,
+        model: shownModel(settings.model),
+        subagentModels: Object.fromEntries(
+          Object.entries(settings.subagentModels || {}).map(([type, section]) => [type, shownModel(section)])
+        ),
+      },
       has10Router: has10RouterConfig(settings),
       configPath: getGrokConfigPath(),
     });
@@ -103,6 +114,16 @@ export async function POST(request) {
     if (!baseUrl || !selectedModel) {
       return NextResponse.json({ error: "baseUrl and model are required" }, { status: 400 });
     }
+    const subagents = normalizeSubagentModels(subagentModels);
+    const unsafeField = findUnsafeConfigValue({
+      baseUrl,
+      apiKey,
+      model: selectedModel,
+      ...Object.fromEntries(Object.entries(subagents || {}).map(([type, entry]) => [`subagentModels.${type}`, entry.model])),
+    });
+    if (unsafeField) {
+      return NextResponse.json({ error: unsafeConfigValueError(unsafeField) }, { status: 400 });
+    }
 
     await fs.mkdir(getGrokDir(), { recursive: true });
     const normalizedBaseUrl = baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
@@ -111,9 +132,9 @@ export async function POST(request) {
       apiKey: apiKey || "sk_10router",
       model: selectedModel,
       contextWindow: normalizeContextWindow(contextWindow, selectedModel),
-      subagentModels: normalizeSubagentModels(subagentModels),
+      subagentModels: subagents,
     });
-    await fs.writeFile(getGrokConfigPath(), toml);
+    await writePrivateFile(getGrokConfigPath(), toml);
 
     return NextResponse.json({
       success: true,
@@ -140,7 +161,7 @@ export async function DELETE() {
       throw error;
     }
 
-    await fs.writeFile(configPath, resetGrokBuildConfig(toml));
+    await writePrivateFile(configPath, resetGrokBuildConfig(toml));
     return NextResponse.json({
       success: true,
       message: "10router model slots removed from Grok Build",

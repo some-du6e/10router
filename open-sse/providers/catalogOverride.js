@@ -12,6 +12,8 @@ import { DATA_DIR } from "@/lib/dataDir.js";
 export const CATALOG_FILE = path.join(DATA_DIR, "model-catalog.json");
 // Trimmed upstream catalog, read by the add-models skill (not by the router).
 export const CATALOG_RAW_FILE = path.join(DATA_DIR, "model-catalog-raw.json");
+// Provider API URLs + model ids, read by "Add endpoint" for endpoints with no /models.
+export const CATALOG_ENDPOINTS_FILE = path.join(DATA_DIR, "model-catalog-endpoints.json");
 
 const EMPTY = { models: {}, providers: {} };
 let cache = EMPTY;
@@ -57,6 +59,16 @@ export function getCatalogLimits(provider, model) {
   const byProvider = provider && load().providers[provider];
   if (!byProvider) return null;
   return byProvider[model] || byProvider[baseId(model)] || null;
+}
+
+// Changes whenever the synced catalog does (its file's mtime; -1 with no file),
+// for callers caching something derived from capabilities.
+export function getCatalogStamp() {
+  try {
+    return fs.statSync(CATALOG_FILE).mtimeMs;
+  } catch {
+    return -1;
+  }
 }
 
 // Force a re-read on the next lookup (called right after a sync writes the file).

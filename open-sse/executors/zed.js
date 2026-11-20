@@ -18,6 +18,8 @@ import { BaseExecutor } from "./base.js";
 import { FORMATS } from "../translator/formats.js";
 import { initState } from "../translator/index.js";
 import { openaiToClaudeRequest } from "../translator/request/openai-to-claude.js";
+import { relaxForcedToolChoiceForThinking } from "../translator/concerns/toolChoice.js";
+import { normalizeClaudeToolSchemas } from "../translator/concerns/jsonSchema.js";
 import { openaiToGeminiRequest } from "../translator/request/openai-to-gemini.js";
 import { openaiToOpenAIResponsesRequest } from "../translator/request/openai-responses.js";
 import { claudeToOpenAIResponse } from "../translator/response/claude-to-openai.js";
@@ -50,9 +52,13 @@ function normalizeZedProvider(value, model) {
   return ZED_PROVIDER.openai;
 }
 
-function buildProviderRequest(provider, model, body, stream, credentials) {
+export function buildProviderRequest(provider, model, body, stream, credentials) {
   if (provider === ZED_PROVIDER.anthropic) {
-    return openaiToClaudeRequest(model, body, true);
+    // This Claude body never goes through prepareClaudeRequest or finalizeBody,
+    // so the tool-schema flattening and the forced-tool check run here.
+    const claudeBody = openaiToClaudeRequest(model, body, true);
+    if (Array.isArray(claudeBody.tools)) claudeBody.tools = normalizeClaudeToolSchemas(claudeBody.tools);
+    return relaxForcedToolChoiceForThinking(claudeBody, "zed");
   }
   if (provider === ZED_PROVIDER.google) {
     return openaiToGeminiRequest(model, body, true);
@@ -142,6 +148,8 @@ function wrapZedCompletionStream(response, provider, model) {
 
   const finish = (controller) => {
     if (done) return;
+    // Zed's own end-of-stream; the Responses flush only finishes after one.
+    state.upstreamDone = true;
     const finalChunk = convertProviderEvent(provider, null, state);
     enqueueSseObject(controller, encoder, finalChunk);
     controller.enqueue(encoder.encode("data: [DONE]\n\n"));
@@ -229,7 +237,10 @@ class ZedExecutor extends BaseExecutor {
     }
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, onUpstreamAttempt = null }) {
+    // Nothing is upstream while the model catalog or the LLM token is fetched;
+    // zedLlmFetch reports when the completion request goes out.
+    onUpstreamAttempt?.(0);
     const { provider } = await this.resolveModel(model, credentials, signal, log);
     const providerRequest = buildProviderRequest(provider, model, body, stream, credentials);
     const bodyRecord = body || {};
@@ -244,6 +255,7 @@ class ZedExecutor extends BaseExecutor {
     const response = await zedLlmFetch(credentials, "/completions", {
       config: this.config,
       signal,
+      onUpstreamAttempt,
       fetchOptions: {
         method: "POST",
         headers: {

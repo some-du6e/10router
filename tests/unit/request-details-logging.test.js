@@ -1,9 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { extractRequestConfig } from "../../open-sse/handlers/chatCore/requestDetail.js";
 import { __test__ as requestDetailsTest } from "../../src/lib/db/repos/requestDetailsRepo.js";
 import { FORMATS } from "../../open-sse/translator/formats.js";
 import { createSSETransformStreamWithLogger } from "../../open-sse/utils/stream.js";
+
+// A row's full copy: what the repo builds at save time, packed as a flush does.
+async function packFullData(item, record) {
+  const source = requestDetailsTest.fullCopySource(item, record);
+  return source ? requestDetailsTest.packSource(source) : null;
+}
 
 async function runResponsesStream(input, onStreamComplete) {
   const encoder = new TextEncoder();
@@ -42,6 +48,56 @@ describe("request detail logging", () => {
     })).toBe(128 * 1024);
   });
 
+  it("keeps the untruncated payload alongside a truncated preview", async () => {
+    const big = { messages: [{ role: "system", content: "x".repeat(20000) }] };
+    const record = {
+      request: requestDetailsTest.truncateField(big, 5 * 1024),
+      response: requestDetailsTest.truncateField({ ok: true }, 5 * 1024),
+    };
+    expect(record.request._truncated).toBe(true);
+    const packed = await packFullData({ request: big, response: { ok: true } }, record);
+    expect(await requestDetailsTest.unpackFullData(packed)).toEqual({ request: big });
+    expect(await packFullData({ response: { ok: true } }, { response: { ok: true } })).toBeNull();
+    expect(await requestDetailsTest.unpackFullData(null)).toBeNull();
+    await expect(requestDetailsTest.unpackFullData("not gzip")).rejects.toThrow();
+  });
+
+  it("serializes a cut payload once, when its full copy is packed", async () => {
+    const big = { messages: [{ role: "user", content: "x".repeat(200 * 1024) }] };
+    const stringify = vi.spyOn(JSON, "stringify");
+    const record = { request: requestDetailsTest.truncateField(big, 5 * 1024) };
+    const source = requestDetailsTest.fullCopySource({ request: big }, record);
+    const beforePack = stringify.mock.calls.filter(([value]) => value === big).length;
+    const packed = await requestDetailsTest.packSource(source);
+    const total = stringify.mock.calls.filter(([value]) => value === big).length;
+    stringify.mockRestore();
+    expect(beforePack).toBe(0);
+    expect(total).toBe(1);
+    expect(await requestDetailsTest.unpackFullData(packed)).toEqual({ request: big });
+  });
+
+  it("measures the full payload limit in bytes, not characters", async () => {
+    // 6M three-byte chars: under 16 MB as string length, over it as UTF-8.
+    const big = { messages: [{ role: "user", content: "€".repeat(6 * 1024 * 1024) }] };
+    const record = { request: requestDetailsTest.truncateField(big, 5 * 1024) };
+    expect(record.request._truncated).toBe(true);
+    expect(await packFullData({ request: big }, record)).toBeNull();
+  });
+
+  it("skips payloads whose truncated size already exceeds the limit", async () => {
+    // A real cut over 16M characters: rejected from its measured size, never serialized.
+    const big = { messages: [{ role: "user", content: "a".repeat(17 * 1024 * 1024) }] };
+    const record = { request: requestDetailsTest.truncateField(big, 5 * 1024) };
+    expect(record.request._truncated).toBe(true);
+    const stringify = vi.spyOn(JSON, "stringify");
+    try {
+      expect(await packFullData({ request: big }, record)).toBeNull();
+      expect(stringify.mock.calls.filter(([value]) => value === big)).toHaveLength(0);
+    } finally {
+      stringify.mockRestore();
+    }
+  });
+
   it("keeps Responses API input instead of replacing it with empty messages", () => {
     const input = [{
       type: "message",
@@ -60,6 +116,35 @@ describe("request detail logging", () => {
       instructions: "Be concise",
       stream: true,
     });
+  });
+
+  it("keeps the reasoning effort the client sent", () => {
+    const messages = [{ role: "user", content: "hi" }];
+    expect(extractRequestConfig({
+      model: "claude-sonnet-x", messages, thinking: { type: "adaptive" }, output_config: { effort: "max" },
+    }, true)).toEqual({
+      model: "claude-sonnet-x", stream: true, messages, thinking: { type: "adaptive" }, output_config: { effort: "max" },
+    });
+    expect(extractRequestConfig({ model: "gpt-x", messages, reasoning_effort: "low" }, false))
+      .toEqual({ model: "gpt-x", stream: false, messages, reasoning_effort: "low" });
+    expect(extractRequestConfig({ model: "qwen-x", messages, enable_thinking: true, thinking_budget: 2048 }, false))
+      .toEqual({ model: "qwen-x", stream: false, messages, enable_thinking: true, thinking_budget: 2048 });
+  });
+
+  it("copies the params, so editing the body afterwards doesn't change the record", () => {
+    const body = {
+      model: "claude-sonnet-x", messages: [{ role: "user", content: "hi" }],
+      tools: [{ name: "Read", input_schema: { type: "object" } }],
+      output_config: { effort: "low" }, thinking: { type: "adaptive" },
+    };
+    const config = extractRequestConfig(body, true);
+    delete body.output_config.effort;
+    body.thinking.type = "enabled";
+    expect(config.output_config).toEqual({ effort: "low" });
+    expect(config.thinking).toEqual({ type: "adaptive" });
+    // Only the thinking fields are copied: tools and messages can be hundreds of KB.
+    expect(config.tools).toBe(body.tools);
+    expect(config.messages).toBe(body.messages);
   });
 
   it("captures Responses API text and tool calls when a stream completes", async () => {

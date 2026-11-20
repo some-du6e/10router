@@ -26,5 +26,5 @@ export async function OPTIONS() {
  */
 export async function POST(request) {
   await ensureInitialized();
-  return await handleChat(request);
+  return await handleChat(request, null, { earlyHeaders: true });
 }

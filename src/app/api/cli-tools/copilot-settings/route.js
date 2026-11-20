@@ -4,6 +4,8 @@ import { NextResponse } from "next/server";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { findUnsafeConfigValue, listFields, unsafeConfigValueError } from "@/lib/cliTools/configValue.js";
 
 // Resolve chatLanguageModels.json path per OS
 const getConfigPath = () => {
@@ -48,7 +50,11 @@ export async function GET() {
 
     return NextResponse.json({
       installed: true,
-      config,
+      // Only this router's entry, model ids and URLs: every entry carries its
+      // provider's apiKey, and this status reaches remote dashboard sessions.
+      config: Array.isArray(config)
+        ? (entry ? [{ name: entry.name, models: (Array.isArray(entry.models) ? entry.models : []).map((m) => ({ id: m?.id, url: m?.url })) }] : [])
+        : null,
       has10Router: has10RouterConfig(config),
       configPath: getConfigPath(),
       currentModel: entry?.models?.[0]?.id || null,
@@ -65,8 +71,12 @@ export async function POST(request) {
   try {
     const { baseUrl, apiKey, models } = await request.json();
 
-    if (!baseUrl || !models?.length) {
+    if (!baseUrl || !Array.isArray(models) || !models.length) {
       return NextResponse.json({ error: "baseUrl and models are required" }, { status: 400 });
+    }
+    const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, ...listFields("models", models) });
+    if (unsafeField) {
+      return NextResponse.json({ error: unsafeConfigValueError(unsafeField) }, { status: 400 });
     }
 
     const configPath = getConfigPath();
@@ -106,7 +116,7 @@ export async function POST(request) {
       config.push(newEntry);
     }
 
-    await fs.writeFile(configPath, JSON.stringify(config, null, 2));
+    await writePrivateFile(configPath, JSON.stringify(config, null, 2));
 
     return NextResponse.json({
       success: true,
@@ -137,7 +147,7 @@ export async function DELETE() {
     }
 
     config = config.filter((e) => e.name !== "10router");
-    await fs.writeFile(configPath, JSON.stringify(config, null, 2));
+    await writePrivateFile(configPath, JSON.stringify(config, null, 2));
 
     return NextResponse.json({
       success: true,

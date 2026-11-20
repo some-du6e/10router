@@ -19,6 +19,9 @@ const waitMinMs = parseInt(process.env.UPDATER_WAIT_MIN_MS || "3000", 10);
 const waitMaxMs = parseInt(process.env.UPDATER_WAIT_MAX_MS || "15000", 10);
 const waitCheckMs = parseInt(process.env.UPDATER_WAIT_CHECK_MS || "500", 10);
 const appPort = parseInt(process.env.UPDATER_APP_PORT || "20128", 10);
+// The address the app is reachable on (127.0.0.1 for a wildcard bind).
+const appHost = process.env.UPDATER_APP_HOST || "127.0.0.1";
+const appUrlHost = appHost === "127.0.0.1" ? "localhost" : net.isIPv6(appHost) ? `[${appHost}]` : appHost;
 
 // Resolve the application data directory.
 // "9router" / ".9router" below is the on-disk data dir, deliberately kept unchanged
@@ -101,7 +104,7 @@ function isAppPortBusy() {
     socket.once("connect", () => done(true));
     socket.once("timeout", () => done(false));
     socket.once("error", () => done(false));
-    socket.connect(appPort, "127.0.0.1");
+    socket.connect(appPort, appHost);
   });
 }
 
@@ -118,7 +121,7 @@ async function waitForAppExit() {
   while (Date.now() < deadline) {
     const busy = await isAppPortBusy();
     if (!busy) {
-      pushLog(`[updater] app port :${appPort} is free, proceeding`);
+      pushLog(`[updater] app port ${appHost}:${appPort} is free, proceeding`);
       return;
     }
     await sleep(waitCheckMs);
@@ -188,7 +191,7 @@ async function waitForAppAndOpenBrowser() {
   while (Date.now() < deadline) {
     const busy = await isAppPortBusy();
     if (busy) {
-      openBrowser(`http://localhost:${appPort}/dashboard`);
+      openBrowser(`http://${appUrlHost}:${appPort}/dashboard`);
       pushLog(`[updater] app ready, opened dashboard`);
       return;
     }
@@ -210,7 +213,8 @@ function relaunchApp() {
       stdio: "ignore",
       windowsHide: true,
       shell: isWin,
-      env: { ...process.env, UPDATER_RELAUNCH: "", UPDATER_RELAUNCH_CMD: "", UPDATER_RELAUNCH_ARGS: "" },
+      // The relaunched server may stop this updater on its next shutdown/update.
+      env: { ...process.env, UPDATER_RELAUNCH: "", UPDATER_RELAUNCH_CMD: "", UPDATER_RELAUNCH_ARGS: "", TENROUTER_UPDATER_PID: String(process.pid) },
     });
     child.unref();
     pushLog(`[updater] relaunched: ${cmd} ${args.join(" ")} (pid=${child.pid})`);

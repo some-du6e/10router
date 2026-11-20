@@ -7,8 +7,28 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { parseTOML, stringifyTOML } from "confbox";
+import { parseCodexVersion, codexSendsBearerToken, BEARER_TOKEN_FROM } from "@/shared/utils/codexCatalog.js";
+import { decideCatalogUrl } from "@/lib/codex/catalogUrlDecision.js";
+import { writePrivateFile } from "@/lib/cliTools/privateFile.js";
+import { checkNewBaseUrl } from "@/lib/cliTools/keepKeyTarget.js";
+import { findUnsafeConfigValue, unsafeConfigValueError } from "@/lib/cliTools/configValue.js";
 
 const execAsync = promisify(exec);
+
+const codexEnv = () => (os.platform() === "win32"
+  ? { ...process.env, PATH: `${process.env.APPDATA}\\npm;${process.env.PATH}` }
+  : process.env);
+
+// The installed Codex's version, or null when it can't be told.
+const installedCodexVersion = async () => {
+  try {
+    const { stdout } = await execAsync("codex --version", { windowsHide: true, timeout: 3000, env: codexEnv() });
+    return parseCodexVersion(stdout);
+  } catch {
+    return null;
+  }
+};
+
 
 // Codex-native ingress path (mirrors chatgpt.com/backend-api/codex). Pointing the
 // CLI here instead of /v1 makes it use the ChatGPT wire: native model catalog with
@@ -30,18 +50,32 @@ const resolveCodexBaseUrl = (baseUrl, native) => {
 
 // `name` must be the lowercase "openai" for recent Codex versions to accept the
 // native ChatGPT wire; the OpenAI-compatible endpoint keeps the 10router label.
-const buildProviderSection = (baseUrl, native) => (native
-  ? {
-    name: "openai",
-    base_url: baseUrl,
-    wire_api: "responses",
-    requires_openai_auth: true,
-  }
-  : {
-    name: "10router",
-    base_url: baseUrl,
-    wire_api: "responses",
-  });
+// Signed in with an API key, Codex only reads a custom base URL's catalog from
+// `model_catalog_url`; without the catalog it has no apply_patch tool for
+// models it doesn't know.
+// Without a key of its own, Codex authenticates a provider with its own login
+// (auth.json: the ChatGPT sign-in or OPENAI_API_KEY). That only goes to this
+// instance. For any other host the section carries the request's key as
+// experimental_bearer_token, which Codex sends in place of its login, and drops
+// requires_openai_auth.
+const buildProviderSection = (baseUrl, native, catalog, bearerToken = null) => {
+  const section = native
+    ? {
+      name: "openai",
+      base_url: baseUrl,
+      ...(catalog ? { model_catalog_url: `${baseUrl}/models` } : {}),
+      wire_api: "responses",
+      requires_openai_auth: true,
+    }
+    : {
+      name: "10router",
+      base_url: baseUrl,
+      wire_api: "responses",
+    };
+  if (!bearerToken) return section;
+  const { requires_openai_auth: _login, ...withoutLogin } = section;
+  return { ...withoutLogin, experimental_bearer_token: bearerToken };
+};
 
 const getCodexDir = () => path.join(os.homedir(), ".codex");
 const getCodexConfigPath = () => path.join(getCodexDir(), "config.toml");
@@ -112,6 +146,39 @@ const has10RouterConfig = (config) => {
   return config.includes("model_provider = \"10router\"") || config.includes("[model_providers.10router]");
 };
 
+const stringOrNull = (value) => (typeof value === "string" && value ? value : null);
+
+// The model, subagent model and active provider's base URL from config.toml.
+const summarizeConfig = (config) => {
+  if (!config) return { model: null, subagentModel: null, baseUrl: null };
+  let parsed = null;
+  try { parsed = parseTOML(config); } catch { /* fall back to line matching */ }
+  if (parsed && typeof parsed === "object") {
+    const providers = parsed.model_providers || {};
+    const provider = providers[parsed.model_provider] || providers["10router"];
+    return {
+      model: stringOrNull(parsed.model),
+      subagentModel: stringOrNull(parsed.agents?.default_subagent_model ?? parsed.default_subagent_model),
+      baseUrl: stringOrNull(provider?.base_url),
+    };
+  }
+  return {
+    model: config.match(/^model\s*=\s*"([^"]+)"/m)?.[1] || null,
+    subagentModel: config.match(/^default_subagent_model\s*=\s*"([^"]+)"/m)?.[1] || null,
+    baseUrl: config.match(/base_url\s*=\s*"([^"]+)"/)?.[1] || null,
+  };
+};
+
+// Published CLI launchers regex `model = "..."` and `base_url = "..."` out of a raw
+// `config` string. This rebuilds just those lines from the parsed fields, so they
+// keep working without the real file (which can hold other providers' secrets).
+const legacyConfigString = ({ model, baseUrl }) => {
+  const lines = [];
+  if (model) lines.push(`model = ${JSON.stringify(model)}`);
+  if (baseUrl) lines.push("[model_providers.10router]", `base_url = ${JSON.stringify(baseUrl)}`);
+  return lines.length ? `${lines.join("\n")}\n` : null;
+};
+
 // GET - Check codex CLI and read current settings
 export async function GET() {
   try {
@@ -120,16 +187,20 @@ export async function GET() {
     if (!isInstalled) {
       return NextResponse.json({
         installed: false,
-        config: null,
         message: "Codex CLI is not installed",
       });
     }
 
     const config = await readConfig();
+    const codex = summarizeConfig(config);
 
+    // Only the fields the card shows: config.toml can hold other providers'
+    // headers and MCP server env, and this status reaches remote dashboard sessions.
     return NextResponse.json({
       installed: true,
-      config,
+      hasConfig: Boolean(config),
+      codex,
+      config: config ? legacyConfigString(codex) : null,
       has10Router: has10RouterConfig(config),
       native: Boolean(config && config.includes(CODEX_NATIVE_PATH)),
       configPath: getCodexConfigPath(),
@@ -150,9 +221,41 @@ export async function POST(request) {
     if (typeof baseUrl !== "string" || !baseUrl.trim() || !apiKey || !model) {
       return NextResponse.json({ error: "baseUrl, apiKey and model are required" }, { status: 400 });
     }
+    const unsafeField = findUnsafeConfigValue({ baseUrl, apiKey, model, subagentModel });
+    if (unsafeField) {
+      return NextResponse.json({ error: unsafeConfigValueError(unsafeField) }, { status: 400 });
+    }
 
     const codexDir = getCodexDir();
     const configPath = getCodexConfigPath();
+
+    // Decided before the file is read: this can take several seconds, and the
+    // file may change meanwhile (a Reset, or Codex itself writing to it).
+    const useNative = native !== false;
+    const normalizedBaseUrl = resolveCodexBaseUrl(baseUrl, useNative);
+    const codexVersion = installedCodexVersion();
+
+    // No stored base URL: the section is rewritten whole, so the only credential
+    // that would carry over is Codex's own login, which goes to this instance only.
+    const target = await checkNewBaseUrl({
+      tool: "Codex",
+      baseUrl: normalizedBaseUrl,
+      credential: apiKey,
+      fallback: "its own login (~/.codex/auth.json)",
+    });
+    if (target.error) return NextResponse.json({ error: target.error }, { status: 400 });
+    // Another host gets the key as experimental_bearer_token, which a Codex older
+    // than 0.48 ignores, signing in there with auth.json instead.
+    if (target.foreign && !codexSendsBearerToken(await codexVersion)) {
+      const version = await codexVersion;
+      return NextResponse.json({
+        error: `${version ? `Codex ${version.join(".")}` : "The installed Codex (version unknown)"} would send its own login (~/.codex/auth.json) to a host that isn't this 10router; update Codex to ${BEARER_TOKEN_FROM.join(".")} or newer to use a non-10router base URL from the dashboard`,
+      }, { status: 400 });
+    }
+
+    const catalog = useNative
+      ? await decideCatalogUrl({ apiKey, ids: [model, subagentModel || model], codexVersion })
+      : { write: false, reason: "not-native" };
 
     // Ensure directory exists
     await fs.mkdir(codexDir, { recursive: true });
@@ -164,23 +267,27 @@ export async function POST(request) {
       parsed = parsedToWritable(parseTOML(existingConfig));
     } catch { /* No existing config */ }
 
-    // Update only 10router related fields (api_key goes to auth.json, not config.toml)
+    // Update only 10router related fields
     parsed.model = model;
     parsed.model_provider = "10router";
 
-    // Update or create 10router provider section (no api_key - Codex reads from auth.json).
-    // The Codex-native endpoint is the default; pass native:false for plain /v1.
-    const useNative = native !== false;
-    const normalizedBaseUrl = resolveCodexBaseUrl(baseUrl, useNative);
-    setNestedSection(parsed, "model_providers.10router", buildProviderSection(normalizedBaseUrl, useNative));
+    // Update or create the 10router provider section. For this instance it carries
+    // no key and Codex uses its own login; for another host it carries the request's
+    // key (buildProviderSection). The Codex-native endpoint is the default; pass
+    // native:false for plain /v1.
+    setNestedSection(
+      parsed,
+      "model_providers.10router",
+      buildProviderSection(normalizedBaseUrl, useNative, catalog.write, target.foreign ? apiKey : null)
+    );
 
     // Subagent model is a scalar under [agents]; agents.<role> now means a custom role
     deleteNestedSection(parsed, "agents.subagent");
     setNestedSection(parsed, "agents.default_subagent_model", subagentModel || model);
 
-    // Write merged config
+    // Write merged config (owner-only: it can hold a key)
     const configContent = stringifyTOML(parsed);
-    await fs.writeFile(configPath, configContent);
+    await writePrivateFile(configPath, configContent);
 
     return NextResponse.json({
       success: true,
@@ -188,6 +295,10 @@ export async function POST(request) {
       configPath,
       baseUrl: normalizedBaseUrl,
       native: useNative,
+      // Whether model_catalog_url was written, and why not: "codex-version"
+      // (older or unknown Codex), "not-listed" (the key's list doesn't have the
+      // models under these ids), "lookup-failed", "not-native".
+      catalogUrl: { written: catalog.write, reason: catalog.reason },
     });
   } catch (error) {
     console.log("Error updating codex settings:", error);
@@ -244,7 +355,7 @@ export async function DELETE() {
       if (Object.keys(authData).length === 0) {
         await fs.unlink(authPath);
       } else {
-        await fs.writeFile(authPath, JSON.stringify(authData, null, 2));
+        await writePrivateFile(authPath, JSON.stringify(authData, null, 2));
       }
     } catch { /* No auth file */ }
 

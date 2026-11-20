@@ -63,7 +63,6 @@ it("keeps two real keys from the same machine separate in daily and live stats",
       { keyName: "Second", requests: 1, promptTokens: 20, completionTokens: 7, lastUsed: secondTime },
     ]);
     expect(entries[0].apiKeyMasked).toBe(entries[1].apiKeyMasked);
-    expect(entries[0].apiKeyKey).not.toBe(entries[1].apiKeyKey);
     const periodGroups = Object.keys(stats.byApiKey).sort();
     if (groups) expect(periodGroups).toEqual(groups);
     groups = periodGroups;

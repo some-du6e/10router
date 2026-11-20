@@ -18,6 +18,9 @@ import {
   usesKiroNativeGptEffort
 } from "../../config/kiroConstants.js";
 import { parseDataUri } from "../concerns/image.js";
+import { imagePartUrl, isDataUriImage, isHttpUrl, splitToolContent } from "../concerns/toolContent.js";
+import { markToolImage } from "../concerns/toolImageCap.js";
+import { imageUrlText } from "../../config/mediaConfig.js";
 import { DEFAULT_IMAGE_MIME } from "../schema/index.js";
 import { ROLE, OPENAI_BLOCK, CLAUDE_BLOCK } from "../schema/index.js";
 import {
@@ -104,6 +107,8 @@ function convertMessages(messages, model) {
     currentRole = role;
 
     if (role === ROLE.USER) {
+      // Images already attached to this user turn, so a tool result's notes keep counting
+      const imagesBefore = pendingImages.length;
       // Extract content
       let content = "";
       if (typeof msg.content === "string") {
@@ -115,21 +120,22 @@ function convertMessages(messages, model) {
             textParts.push(c.text || "");
           } else if (c.type === OPENAI_BLOCK.IMAGE_URL) {
             // OpenAI format: image_url.url with data URI
-            const url = c.image_url?.url || "";
+            const url = imagePartUrl(c);
             const parsed = parseDataUri(url);
             if (parsed) {
               const format = parsed.mimeType.split("/")[1] || parsed.mimeType;
-              pendingImages.push({ format, source: { bytes: parsed.base64 } });
-            } else if (url.startsWith("http://") || url.startsWith("https://")) {
+              // Marked when it came from a tool result, for the image window after replay
+              pendingImages.push(markToolImage({ format, source: { bytes: parsed.base64 } }, msg.role === ROLE.TOOL));
+            } else if (isHttpUrl(url)) {
               // Kiro only supports base64 — fallback to URL text
-              textParts.push(`[Image: ${url}]`);
+              textParts.push(imageUrlText(url));
             }
           } else if (c.type === CLAUDE_BLOCK.IMAGE) {
             // Claude format: source.type = "base64", source.media_type, source.data
             if (c.source?.type === "base64" && c.source?.data) {
               const mediaType = c.source.media_type || DEFAULT_IMAGE_MIME;
               const format = mediaType.split("/")[1] || mediaType;
-              pendingImages.push({ format, source: { bytes: c.source.data } });
+              pendingImages.push(markToolImage({ format, source: { bytes: c.source.data } }, msg.role === ROLE.TOOL));
             }
           }
         }
@@ -154,7 +160,9 @@ function convertMessages(messages, model) {
 
       // Handle tool role (from normalized)
       if (msg.role === ROLE.TOOL) {
-        const toolContent = typeof msg.content === "string" ? msg.content : "";
+        // Inline images went to pendingImages above (Kiro takes base64 only); a
+        // web URL stays as text.
+        const toolContent = splitToolContent(msg.content, { offset: imagesBefore, carries: isDataUriImage }).text;
         pendingToolResults.push({
           toolUseId: msg.tool_call_id,
           status: msg.is_error || msg.status === "error" ? "error" : "success",
@@ -304,6 +312,7 @@ function convertMessages(messages, model) {
  *    legacy prompt tags remain only for models that need them.
  */
 export function openaiToKiroRequest(model, body, stream, credentials) {
+  // The image window runs once, in applyKiroSessionReplay, on what is sent.
   const messages = body.messages || [];
   const tools = body.tools || [];
   const maxTokens = 32000;
@@ -359,12 +368,13 @@ export function openaiToKiroRequest(model, body, stream, credentials) {
   const continuationId = resolveContinuationId({
     sessionId: conversationId,
     connectionId: credentials?.connectionId,
-    scope: "kiro",
+    scope: `kiro:${credentials?.clientScope || ""}`,
     ephemeral: sessionIdentity.ephemeral,
   });
   const replay = applyKiroSessionReplay({
     conversationId,
     connectionId: credentials?.connectionId,
+    clientScope: credentials?.clientScope,
     modelId: upstreamModel,
     systemPrompt,
     contentPrefix,

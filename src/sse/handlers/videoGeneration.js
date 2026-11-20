@@ -5,13 +5,17 @@ import {
   extractApiKey,
   isValidApiKey,
 } from "../services/auth.js";
+import { allLockedError } from "open-sse/utils/limitHold.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
-import { handleVideoProxyCore, getVideoConfig, sanitizeSecrets } from "open-sse/handlers/videoCore.js";
+import { handleVideoProxyCore, getVideoConfig } from "open-sse/handlers/videoCore.js";
+import { sanitizeSecrets } from "open-sse/utils/redact.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
+import { modelIdProblem } from "open-sse/utils/modelPath.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import * as log from "../utils/logger.js";
+import { checkApiKeyLimits, checkApiKeyExpiry } from "../services/keyLimits.js";
 
 // Video generation is xAI-only today; requests without a provider prefix
 // (bare model id, or multipart bodies we deliberately don't parse) land here.
@@ -25,6 +29,26 @@ const CREATE_ROTATION_STATUSES = new Set([
   HTTP_STATUS.FORBIDDEN,
   HTTP_STATUS.RATE_LIMITED,
 ]);
+
+// Statuses that are about the account (auth, payment, limits), whatever was asked.
+const ACCOUNT_STATUSES = new Set([...CREATE_ROTATION_STATUSES, HTTP_STATUS.PAYMENT_REQUIRED]);
+
+/**
+ * A failure that says something about the account rather than the request,
+ * judged by status only: an account status, or (for a create with a model,
+ * whose lock covers just that model) a 5xx. A lock with no model covers the
+ * whole account, so it takes an account status. A client that left, or a
+ * request that never went out, says nothing about the account.
+ *
+ * Upstream error text is not read: it can echo what the client sent (a job
+ * id, a prompt), so matching it would let a client lock or rotate the pool.
+ * A revoked key that answers 400 is therefore not locked here.
+ */
+function isAccountFailure(result, { model = null } = {}) {
+  if (result.notSent || result.clientAborted) return false;
+  if (ACCOUNT_STATUSES.has(result.status)) return true;
+  return !!model && result.status >= HTTP_STATUS.SERVER_ERROR;
+}
 
 async function requireValidApiKey(request) {
   const apiKey = extractApiKey(request);
@@ -102,9 +126,18 @@ export async function handleVideoCreate(request, action) {
   const bodyInfo = await readForwardableBody(request);
   if (bodyInfo.error) return bodyInfo.error;
 
+  // A multipart body isn't parsed, so its model is unknown: an allowlisted key is refused.
+  const limitDenied = await checkApiKeyLimits(extractApiKey(request), { model: bodyInfo.parsed?.model ?? null });
+  if (limitDenied) return limitDenied;
+
   const resolved = await resolveVideoProvider(bodyInfo.parsed);
   if (resolved.error) return resolved.error;
   const { provider, model } = resolved;
+  // An empty id ("xai/") would lock the account for every model.
+  if (bodyInfo.parsed?.model) {
+    const badModel = modelIdProblem(model);
+    if (badModel) return errorResponse(HTTP_STATUS.BAD_REQUEST, badModel);
+  }
 
   // Strip the provider prefix (e.g. "xai/grok-imagine-video") before forwarding;
   // otherwise forward the original bytes untouched.
@@ -125,8 +158,8 @@ export async function handleVideoCreate(request, action) {
 
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
-        const errorMsg = lastError || credentials.lastError || "Unavailable";
-        const status = lastStatus || Number(credentials.lastErrorCode) || HTTP_STATUS.SERVICE_UNAVAILABLE;
+        const { status, error } = allLockedError(lastStatus, lastError, credentials);
+        const errorMsg = error || "Unavailable";
         return unavailableResponse(status, `[${provider}/${model || "video"}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
       }
       if (excludeConnectionIds.size === 0) {
@@ -147,12 +180,7 @@ export async function handleVideoCreate(request, action) {
       signal: request.signal,
       log,
       onCredentialsRefreshed: async (newCreds) => {
-        await updateProviderCredentials(credentials.connectionId, {
-          accessToken: newCreds.accessToken,
-          refreshToken: newCreds.refreshToken,
-          providerSpecificData: newCreds.providerSpecificData,
-          testStatus: "active",
-        });
+        await updateProviderCredentials(credentials.connectionId, newCreds);
       },
     });
 
@@ -162,10 +190,14 @@ export async function handleVideoCreate(request, action) {
       return withConnectionHeader(result.response, credentials.connectionId);
     }
 
-    // Record the failure (dashboard shows lastError/errorCode → user sees re-auth is needed)
-    const { shouldFallback } = await markAccountUnavailable(
-      credentials.connectionId, result.status, sanitizeSecrets(result.error, refreshedCredentials), provider, model
-    );
+    // Record an account failure (dashboard shows lastError/errorCode → user sees
+    // re-auth is needed). Without a model (a multipart body isn't read) the lock
+    // covers the whole account, which is right only for such a failure.
+    const { shouldFallback } = isAccountFailure(result, { model })
+      ? await markAccountUnavailable(
+        credentials.connectionId, result.status, sanitizeSecrets(result.error, refreshedCredentials), provider, model, null, credentials.apiKey
+      )
+      : { shouldFallback: false };
 
     if (shouldFallback && CREATE_ROTATION_STATUSES.has(result.status)) {
       excludeConnectionIds.add(credentials.connectionId);
@@ -186,6 +218,9 @@ export async function handleVideoCreate(request, action) {
 export async function handleVideoGet(request, requestId) {
   const authError = await requireValidApiKey(request);
   if (authError) return authError;
+  // Polling a job the key already paid for: only expiry applies, not budget or models.
+  const limitDenied = await checkApiKeyExpiry(extractApiKey(request));
+  if (limitDenied) return limitDenied;
 
   if (!requestId) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing video request id");
 
@@ -206,12 +241,7 @@ export async function handleVideoGet(request, requestId) {
     signal: request.signal,
     log,
     onCredentialsRefreshed: async (newCreds) => {
-      await updateProviderCredentials(credentials.connectionId, {
-        accessToken: newCreds.accessToken,
-        refreshToken: newCreds.refreshToken,
-        providerSpecificData: newCreds.providerSpecificData,
-        testStatus: "active",
-      });
+      await updateProviderCredentials(credentials.connectionId, newCreds);
     },
   });
 
@@ -220,8 +250,12 @@ export async function handleVideoGet(request, requestId) {
     return withConnectionHeader(result.response, credentials.connectionId);
   }
 
-  await markAccountUnavailable(
-    credentials.connectionId, result.status, sanitizeSecrets(result.error, refreshedCredentials), provider, null
-  );
+  // A poll has no model, so a lock here covers the whole account: only an
+  // account failure takes one. An unknown or invalid job id is the client's.
+  if (isAccountFailure(result)) {
+    await markAccountUnavailable(
+      credentials.connectionId, result.status, sanitizeSecrets(result.error, refreshedCredentials), provider, null, null, credentials.apiKey
+    );
+  }
   return result.response;
 }

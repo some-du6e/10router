@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createProviderConnection } from "@/models";
-import { extractCodexAccountInfo } from "@/lib/oauth/providers";
+import { extractCodexAccountInfo } from "@/lib/oauth/providerHelpers.js";
 
 /**
  * POST /api/oauth/codex/bulk-import
@@ -69,8 +69,12 @@ export async function POST(request) {
         ...item
       } = raw;
 
-      if (!item.accessToken || typeof item.accessToken !== "string") {
+      if (typeof item.accessToken !== "string" || !item.accessToken.trim()) {
         throw new Error("Missing accessToken");
+      }
+      item.accessToken = item.accessToken.trim();
+      for (const field of ["idToken", "refreshToken"]) {
+        if (typeof item[field] === "string") item[field] = item[field].trim() || undefined;
       }
 
       // Backfill missing identity fields from JWT claims
@@ -80,7 +84,7 @@ export async function POST(request) {
       const needsPlanType = !psd.chatgptPlanType;
 
       if (needsEmail || needsAccountId || needsPlanType) {
-        const info = extractCodexAccountInfo(item.idToken || item.accessToken) || {};
+        const info = extractCodexAccountInfo(item.idToken, item.accessToken);
         if (needsEmail && info.email) item.email = info.email;
         if (needsAccountId && info.chatgptAccountId) {
           psd.chatgptAccountId = info.chatgptAccountId;

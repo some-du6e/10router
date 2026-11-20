@@ -1,6 +1,6 @@
-# 10router - FREE AI Router & Token Saver
+# 10router - FREE AI Router
 
-**Never stop coding. Save 20-40% tokens with RTK + auto-fallback to FREE & cheap AI models.**
+**Never stop coding. Auto-fallback to FREE & cheap AI models.**
 
 **Connect All AI Code Tools (Claude Code, Cursor, Antigravity, Copilot, Codex, Gemini, OpenCode, Cline, OpenClaw...) to 40+ AI Providers & 100+ Models.**
 
@@ -27,7 +27,6 @@
 
 **10router solves this:**
 
-- ✅ **RTK Token Saver** - Auto-compress tool_result, save 20-40% tokens
 - ✅ **Maximize subscriptions** - Track quota, use every bit before reset
 - ✅ **Auto fallback** - Subscription → Cheap → Free, zero downtime
 - ✅ **Multi-account** - Round-robin between accounts per provider
@@ -81,12 +80,20 @@ That's it! Start coding with FREE AI models.
 ```bash
 10router                   # Start with default settings
 10router --port 8080        # Custom port
+10router --host 127.0.0.1   # Bind address (default 0.0.0.0, every interface)
 10router --no-browser       # Don't open browser
+10router --log              # Show all server output (default: only the first-run setup token)
 10router --skip-update      # Skip auto-update check
 10router --help             # Show all options
 ```
 
 **Dashboard**: `http://localhost:20128/dashboard`
+
+Hide to Tray, and the tray's Enable Auto-start, keep the `--host`, `--port` and `DATA_DIR` you started with. On macOS, auto-start takes effect at your next login (it doesn't start a second copy now); its logs are in `~/Library/Logs/10router/`.
+
+**Port already in use**: 10router never stops another program to free its port. If something already listens on the port (another 10router included), it exits with `Can't start the server on <host>:<port>`. Stop that program, or pick another port with `--port`. If the server itself keeps crashing (three failed starts in a row), 10router stops and prints the crash log; run with `--log` to see everything.
+
+**One launcher per data directory**: a second `10router` on the same data directory exits with `Another 10router launcher (PID …) is already using …`. The lock is `launcher.lock` in the data directory (`~/.9router`, `%APPDATA%\9router` on Windows, or `DATA_DIR`). A lock left by a launcher that crashed or was killed is normally taken over on its own; if 10router still refuses while none is running, delete that file.
 
 ---
 

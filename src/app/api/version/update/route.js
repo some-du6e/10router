@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { killAppProcesses, spawnUpdaterAndExit } from "@/lib/appUpdater";
+import { busyInstallMessage, busyInstallPids, killAppProcesses, spawnUpdaterAndExit } from "@/lib/appUpdater";
 
 export async function POST() {
   if (process.env.NODE_ENV !== "production") {
@@ -9,8 +9,14 @@ export async function POST() {
     );
   }
 
+  // On Windows npm can't replace files another running copy of this install holds.
+  const busy = busyInstallPids();
+  if (busy.length > 0) {
+    return NextResponse.json({ success: false, message: busyInstallMessage(busy) }, { status: 409 });
+  }
+
   try {
-    // Kill sibling processes (cloudflared, stray next-server) to release file locks on Windows
+    // Stop this install's launcher, tray, tunnel and updater to release file locks on Windows
     await killAppProcesses();
   } catch { /* best effort */ }
 

@@ -144,7 +144,7 @@ describe("handleVideoCreate", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("x-10router-connection-id")).toBe("conn-2");
     expect(authMocks.markAccountUnavailable).toHaveBeenCalledWith(
-      "conn-1", 401, expect.any(String), "xai", null
+      "conn-1", 401, expect.any(String), "xai", null, null, undefined
     );
   });
 
@@ -187,6 +187,95 @@ describe("handleVideoCreate", () => {
     expect(await res.text()).toContain("No credentials for provider: xai");
   });
 
+  it("refuses an empty, dot or reserved model id before any account is tried", async () => {
+    for (const model of ["xai/", "xai/..", "xai/__all"]) {
+      const res = await handleVideoCreate(makeRequest({ model, prompt: "x" }), "generations");
+      expect(res.status).toBe(400);
+    }
+    expect(authMocks.getProviderCredentials).not.toHaveBeenCalled();
+    expect(authMocks.markAccountUnavailable).not.toHaveBeenCalled();
+  });
+
+  it("doesn't lock the account for a create the upstream rejects as a bad request", async () => {
+    authMocks.getProviderCredentials.mockResolvedValueOnce(account());
+    global.fetch.mockResolvedValueOnce(jsonResponse({ error: "prompt too long" }, 400));
+    const res = await handleVideoCreate(makeRequest({ model: "xai/grok-imagine-video", prompt: "x" }), "generations");
+    expect(res.status).toBe(400);
+    expect(authMocks.markAccountUnavailable).not.toHaveBeenCalled();
+  });
+
+  it("doesn't lock the account when the client hangs up on a create", async () => {
+    const ctrl = new AbortController();
+    // Next aborts the request's signal with its own reason, not an AbortError.
+    const reason = Object.assign(new Error("Response aborted"), { name: "ResponseAborted" });
+    authMocks.getProviderCredentials.mockResolvedValueOnce(account());
+    global.fetch.mockImplementationOnce(async () => {
+      ctrl.abort(reason);
+      throw reason;
+    });
+    const req = new Request("http://localhost/v1/videos/generations", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: "xai/grok-imagine-video", prompt: "x" }), signal: ctrl.signal,
+    });
+    const res = await handleVideoCreate(req, "generations");
+    expect(res.status).toBe(499);
+    expect(authMocks.markAccountUnavailable).not.toHaveBeenCalled();
+  });
+
+  it("judges a create by status, not by upstream text that may echo the prompt", async () => {
+    // A 400 whose text reads like a bad key or a limit: no lock, no rotation.
+    authMocks.getProviderCredentials
+      .mockResolvedValueOnce(account({ connectionId: "conn-1", refreshToken: null }))
+      .mockResolvedValueOnce(account({ connectionId: "conn-2", refreshToken: null }));
+    global.fetch.mockResolvedValueOnce(jsonResponse({ error: "prompt 'Incorrect API key, rate limit exceeded' rejected" }, 400));
+    const res = await handleVideoCreate(makeRequest({ model: "xai/grok-imagine-video", prompt: "Incorrect API key, rate limit exceeded" }), "generations");
+    expect(res.status).toBe(400);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(authMocks.markAccountUnavailable).not.toHaveBeenCalled();
+  });
+
+  it("locks a create's model on a 5xx, without re-sending it", async () => {
+    authMocks.getProviderCredentials.mockResolvedValueOnce(account({ refreshToken: null }));
+    global.fetch.mockResolvedValueOnce(jsonResponse({ error: "boom" }, 500));
+    const res = await handleVideoCreate(makeRequest({ model: "xai/grok-imagine-video", prompt: "x" }), "generations");
+    expect(res.status).toBe(500);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(authMocks.markAccountUnavailable).toHaveBeenCalledWith("conn-1", 500, expect.any(String), "xai", "grok-imagine-video", null, undefined);
+  });
+
+  it("locks the whole account for a model-less create only on an account status", async () => {
+    const boundary = "----statusBoundary";
+    const multipart = () => new Request("http://localhost/v1/videos/edits", {
+      method: "POST",
+      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
+      body: `--${boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nedit\r\n--${boundary}--\r\n`,
+    });
+    // A 5xx or a bad-key 400 takes no account-wide lock...
+    for (const [status, error] of [[500, "boom"], [400, "Incorrect API key provided"]]) {
+      authMocks.getProviderCredentials.mockResolvedValueOnce(account({ refreshToken: null }));
+      global.fetch.mockResolvedValueOnce(jsonResponse({ error }, status));
+      await handleVideoCreate(multipart(), "edits");
+    }
+    expect(authMocks.markAccountUnavailable).not.toHaveBeenCalled();
+    // ...a 402 does.
+    authMocks.getProviderCredentials.mockResolvedValueOnce(account({ refreshToken: null }));
+    global.fetch.mockResolvedValueOnce(jsonResponse({ error: "payment required" }, 402));
+    await handleVideoCreate(multipart(), "edits");
+    expect(authMocks.markAccountUnavailable).toHaveBeenCalledWith("conn-1", 402, expect.any(String), "xai", null, null, undefined);
+  });
+
+  it("doesn't lock the whole account when a multipart create is rejected", async () => {
+    authMocks.getProviderCredentials.mockResolvedValueOnce(account());
+    global.fetch.mockResolvedValueOnce(jsonResponse({ error: "bad image" }, 400));
+    const boundary = "----rejectBoundary";
+    const res = await handleVideoCreate(new Request("http://localhost/v1/videos/edits", {
+      method: "POST",
+      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
+      body: `--${boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nedit\r\n--${boundary}--\r\n`,
+    }), "edits");
+    expect(res.status).toBe(400);
+    expect(authMocks.markAccountUnavailable).not.toHaveBeenCalled();
+  });
+
   it("returns 400 on invalid JSON", async () => {
     const res = await handleVideoCreate(makeRequest("{not json"), "generations");
     expect(res.status).toBe(400);
@@ -209,6 +298,64 @@ describe("handleVideoGet", () => {
       "xai", null, null, expect.objectContaining({ preferredConnectionId: "conn-5" })
     );
     expect(global.fetch.mock.calls[0][0]).toBe("https://api.x.ai/v1/videos/req-1");
+  });
+
+  it("refuses a dot-segment poll id before anything goes upstream", async () => {
+    for (const id of ["..", ".", "%2e%2E"]) {
+      authMocks.getProviderCredentials.mockResolvedValueOnce(account());
+      const res = await handleVideoGet(new Request("http://localhost/v1/videos/x"), id);
+      expect(res.status).toBe(400);
+    }
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(authMocks.markAccountUnavailable).not.toHaveBeenCalled();
+  });
+
+  it("keeps a poll id to one path segment", async () => {
+    authMocks.getProviderCredentials.mockResolvedValueOnce(account());
+    global.fetch.mockResolvedValueOnce(jsonResponse({ status: "pending" }));
+    await handleVideoGet(new Request("http://localhost/v1/videos/x"), "../../v1/models?x#y");
+    expect(new URL(global.fetch.mock.calls[0][0]).pathname).toBe("/v1/videos/..%2F..%2Fv1%2Fmodels%3Fx%23y");
+  });
+
+  it("doesn't lock the account when polling an id the upstream doesn't know", async () => {
+    authMocks.getProviderCredentials.mockResolvedValueOnce(account());
+    global.fetch.mockResolvedValueOnce(jsonResponse({ error: "not found" }, 404));
+    const res = await handleVideoGet(new Request("http://localhost/v1/videos/x"), "unknown-job");
+    expect(res.status).toBe(404);
+    expect(authMocks.markAccountUnavailable).not.toHaveBeenCalled();
+  });
+
+  it("doesn't lock the account on key or limit text the upstream echoes back from the poll id", async () => {
+    // Upstream text is never read for a lock, so an id that reads like one locks nothing.
+    for (const id of ["rate limit exceeded", "invalid api key"]) {
+      authMocks.getProviderCredentials.mockResolvedValueOnce(account());
+      global.fetch.mockResolvedValueOnce(jsonResponse({ error: `video ${JSON.stringify(id)} not found` }, 404));
+      const res = await handleVideoGet(new Request("http://localhost/v1/videos/x"), id);
+      expect(res.status).toBe(404);
+    }
+    expect(authMocks.markAccountUnavailable).not.toHaveBeenCalled();
+  });
+
+  it("doesn't lock the whole account for a poll's 5xx or its 400, whatever the text", async () => {
+    for (const [status, error] of [[502, "bad gateway"], [400, "Incorrect API key provided"]]) {
+      authMocks.getProviderCredentials.mockResolvedValueOnce(account({ refreshToken: null }));
+      global.fetch.mockResolvedValueOnce(jsonResponse({ error }, status));
+      await handleVideoGet(new Request("http://localhost/v1/videos/x"), "job-1");
+    }
+    expect(authMocks.markAccountUnavailable).not.toHaveBeenCalled();
+  });
+
+  it("doesn't lock the account when the client hangs up on a poll", async () => {
+    const ctrl = new AbortController();
+    const reason = Object.assign(new Error("Response aborted"), { name: "ResponseAborted" });
+    authMocks.getProviderCredentials.mockResolvedValueOnce(account());
+    global.fetch.mockImplementationOnce(async () => {
+      ctrl.abort(reason);
+      throw reason;
+    });
+    const res = await handleVideoGet(new Request("http://localhost/v1/videos/job-1", { signal: ctrl.signal }), "job-1");
+    expect(res.status).toBe(499);
+    expect(authMocks.markAccountUnavailable).not.toHaveBeenCalled();
   });
 
   it("records the failure when polling hits a terminal auth error", async () => {

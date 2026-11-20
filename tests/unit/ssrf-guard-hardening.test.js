@@ -59,6 +59,47 @@ describe("assertPublicUrl: literal hostname/IP bypasses from #3714", () => {
   });
 });
 
+describe("assertPublicUrl: IPv6-embedded IPv4 and special-purpose ranges", () => {
+  it.each([
+    "http://[::ffff:0:127.0.0.1]/",     // IPv4-translated (SIIT)
+    "http://[::ffff:0:7f00:1]/",        // same, hex
+    "http://[::ffff:0:10.0.0.1]/",
+    "http://[64:ff9b::10.0.0.1]/",      // NAT64 well-known, private v4
+    "http://[64:ff9b::a9fe:a9fe]/",     // NAT64 well-known, metadata (hex)
+    "http://[64:ff9b:1::8.8.8.8]/",     // NAT64 local-use: blocked outright
+    "http://[64:ff9b:1:abcd::1]/",
+    "http://[2002:7f00:1::]/",          // 6to4 of 127.0.0.1
+    "http://[2002:a9fe:a9fe::1]/",      // 6to4 of 169.254.169.254
+    "http://[2002:c0a8:101::1]/",       // 6to4 of 192.168.1.1
+    "http://[fec0::1]/",                // site-local
+    "http://[feff::1]/",
+    "http://198.18.0.1/",               // benchmarking
+    "http://198.19.255.254/",
+    "http://192.0.0.1/",                // IETF protocol assignments
+    "http://192.0.0.170/",
+  ])("blocks %s", (url) => expect(() => assertPublicUrl(url)).toThrow());
+
+  it.each([
+    "http://[::ffff:0:8.8.8.8]/",
+    "http://[64:ff9b::8.8.8.8]/",
+    "http://[2002:808:808::1]/",        // 6to4 of 8.8.8.8
+    "http://198.17.255.255/",
+    "http://198.20.0.1/",
+    "http://192.0.1.1/",
+    "http://192.0.2.1/",
+    "https://[2606:4700::1111]/",
+    "https://[fe00::1]/",
+  ])("still allows public %s", (url) => expect(() => assertPublicUrl(url)).not.toThrow());
+
+  it("checks resolved addresses with the same rules", async () => {
+    lookupMock.mockReset();
+    lookupMock.mockResolvedValue([{ address: "2002:a00:1::1", family: 6 }]);
+    await expect(assertPublicUrlResolved("http://sixtofour.example.com/")).rejects.toThrow();
+    lookupMock.mockResolvedValue([{ address: "198.18.5.5", family: 4 }]);
+    await expect(assertPublicUrlResolved("http://bench.example.com/")).rejects.toThrow();
+  });
+});
+
 describe("assertPublicUrlResolved: DNS-resolving hostname bypass from #3714", () => {
   beforeEach(() => lookupMock.mockReset());
 

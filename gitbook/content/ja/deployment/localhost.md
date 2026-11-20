@@ -131,7 +131,7 @@ source ~/.bashrc
 ls -la ~/.9router
 
 # 権限を修正
-chmod 755 ~/.9router
+chmod 700 ~/.9router
 ```
 
 ---

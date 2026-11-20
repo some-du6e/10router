@@ -5,20 +5,33 @@ import { makeKv } from "../helpers/kvStore.js";
 const pricingKv = makeKv("pricing");
 const CACHE_TTL_MS = 5000;
 
-let cache = { value: null, expiresAt: 0 };
+let cache = { value: null, user: null, expiresAt: 0 };
+let generation = 0;
 
 function invalidate() {
-  cache = { value: null, expiresAt: 0 };
+  generation += 1;
+  cache = { value: null, user: null, expiresAt: 0 };
+}
+
+/**
+ * Bust the cached merged pricing map. Call after any write to the `pricing`
+ * kv scope (see updatePricing/resetPricing/resetAllPricing, and importDb for
+ * the restore path) so the next read rebuilds from the DB.
+ */
+export function invalidatePricingCache() {
+  invalidate();
 }
 
 async function getUserPricing() {
   return await pricingKv.getAll();
 }
 
-export async function getPricing() {
+async function loadPricing() {
   const now = Date.now();
-  if (cache.value && cache.expiresAt > now) return cache.value;
+  if (cache.value && cache.expiresAt > now) return cache;
 
+  // A read that started before an invalidation must not publish stale pricing.
+  const startGeneration = generation;
   const userPricing = await getUserPricing();
   const { PROVIDER_PRICING } = await import("open-sse/providers/pricing.js");
   const merged = {};
@@ -44,14 +57,22 @@ export async function getPricing() {
     }
   }
 
-  cache = { value: merged, expiresAt: now + CACHE_TTL_MS };
-  return merged;
+  const entry = { value: merged, user: userPricing, expiresAt: now + CACHE_TTL_MS };
+  if (startGeneration === generation) cache = entry;
+  return entry;
+}
+
+export async function getPricing() {
+  return (await loadPricing()).value;
 }
 
 export async function getPricingForModel(provider, model) {
   if (!model) return null;
-  const userPricing = await getUserPricing();
-  if (provider && userPricing[provider]?.[model]) return userPricing[provider][model];
+  // Read through the cached pricing instead of re-running the pricing SELECT +
+  // JSON.parse on every request. Return the raw user override (not the merged
+  // entry) so partial overrides cost exactly as they did before caching.
+  const { user } = await loadPricing();
+  if (provider && user[provider]?.[model]) return user[provider][model];
   const { getPricingForModel: resolveConst } = await import("open-sse/providers/pricing.js");
   return resolveConst(provider, model);
 }

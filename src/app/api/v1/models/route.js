@@ -18,9 +18,17 @@ import { resolveZedModels } from "open-sse/shared/zedAuth.js";
 import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { capabilitiesFromServiceKind, getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
+import { filterModelsForRequest } from "@/sse/services/keyLimits.js";
 
-// Per-provider live model resolvers. Each receives a connection record and
-// returns { models: [{ id, name? }, ...] } | null on failure.
+// The longest one provider's live catalog may take. Past it the list uses that
+// provider's static models, so one hung upstream can't stall the whole list
+// (and with it the auto-combo catalog requests wait on after a restart).
+export const LIVE_CATALOG_TIMEOUT_MS = 8000;
+
+// Per-provider live model resolvers. Each receives a connection record and an
+// abort signal that fires when its time is up (for fetches of its own; a fetch
+// it shares with other callers must not take it), and returns
+// { models: [{ id, name? }, ...] } | null on failure.
 // Adding a provider here makes /v1/models prefer the live catalog for it.
 const LIVE_MODEL_RESOLVERS = {
   kiro: async (conn) => {
@@ -28,7 +36,10 @@ const LIVE_MODEL_RESOLVERS = {
       accessToken: conn.accessToken,
       refreshToken: conn.refreshToken,
       providerSpecificData: conn.providerSpecificData || {}
-    }, { log: console });
+    }, {
+      log: console,
+      onCredentialsRefreshed: (refreshed) => updateProviderCredentials(conn.id, refreshed),
+    });
     return result?.models?.length ? { models: result.models } : null;
   },
   qoder: async (conn) => {
@@ -63,7 +74,6 @@ const LIVE_MODEL_RESOLVERS = {
         await updateProviderCredentials(conn.id, {
           copilotToken: refreshed.copilotToken,
           copilotTokenExpiresAt: refreshed.copilotTokenExpiresAt,
-          existingProviderSpecificData: conn.providerSpecificData || {},
         });
       },
     });
@@ -76,13 +86,14 @@ const LIVE_MODEL_RESOLVERS = {
     });
     return result?.models?.length ? { models: result.models } : null;
   },
-  "grok-cli": async (conn) => {
+  "grok-cli": async (conn, signal) => {
     const proxy = await resolveConnectionProxyConfig(conn.providerSpecificData || {});
     const result = await resolveGrokCliModels({
       ...conn,
       connectionId: conn.id,
     }, {
       log: console,
+      signal,
       proxyOptions: {
         connectionProxyEnabled: proxy.connectionProxyEnabled === true,
         connectionProxyUrl: proxy.connectionProxyUrl || "",
@@ -91,10 +102,7 @@ const LIVE_MODEL_RESOLVERS = {
         strictProxy: proxy.strictProxy === true,
       },
       onCredentialsRefreshed: async (refreshed) => {
-        await updateProviderCredentials(conn.id, {
-          ...refreshed,
-          existingProviderSpecificData: conn.providerSpecificData || {},
-        });
+        await updateProviderCredentials(conn.id, refreshed);
       },
     });
     return result?.models?.length ? { models: result.models } : null;
@@ -106,6 +114,9 @@ const LIVE_MODEL_RESOLVERS = {
     }, { log: console });
     return result?.models?.length ? { models: result.models } : null;
   },
+  // No signal: resolveZedModels shares one in-flight /models fetch with chat
+  // requests, so aborting it here would fail theirs too. The timeout still
+  // cuts the list loose from it.
   zed: async (conn) => {
     const result = await resolveZedModels({
       accessToken: conn.accessToken,
@@ -123,6 +134,35 @@ const LIVE_MODEL_RESOLVERS = {
     };
   },
 };
+
+/**
+ * Run one live resolver with LIVE_CATALOG_TIMEOUT_MS to finish. It gets an
+ * abort signal to stop its own fetches; one that ignores the signal is still
+ * cut off here, and the caller falls back to the static list.
+ */
+export class LiveCatalogTimeoutError extends Error {
+  constructor(providerId, timeoutMs) {
+    super(`${providerId} model list timed out after ${timeoutMs} ms`);
+    this.name = "LiveCatalogTimeoutError";
+    this.providerId = providerId;
+  }
+}
+
+export async function withLiveCatalogTimeout(providerId, run, timeoutMs = LIVE_CATALOG_TIMEOUT_MS) {
+  const controller = new AbortController();
+  let timer;
+  const timedOut = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new LiveCatalogTimeoutError(providerId, timeoutMs));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([Promise.resolve().then(() => run(controller.signal)), timedOut]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 const parseOpenAIStyleModels = (data) => {
   if (Array.isArray(data)) return data;
@@ -194,18 +234,22 @@ async function fetchCompatibleModelIds(connection) {
 
   try {
     const controller = new AbortController();
+    // Armed until the body is read: a body that stalls after its headers
+    // would otherwise hold up the whole model list.
     const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const response = await fetch(url, {
-      method: "GET",
-      headers: { ...headers, [INTERNAL_MODELS_FETCH_HEADER]: "1" },
-      cache: "no-store",
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    if (!response.ok) return [];
-
-    const data = await response.json();
+    let data;
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: { ...headers, [INTERNAL_MODELS_FETCH_HEADER]: "1" },
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) return [];
+      data = await response.json();
+    } finally {
+      clearTimeout(timeoutId);
+    }
     const rawModels = parseOpenAIStyleModels(data);
 
     return Array.from(
@@ -237,15 +281,75 @@ function comboMatchesKinds(combo, kindFilter) {
   return kindFilter.includes(kind);
 }
 
+// A provider's ids before any live lookup: the connection's chosen models,
+// else the static table.
+function staticModelIds(conn, providerModels) {
+  const enabledModels = conn?.providerSpecificData?.enabledModels;
+  const hasExplicitEnabledModels = Array.isArray(enabledModels) && enabledModels.length > 0;
+  const rawModelIds = hasExplicitEnabledModels
+    ? Array.from(new Set(enabledModels.filter((modelId) => typeof modelId === "string" && modelId.trim() !== "")))
+    : providerModels.map((model) => model.id);
+  return { rawModelIds, hasExplicitEnabledModels, liveModelKindById: new Map(), liveCapabilitiesById: new Map() };
+}
+
+// The prefix a provider's model ids are listed under: the connection's own
+// prefix, else the provider's alias.
+function outputAliasFor(providerId, conn) {
+  const staticAlias = PROVIDER_ID_TO_ALIAS[providerId] || providerId;
+  return (conn?.providerSpecificData?.prefix || getProviderAlias(providerId) || staticAlias).trim();
+}
+
+/**
+ * One provider's model ids, with what its live catalog says about them. A
+ * compatible endpoint with no models listed is asked for its /models (5 s); a
+ * provider with a live catalog (Kiro's per-account variants, Zed, ...) is
+ * asked for that (LIVE_CATALOG_TIMEOUT_MS). Either failing leaves the static
+ * ids; a live catalog that timed out is reported to `onLiveTimeout`.
+ */
+async function resolveProviderModelIds(providerId, conn, { skipDynamicFetch, skipLiveCatalogs, onLiveTimeout }) {
+  const staticAlias = PROVIDER_ID_TO_ALIAS[providerId] || providerId;
+  const result = staticModelIds(conn, PROVIDER_MODELS[staticAlias] || []);
+  const isCompatibleProvider = isOpenAICompatibleProvider(providerId) || isAnthropicCompatibleProvider(providerId);
+
+  if (isCompatibleProvider && result.rawModelIds.length === 0 && !skipDynamicFetch) {
+    result.rawModelIds = await fetchCompatibleModelIds(conn);
+  }
+
+  // Config-driven live catalog override (e.g. Kiro returns dynamic
+  // -thinking/-agentic variants per account). On failure, fall back to
+  // whatever rawModelIds already holds.
+  const liveResolver = LIVE_MODEL_RESOLVERS[providerId];
+  if (liveResolver && !result.hasExplicitEnabledModels && !skipLiveCatalogs) {
+    try {
+      const live = await withLiveCatalogTimeout(providerId, (signal) => liveResolver(conn, signal));
+      if (live?.models?.length) {
+        result.rawModelIds = live.models.map((m) => m.id);
+        result.liveModelKindById = new Map(live.models.filter((m) => m?.id).map((m) => [m.id, modelKind(m)]));
+        result.liveCapabilitiesById = new Map(live.models.filter((m) => m?.id && m.capabilities).map((m) => [m.id, m.capabilities]));
+      }
+    } catch (err) {
+      if (err instanceof LiveCatalogTimeoutError) onLiveTimeout?.(providerId, { alias: outputAliasFor(providerId, conn) });
+      console.log(`Live model fetch failed for ${providerId}: ${err?.message || err}`);
+    }
+  }
+  return result;
+}
+
 /**
  * Build OpenAI-format models list filtered by service kinds.
  * @param {string[]} kindFilter - List of service kinds to include (e.g. ["llm"], ["webSearch","webFetch"]).
+ * @param {object} [options] - skipDynamicFetch, skipLiveCatalogs, and
+ *   onLiveTimeout(providerId, { alias }), told when a provider's live catalog
+ *   timed out and its static models stood in; `alias` is the prefix its ids
+ *   are listed under.
  */
 export async function buildModelsList(kindFilter, options = {}) {
   // When this header is present, the /v1/models request came from another
   // 10router instance's fetchCompatibleModelIds — skip dynamic fetch to break
   // cross-instance recursive loops.
   const skipDynamicFetch = options.skipDynamicFetch === true;
+  // Static lists only, no live provider catalogs: for callers that can't wait.
+  const skipLiveCatalogs = options.skipLiveCatalogs === true;
   let connections = [];
   try {
     connections = await getProviderConnections();
@@ -342,67 +446,26 @@ export async function buildModelsList(kindFilter, options = {}) {
       });
     }
   } else {
-    for (const [providerId, conn] of activeConnectionByProvider.entries()) {
-      if (!providerMatchesKinds(providerId, kindFilter)) continue;
+    // Each provider's model ids are fetched at once, in parallel, so the whole
+    // list takes as long as its slowest provider (each capped), not their sum.
+    const providers = [...activeConnectionByProvider.entries()]
+      .filter(([providerId]) => providerMatchesKinds(providerId, kindFilter));
+    const resolved = await Promise.allSettled(providers.map(([providerId, conn]) =>
+      resolveProviderModelIds(providerId, conn, { skipDynamicFetch, skipLiveCatalogs, onLiveTimeout: options.onLiveTimeout })));
 
+    for (const [index, [providerId, conn]] of providers.entries()) {
       const staticAlias = PROVIDER_ID_TO_ALIAS[providerId] || providerId;
-      const outputAlias = (
-        conn?.providerSpecificData?.prefix
-        || getProviderAlias(providerId)
-        || staticAlias
-      ).trim();
+      const outputAlias = outputAliasFor(providerId, conn);
       const providerModels = PROVIDER_MODELS[staticAlias] || [];
-      const enabledModels = conn?.providerSpecificData?.enabledModels;
-      const hasExplicitEnabledModels =
-        Array.isArray(enabledModels) && enabledModels.length > 0;
-      const isCompatibleProvider =
-        isOpenAICompatibleProvider(providerId) || isAnthropicCompatibleProvider(providerId);
 
       // Build kind lookup for static models so we can filter even when only IDs are exposed
       const staticModelKindById = new Map(
         providerModels.map((m) => [m.id, modelKind(m)])
       );
-      let liveModelKindById = new Map();
-      let liveCapabilitiesById = new Map();
-
-      let rawModelIds = hasExplicitEnabledModels
-        ? Array.from(
-            new Set(
-              enabledModels.filter(
-                (modelId) => typeof modelId === "string" && modelId.trim() !== "",
-              ),
-            ),
-          )
-        : providerModels.map((model) => model.id);
-
-      if (isCompatibleProvider && rawModelIds.length === 0 && !skipDynamicFetch) {
-        rawModelIds = await fetchCompatibleModelIds(conn);
-      }
-
-      // Config-driven live catalog override (e.g. Kiro returns dynamic
-      // -thinking/-agentic variants per account). On failure, fall back to
-      // whatever rawModelIds already holds.
-      const liveResolver = LIVE_MODEL_RESOLVERS[providerId];
-      if (liveResolver && !hasExplicitEnabledModels) {
-        try {
-          const live = await liveResolver(conn);
-          if (live?.models?.length) {
-            rawModelIds = live.models.map((m) => m.id);
-            liveModelKindById = new Map(
-              live.models
-                .filter((m) => m?.id)
-                .map((m) => [m.id, modelKind(m)])
-            );
-            liveCapabilitiesById = new Map(
-              live.models
-                .filter((m) => m?.id && m.capabilities)
-                .map((m) => [m.id, m.capabilities])
-            );
-          }
-        } catch (err) {
-          console.log(`Live model fetch failed for ${providerId}: ${err?.message || err}`);
-        }
-      }
+      const outcome = resolved[index];
+      const { rawModelIds, liveModelKindById, liveCapabilitiesById } = outcome.status === "fulfilled"
+        ? outcome.value
+        : staticModelIds(conn, providerModels);
 
       const modelIds = rawModelIds
         .map((modelId) => {
@@ -562,7 +625,8 @@ export async function GET(request) {
   try {
     // Detect cross-instance recursive /models fetch (another 10router fetching our /models)
     const skipDynamicFetch = request?.headers?.get(INTERNAL_MODELS_FETCH_HEADER) === "1";
-    const data = await buildModelsList([LLM_KIND], { skipDynamicFetch });
+    // A key with a model allowlist sees only the models it may use.
+    const data = await filterModelsForRequest(request, await buildModelsList([LLM_KIND], { skipDynamicFetch }));
     return Response.json({ object: "list", data }, {
       headers: { "Access-Control-Allow-Origin": "*" },
     });

@@ -31,10 +31,19 @@ import {
 } from "../../config/kiroConstants.js";
 import { DEFAULT_IMAGE_MIME } from "../schema/index.js";
 import { ROLE, CLAUDE_BLOCK } from "../schema/index.js";
+import { claudeToolResultText, scrubInlineBase64 } from "../concerns/toolContent.js";
+import { markToolImage } from "../concerns/toolImageCap.js";
 import {
   canonicalizeKiroConversation,
   normalizeKiroToolSpecs,
 } from "../concerns/kiroConversation.js";
+
+// Claude base64 image source → Kiro image.
+function kiroImage(source) {
+  const mediaType = source.media_type || DEFAULT_IMAGE_MIME;
+  const format = mediaType.split("/")[1] || mediaType;
+  return { format, source: { bytes: source.data } };
+}
 
 /**
  * Convert Claude messages to Kiro history + currentMessage.
@@ -89,21 +98,22 @@ function convertClaudeMessagesToKiro(messages, model) {
           if (block.type === CLAUDE_BLOCK.TEXT) {
             pendingUserContent.push(block.text);
           } else if (block.type === CLAUDE_BLOCK.IMAGE && block.source?.type === "base64") {
-            const mediaType = block.source.media_type || DEFAULT_IMAGE_MIME;
-            const format = mediaType.split("/")[1] || mediaType;
-            pendingImages.push({ format, source: { bytes: block.source.data } });
+            pendingImages.push(kiroImage(block.source));
           } else if (block.type === CLAUDE_BLOCK.TOOL_RESULT) {
             let resultContent = "";
             if (typeof block.content === "string") {
-              resultContent = block.content;
+              resultContent = scrubInlineBase64(block.content);
             } else if (Array.isArray(block.content)) {
-              resultContent =
-                block.content
-                  .filter((c) => c.type === CLAUDE_BLOCK.TEXT)
-                  .map((c) => c.text)
-                  .join("\n") || JSON.stringify(block.content);
+              // A tool's screenshot is attached to this turn as a Kiro image;
+              // its base64 never goes in the result text.
+              resultContent = claudeToolResultText(block.content, (c) => {
+                if (c.source?.type !== "base64" || !c.source.data) return 0;
+                // Marked as a tool image for the image window after replay
+                pendingImages.push(markToolImage(kiroImage(c.source), true));
+                return pendingImages.length;
+              }) || scrubInlineBase64(JSON.stringify(block.content));
             } else if (block.content) {
-              resultContent = JSON.stringify(block.content);
+              resultContent = scrubInlineBase64(JSON.stringify(block.content));
             }
             pendingToolResults.push({
               toolUseId: block.tool_use_id,
@@ -217,6 +227,7 @@ function extractClaudeSystemText(system) {
  * Build a Kiro payload directly from a Claude Messages API request body.
  */
 export function claudeToKiroRequest(model, body, stream, credentials) {
+  // The image window runs once, in applyKiroSessionReplay, on what is sent.
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const tools = Array.isArray(body.tools) ? body.tools : [];
   const maxTokens = body.max_tokens || 32000;
@@ -267,12 +278,13 @@ export function claudeToKiroRequest(model, body, stream, credentials) {
   const continuationId = resolveContinuationId({
     sessionId: conversationId,
     connectionId: credentials?.connectionId,
-    scope: "kiro",
+    scope: `kiro:${credentials?.clientScope || ""}`,
     ephemeral: sessionIdentity.ephemeral,
   });
   const replay = applyKiroSessionReplay({
     conversationId,
     connectionId: credentials?.connectionId,
+    clientScope: credentials?.clientScope,
     modelId: upstreamModel,
     systemPrompt,
     contentPrefix,
