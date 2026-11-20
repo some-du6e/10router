@@ -105,7 +105,7 @@ function makeFakeChild() {
   return child;
 }
 
-async function runExecute(credentials = {}) {
+async function runExecute(credentials = {}, body = { messages: [{ role: "user", content: "hi" }] }) {
   const child = makeFakeChild();
   spawnMock.mockImplementation((bin, args, opts) => {
     child.bin = bin;
@@ -116,7 +116,7 @@ async function runExecute(credentials = {}) {
   const exec = new DevinCliExecutor();
   const { response } = await exec.execute({
     model: "swe-1.6-fast",
-    body: { messages: [{ role: "user", content: "hi" }] },
+    body,
     credentials,
     log: { info() {}, debug() {} },
   });
@@ -186,6 +186,29 @@ describe("DevinCliExecutor ACP session/new", () => {
     expect(promptMsg).toBeTruthy();
     expect(Array.isArray(promptMsg.params.prompt)).toBe(true);
     expect(promptMsg.params.content).toBeUndefined();
+  });
+
+  it("names a tool's screenshot in the prompt as omitted, never inlining it or pointing at nothing", async () => {
+    const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const image = { type: "image_url", image_url: { url: `data:image/png;base64,${PNG_B64}` } };
+    const { child } = await runExecute({}, {
+      messages: [
+        { role: "user", content: "go" },
+        { role: "assistant", content: null, tool_calls: [
+          { id: "call_1", type: "function", function: { name: "screenshot", arguments: "{}" } },
+          { id: "call_2", type: "function", function: { name: "screenshot", arguments: "{}" } },
+        ] },
+        // a tool result still holding its image, and one whose image was moved to the next user turn
+        { role: "tool", tool_call_id: "call_1", content: [{ type: "text", text: "first" }, image] },
+        { role: "tool", tool_call_id: "call_2", content: "second\n[image 1 attached below]" },
+        { role: "user", content: [image] },
+      ],
+    });
+    const writes = child.writes.map((w) => JSON.parse(w.trim()));
+    const prompt = JSON.stringify(writes.find((m) => m.method === "session/prompt").params.prompt);
+    expect(prompt).not.toContain(PNG_B64);
+    expect(prompt).toContain("first\\n[image omitted]");
+    expect(prompt).toContain("[User]\\n[image omitted]");
   });
 
   it("completes the prompt without a -32602 Invalid params error", async () => {
@@ -343,6 +366,59 @@ describe("DevinCliExecutor ACP session/new", () => {
     expect(acc).toContain("[DONE]");
   });
 
+  it("passes a client hang-up on as an abort, not as a finished answer", async () => {
+    // A devin that answers part of the prompt, then exits when it is killed.
+    const child = new EventEmitter();
+    child.stdin = new EventEmitter();
+    child.stdin.destroyed = false;
+    child.stdin.write = (data) => { handle(JSON.parse(String(data).trim())); return true; };
+    child.stdin.end = () => { child.stdin.destroyed = true; };
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.killed = false;
+    child.kill = () => {
+      child.killed = true;
+      setImmediate(() => child.emit("close", null));
+    };
+    spawnMock.mockReturnValue(child);
+    const send = (o) => child.stdout.emit("data", Buffer.from(JSON.stringify(o) + "\n"));
+    function handle(msg) {
+      if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1 } });
+      else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s1" } });
+      else if (msg.method === "session/prompt") {
+        send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "partial" } } } });
+      }
+    }
+
+    const ctrl = new AbortController();
+    const { response } = await new DevinCliExecutor().execute({
+      model: "swe-1.6-fast",
+      body: { messages: [{ role: "user", content: "hi" }] },
+      credentials: {},
+      signal: ctrl.signal,
+      log: { info() {}, debug() {} },
+    });
+    const reader = response.body.getReader();
+    let acc = "";
+    while (!acc.includes("partial")) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      acc += new TextDecoder().decode(value);
+    }
+    expect(acc).toContain("partial");
+    ctrl.abort();
+    const error = await (async () => {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) return null;
+        acc += new TextDecoder().decode(value);
+      }
+    })().catch((e) => e);
+    expect(error?.name).toBe("AbortError");
+    expect(child.killed).toBe(true);
+    expect(acc).not.toContain("[DONE]");
+  });
+
   it("overrides the agent type via CLI_DEVIN_AGENT_TYPE", async () => {
     process.env.CLI_DEVIN_AGENT_TYPE = "summarizer";
     try {
@@ -399,7 +475,8 @@ describe("DevinCliExecutor ACP session/new", () => {
 
   it("does not set XDG_CONFIG_HOME when DEVIN_MCP_SERVERS is absent", async () => {
     const { child } = await runExecute();
-    expect(child.opts.env.XDG_CONFIG_HOME).toBeUndefined();
+    // Left as the parent environment has it (CI runners set one; most shells don't).
+    expect(child.opts.env.XDG_CONFIG_HOME).toBe(process.env.XDG_CONFIG_HOME);
   });
 
   it("exposes body.tools as an MCP server (sets XDG_CONFIG_HOME + writes script)", async () => {

@@ -37,6 +37,7 @@ describe("SSE framing and EOF use the same processing path", () => {
       { content: "hello", thinking: "", toolCalls: [] },
       expect.objectContaining({ prompt_tokens: 11, completion_tokens: 7 }),
       expect.any(Number),
+      { aborted: false },
     );
   });
 

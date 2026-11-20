@@ -3,28 +3,20 @@ const https = require("https");
 const crypto = require("crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const os = require("node:os");
 const { machineIdSync } = require("node-machine-id");
+const { getDataDir } = require("../../../hooks/dataDir");
 
 // Default configuration
 const DEFAULT_CONFIG = {
-  host: "localhost",
+  host: "127.0.0.1",
   port: 20128,
   protocol: "http:",
 };
 
 const CLI_TOKEN_HEADER = "x-9r-cli-token";
 const CLI_TOKEN_SALT = "9r-cli-auth";
-const APP_NAME = "10router";
 
-function getDataDir() {
-  if (process.env.DATA_DIR) return process.env.DATA_DIR;
-  if (process.platform === "win32") {
-    return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), APP_NAME);
-  }
-  return path.join(os.homedir(), `.${APP_NAME}`);
-}
-
+// The server's data directory, where it keeps machine-id and auth/cli-secret.
 const MACHINE_ID_FILE = path.join(getDataDir(), "machine-id");
 const AUTH_DIR = path.join(getDataDir(), "auth");
 const CLI_SECRET_FILE = path.join(AUTH_DIR, "cli-secret");
@@ -51,18 +43,28 @@ function loadCliSecret() {
   } catch {}
   cachedCliSecret = crypto.randomBytes(32).toString("hex");
   try {
-    fs.mkdirSync(AUTH_DIR, { recursive: true });
+    fs.mkdirSync(AUTH_DIR, { recursive: true, mode: 0o700 });
     fs.writeFileSync(CLI_SECRET_FILE, cachedCliSecret, { mode: 0o600 });
   } catch {}
   return cachedCliSecret;
 }
 
 function getCliToken() {
-  if (cachedCliToken !== null) return cachedCliToken;
+  if (cachedCliToken) return cachedCliToken;
   const raw = loadRawMachineId();
+  if (!raw) return "";
   const secret = loadCliSecret();
-  cachedCliToken = raw ? crypto.createHash("sha256").update(raw + CLI_TOKEN_SALT + secret).digest("hex").substring(0, 16) : "";
+  cachedCliToken = crypto.createHash("sha256").update(raw + CLI_TOKEN_SALT + secret).digest("hex").substring(0, 16);
   return cachedCliToken;
+}
+
+// Address the CLI dials for a server bound to bindHost. "localhost" may
+// resolve to ::1 first, where another local user could be listening.
+function hostForBind(bindHost) {
+  const host = String(bindHost || "").trim().replace(/^\[(.*)\]$/, "$1");
+  if (!host || host === "0.0.0.0" || host === "localhost") return "127.0.0.1";
+  if (host === "::") return "::1";
+  return host;
 }
 
 /**
@@ -76,6 +78,15 @@ function configure(options = {}) {
   config = { ...config, ...options };
 }
 
+// Every request waits for this promise first. The launcher sets it to its
+// readiness check after each server (re)start, so the CLI token only goes to
+// a server that proved it is the launcher's own. Resolving false fails the
+// requests instead.
+let readyGate = null;
+function pauseUntil(gate) {
+  readyGate = gate ? Promise.resolve(gate) : null;
+}
+
 /**
  * Make HTTP request to API
  * @param {string} method - HTTP method
@@ -83,7 +94,10 @@ function configure(options = {}) {
  * @param {Object} body - Request body (optional)
  * @returns {Promise<Object>} Response with { success, data/error }
  */
-function makeRequest(method, path, body = null) {
+async function makeRequest(method, path, body = null) {
+  if (readyGate && !(await readyGate)) {
+    return { success: false, error: "The server isn't ready (it hasn't proved it is this launcher's server)." };
+  }
   return new Promise((resolve) => {
     const httpModule = config.protocol === "https:" ? https : http;
     
@@ -496,6 +510,8 @@ async function disableTunnel() {
 
 module.exports = {
   configure,
+  pauseUntil,
+  hostForBind,
   
   // Providers
   getProviders,

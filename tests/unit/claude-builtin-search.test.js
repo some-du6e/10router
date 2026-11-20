@@ -16,10 +16,10 @@ const requestBody = () => ({
 });
 
 describe("Claude built-in web search on non-Claude providers", () => {
-  it("extracts the query and bounded result count", () => {
+  it("extracts the query and ignores max_uses as a result count", () => {
     expect(getBuiltinSearchRequest(requestBody())).toEqual({
       query: "latest router news",
-      maxResults: 3,
+      maxResults: 5,
       allowedDomains: undefined,
       blockedDomains: undefined,
     });
@@ -65,5 +65,12 @@ describe("Claude built-in web search on non-Claude providers", () => {
     const search = vi.fn();
     expect(await enrichClaudeBuiltinSearch(body, { provider: "claude", search })).toBe(body);
     expect(search).not.toHaveBeenCalled();
+  });
+
+  it("passes an auto combo's blocked billing to the search model lookup", async () => {
+    const resolveSearchModel = vi.fn(async () => null);
+    const blockedBilling = new Set(["payg"]);
+    await enrichClaudeBuiltinSearch(requestBody(), { provider: "kiro", search: vi.fn(), resolveSearchModel, blockedBilling });
+    expect(resolveSearchModel).toHaveBeenCalledWith(blockedBilling);
   });
 });

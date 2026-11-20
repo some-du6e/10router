@@ -1,6 +1,7 @@
 // Google Gemini adapter (Nano Banana models)
 import { nowSec } from "./_base.js";
 import { PROVIDER_MEDIA } from "../../providers/index.js";
+import { modelPathSegment } from "../../utils/modelPath.js";
 
 const BASE_URL = PROVIDER_MEDIA["gemini"]?.imageConfig?.baseUrl;
 
@@ -8,7 +9,7 @@ export default {
   buildUrl: (model, creds) => {
     const apiKey = creds?.apiKey || creds?.accessToken;
     const modelId = model.replace(/^models\//, "");
-    return `${BASE_URL}/${modelId}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    return `${BASE_URL}/${modelPathSegment(modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`;
   },
   buildHeaders: () => ({ "Content-Type": "application/json" }),
   buildBody: (_model, body) => ({

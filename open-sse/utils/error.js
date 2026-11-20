@@ -1,4 +1,5 @@
 import { ERROR_TYPES, DEFAULT_ERROR_MESSAGES } from "../config/errorConfig.js";
+import { HTTP_STATUS } from "../config/runtimeConfig.js";
 
 /**
  * Build OpenAI-compatible error response body
@@ -106,6 +107,20 @@ export function createErrorResult(statusCode, message, resetsAtMs) {
 }
 
 /**
+ * Did this fail because the client hung up? An AbortError while the client's
+ * signal has fired, as opposed to a timeout, a stall, or an upstream reset.
+ * A hang-up is not an upstream failure: record it like a disconnect, not as FAILED.
+ */
+export function isClientAbort(error, clientSignal) {
+  return error?.name === "AbortError" && clientSignal?.aborted === true;
+}
+
+/** The result of an attempt the client hung up on. */
+export function clientAbortResult() {
+  return createErrorResult(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
+}
+
+/**
  * Create unavailable response when all accounts are rate limited
  * @param {number} statusCode - Original error status code
  * @param {string} message - Error message (without retry info)
@@ -128,6 +143,12 @@ export function unavailableResponse(statusCode, message, retryAfter, retryAfterH
   );
 }
 
+/** A thrown error's low-level cause as [code, message]: the truthy parts, stringified. */
+export function errorCauseParts(error) {
+  const cause = error?.cause;
+  return [cause?.code, cause?.message].filter(Boolean).map((p) => String(p));
+}
+
 /**
  * Format provider error with context
  * @param {Error} error - Original error
@@ -138,10 +159,9 @@ export function unavailableResponse(statusCode, message, retryAfter, retryAfterH
  */
 export function formatProviderError(error, provider, model, statusCode) {
   const code = statusCode || error.code || "FETCH_FAILED";
-  const message = error.message || "Unknown error";
+  const message = error.message ? String(error.message) : "Unknown error";
   // Expose low-level cause (e.g. UND_ERR_SOCKET, ECONNRESET, ETIMEDOUT) for diagnosing fetch failures
-  const causeCode = error.cause?.code;
-  const causeMsg = error.cause?.message;
-  const causeStr = causeCode || causeMsg ? ` (cause: ${[causeCode, causeMsg].filter(Boolean).join(": ")})` : "";
+  const cause = errorCauseParts(error);
+  const causeStr = cause.length ? ` (cause: ${cause.join(": ")})` : "";
   return `[${code}]: ${message}${causeStr}`;
 }

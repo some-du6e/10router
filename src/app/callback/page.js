@@ -1,7 +1,43 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { listenForCallbackAcks } from "@/shared/utils/oauthCallbackAck.js";
+import { runOAuthCallback } from "@/shared/utils/oauthCallbackFlow.js";
+
+// Sends the callback to the dashboard every way that might reach it.
+function relayCallback(callbackData, expectedOrigins) {
+  // Method 1: postMessage to opener (popup mode)
+  // Send once per expected origin. The browser delivers the message only
+  // when the opener's origin matches the targetOrigin we pass — using "*"
+  // here would leak the code/state to any opener (e.g. an attacker page
+  // that opened this URL in a popup), so iterate over the allowlist.
+  if (window.opener) {
+    for (const origin of expectedOrigins) {
+      try {
+        window.opener.postMessage({ type: "oauth_callback", data: callbackData }, origin);
+      } catch (e) {
+        console.log("postMessage failed:", e);
+      }
+    }
+  }
+
+  // Method 2: BroadcastChannel (same origin tabs)
+  try {
+    const channel = new BroadcastChannel("oauth_callback");
+    channel.postMessage(callbackData);
+    channel.close();
+  } catch (e) {
+    console.log("BroadcastChannel failed:", e);
+  }
+
+  // Method 3: localStorage event (fallback)
+  try {
+    localStorage.setItem("oauth_callback", JSON.stringify({ ...callbackData, timestamp: Date.now() }));
+  } catch (e) {
+    console.log("localStorage failed:", e);
+  }
+}
 
 /**
  * OAuth Callback Page Content
@@ -9,24 +45,14 @@ import { useSearchParams } from "next/navigation";
 function CallbackContent() {
   const searchParams = useSearchParams();
   const [status, setStatus] = useState("processing");
+  const [manualUrl, setManualUrl] = useState("");
+  // This Next version updates useSearchParams on replaceState, which re-runs
+  // the effect with the query already gone.
+  const handledRef = useRef(false);
 
   useEffect(() => {
-    const code = searchParams.get("code");
-    const token = searchParams.get("token");
-    const state = searchParams.get("state");
-    const error = searchParams.get("error");
-    const errorDescription = searchParams.get("error_description");
-
-    const callbackData = {
-      code,
-      token,
-      state,
-      error,
-      errorDescription,
-      fullUrl: window.location.href,
-    };
-
-    let relayed = false;
+    if (handledRef.current) return;
+    handledRef.current = true;
 
     // Trusted origins that may receive this callback. The OAuth code/state
     // must only be relayed to the dashboard window we expect to be the opener
@@ -38,50 +64,18 @@ function CallbackContent() {
       "http://localhost:1455", // Codex specific port
     ];
 
-    // Method 1: postMessage to opener (popup mode)
-    // Send once per expected origin. The browser delivers the message only
-    // when the opener's origin matches the targetOrigin we pass — using "*"
-    // here would leak the code/state to any opener (e.g. an attacker page
-    // that opened this URL in a popup), so iterate over the allowlist.
-    if (window.opener) {
-      for (const origin of expectedOrigins) {
-        try {
-          window.opener.postMessage({ type: "oauth_callback", data: callbackData }, origin);
-          relayed = true;
-        } catch (e) {
-          console.log("postMessage failed:", e);
-        }
-      }
-    }
-
-    // Method 2: BroadcastChannel (same origin tabs)
-    try {
-      const channel = new BroadcastChannel("oauth_callback");
-      channel.postMessage(callbackData);
-      channel.close();
-      relayed = true;
-    } catch (e) {
-      console.log("BroadcastChannel failed:", e);
-    }
-
-    // Method 3: localStorage event (fallback)
-    try {
-      localStorage.setItem("oauth_callback", JSON.stringify({ ...callbackData, timestamp: Date.now() }));
-      relayed = true;
-    } catch (e) {
-      console.log("localStorage failed:", e);
-    }
-
-    if (!(code || token || error)) {
-      setTimeout(() => setStatus("manual"), 0);
-      return;
-    }
-
-    setStatus("success");
-    setTimeout(() => {
-      window.close();
-      setTimeout(() => setStatus("done"), 500);
-    }, 1500);
+    // No cleanup: the listener lives as long as the page, and handledRef keeps a
+    // second effect run from starting another one.
+    runOAuthCallback({
+      params: searchParams,
+      href: window.location.href,
+      replaceState: () => window.history.replaceState(null, "", window.location.pathname),
+      listen: (onMessage) => listenForCallbackAcks(onMessage, { target: window, origins: [window.location.origin] }),
+      relay: (callbackData) => relayCallback(callbackData, expectedOrigins),
+      close: () => window.close(),
+      setStatus,
+      setManualUrl,
+    });
   }, [searchParams]);
 
   return (
@@ -109,6 +103,39 @@ function CallbackContent() {
           </>
         )}
 
+        {status === "failed" && (
+          <>
+            <div className="size-16 mx-auto mb-4 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
+              <span className="material-symbols-outlined text-3xl text-red-600">error</span>
+            </div>
+            <h1 className="text-xl font-semibold mb-2">Authorization Failed</h1>
+            <p className="text-text-muted">The connect dialog shows what went wrong. You can close this tab now.</p>
+          </>
+        )}
+
+        {status === "connecting" && (
+          <>
+            <div className="size-16 mx-auto mb-4 rounded-full bg-primary/10 flex items-center justify-center">
+              <span className="material-symbols-outlined text-3xl text-primary animate-spin">progress_activity</span>
+            </div>
+            <h1 className="text-xl font-semibold mb-2">Connecting...</h1>
+            <p className="text-text-muted">The dashboard got this sign-in and is connecting the account.</p>
+          </>
+        )}
+
+        {/* No URL here: the dashboard already sent the single-use code. */}
+        {status === "slow" && (
+          <>
+            <div className="size-16 mx-auto mb-4 rounded-full bg-yellow-100 dark:bg-yellow-900/30 flex items-center justify-center">
+              <span className="material-symbols-outlined text-3xl text-yellow-600">hourglass_top</span>
+            </div>
+            <h1 className="text-xl font-semibold mb-2">Still Connecting</h1>
+            <p className="text-text-muted">
+              The dashboard got this sign-in but hasn&apos;t finished connecting. Check the connect dialog; if it shows an error, start the sign-in again.
+            </p>
+          </>
+        )}
+
         {status === "manual" && (
           <>
             <div className="size-16 mx-auto mb-4 rounded-full bg-yellow-100 dark:bg-yellow-900/30 flex items-center justify-center">
@@ -116,10 +143,10 @@ function CallbackContent() {
             </div>
             <h1 className="text-xl font-semibold mb-2">Copy This URL</h1>
             <p className="text-text-muted mb-4">
-              Please copy the URL from the address bar and paste it in the application.
+              The dashboard didn&apos;t pick up this sign-in. Copy this URL and paste it into the connect dialog.
             </p>
             <div className="bg-surface border border-border rounded-lg p-3 text-left">
-              <code className="text-xs break-all">{typeof window !== "undefined" ? window.location.href : ""}</code>
+              <code className="text-xs break-all">{manualUrl}</code>
             </div>
           </>
         )}

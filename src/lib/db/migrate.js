@@ -5,8 +5,9 @@ import path from "node:path";
 import { LEGACY_FILES, DB_DIR } from "./paths.js";
 import { TABLES, buildCreateTableSql, SCHEMA_VERSION } from "./schema.js";
 import { MIGRATIONS, latestVersion } from "./migrations/index.js";
+import { reseedApiKeySpend, toLimitHoldColumn } from "./repos/apiKeysRepo.js";
 import { getMetaSync, setMetaSync } from "./helpers/metaStore.js";
-import { makeBackupDir, backupFile, backupDbLite, pruneOldBackups } from "./backup.js";
+import { backupOnce, backupFile, backupDbLite, pruneOldBackups } from "./backup.js";
 import { getAppVersion } from "./version.js";
 import { stringifyJson } from "./helpers/jsonCol.js";
 
@@ -40,9 +41,44 @@ function importWithAssertion(adapter, tableName, rows, insertFn, rowMeta) {
   }
 }
 
-function readJsonSafe(file) {
+// The tables a legacy import writes. It only runs while they are all empty, so
+// it can never overwrite settings (the password included) or keys made since.
+const IMPORT_TARGET_TABLES = ["settings", "providerConnections", "providerNodes", "proxyPools", "apiKeys", "combos"];
+
+function hasImportTargetRows(adapter) {
+  return IMPORT_TARGET_TABLES.some((t) => (adapter.get(`SELECT COUNT(*) as c FROM ${t}`)?.c ?? 0) > 0);
+}
+
+// A missing legacy file is null. One that exists but won't parse (a typo made
+// while fixing it) aborts the import: skipping it would lose its data for good.
+class LegacyFileUnreadable extends Error {
+  constructor(file, cause) {
+    super(`${path.basename(file)} is not valid JSON (${cause.message})`, { cause });
+    this.name = "LegacyFileUnreadable";
+    this.file = file;
+  }
+}
+
+function readLegacyJson(file) {
   if (!fs.existsSync(file)) return null;
-  try { return JSON.parse(fs.readFileSync(file, "utf-8")); } catch { return null; }
+  try { return JSON.parse(fs.readFileSync(file, "utf-8")); } catch (err) { throw new LegacyFileUnreadable(file, err); }
+}
+
+// The operator's line for a failed legacy import: the file, the reason, the
+// backup and the way out. It holds paths and, for a file that won't parse, a
+// snippet of it, so it goes to the server log only.
+function importAbortLine(file, cause, backupDir) {
+  const backup = backupDir ? ` | backup: ${backupDir}` : "";
+  return `[DB][migrate] legacy import from ${file} aborted: ${cause.message} | legacy JSON kept${backup} | fix the file and restart, or set SKIP_LEGACY_IMPORT=1 to start without importing it`;
+}
+
+// What callers get. Routes return a DB error's message to clients, so it stays
+// generic; the reason is in `cause`.
+export class LegacyImportFailed extends Error {
+  constructor(cause) {
+    super("[DB] legacy import failed; see the server log", { cause });
+    this.name = "LegacyImportFailed";
+  }
 }
 
 function isFreshDb(adapter) {
@@ -145,8 +181,8 @@ function importLegacyMain(adapter, data) {
 
   importWithAssertion(adapter, "apiKeys", data.apiKeys || [], (k) => {
     adapter.run(
-      `INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, createdAt) VALUES(?, ?, ?, ?, ?, ?)`,
-      [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1, k.createdAt || new Date().toISOString()]
+      `INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, limitHold, createdAt) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+      [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1, toLimitHoldColumn(k.limitHold), k.createdAt || new Date().toISOString()]
     );
   }, (k) => ({ id: k.id ?? null, name: k.name ?? null }));
 
@@ -254,16 +290,31 @@ export async function runMigrationOnce(adapter) {
   // (runVersionedMigrations also ensures this, but we need it earlier here).
   adapter.exec(buildCreateTableSql("_meta", TABLES._meta));
 
+  const alreadyImported = fs.existsSync(MIGRATED_MARKER);
+  // Present means on disk, parseable or not: the files are read only to import.
+  const legacyPresent = Object.values(LEGACY_FILES).filter((f) => fs.existsSync(f));
+  const hasLegacy = legacyPresent.length > 0;
+  // Schema migrations stamp _meta before import. Preserve import eligibility
+  // across a failed attempt instead of relying on freshness at the next boot.
+  if (fresh && hasLegacy && !alreadyImported) setMetaSync(adapter, "legacyImportPending", "1");
+  let importPending = getMetaSync(adapter, "legacyImportPending", "0") === "1";
+  if (importPending && (!hasLegacy || alreadyImported)) {
+    // The files went away (or were imported): a later copy must not import over live data.
+    setMetaSync(adapter, "legacyImportPending", "0");
+    importPending = false;
+  }
+
   // Detect a pending schema change via the central SCHEMA_VERSION const.
   // A lightweight backup is taken BEFORE any schema mutation below.
   const storedSchemaVer = parseInt(getMetaSync(adapter, "backupSchemaVersion", "0"), 10) || 0;
   const schemaChanging = !fresh && storedSchemaVer < SCHEMA_VERSION;
   if (schemaChanging) {
     try {
-      const backupDir = makeBackupDir(`schema-${storedSchemaVer}-to-${SCHEMA_VERSION}`);
-      backupDbLite(adapter, backupDir);
-      pruneOldBackups();
-      console.log(`[DB][migrate] pre-schema backup ${storedSchemaVer} → ${SCHEMA_VERSION}: ${backupDir}`);
+      const { dir, created } = backupOnce(`schema-${storedSchemaVer}-to-${SCHEMA_VERSION}`, (d) => backupDbLite(adapter, d));
+      if (created) {
+        pruneOldBackups();
+        console.log(`[DB][migrate] pre-schema backup ${storedSchemaVer} → ${SCHEMA_VERSION}: ${dir}`);
+      }
     } catch (e) {
       console.warn(`[DB][migrate] pre-schema backup failed (continuing): ${e.message}`);
     }
@@ -281,35 +332,45 @@ export async function runMigrationOnce(adapter) {
   // Decide once whether this install carries the old default-password grace.
   stampLegacyDefaultPassword(adapter, fresh);
 
-  // 3. One-time legacy JSON import (only if DB was fresh on entry)
-  const alreadyImported = fs.existsSync(MIGRATED_MARKER);
-  const legacyMain = readJsonSafe(LEGACY_FILES.main);
-  const legacyUsage = readJsonSafe(LEGACY_FILES.usage);
-  const legacyDisabled = readJsonSafe(LEGACY_FILES.disabled);
-  const legacyDetails = readJsonSafe(LEGACY_FILES.details);
-  const hasLegacy = !!(legacyMain || legacyUsage || legacyDisabled || legacyDetails);
+  // 3. One-time legacy JSON import, while legacyImportPending is set
+  const legacySources = legacyPresent.join(", ");
+  if (importPending && process.env.SKIP_LEGACY_IMPORT === "1") {
+    console.warn(`[DB][migrate] SKIP_LEGACY_IMPORT=1: starting without importing ${legacySources}`);
+    importPending = false;
+  } else if (importPending && hasImportTargetRows(adapter)) {
+    console.warn(`[DB][migrate] legacy import skipped: the database already has settings or keys | legacy JSON kept: ${legacySources}`);
+    setMetaSync(adapter, "legacyImportPending", "0");
+    importPending = false;
+  }
 
-  if (fresh && hasLegacy && !alreadyImported) {
+  if (importPending) {
     const t0 = Date.now();
-    const backupDir = makeBackupDir("migrate-from-json");
-    for (const f of Object.values(LEGACY_FILES)) backupFile(f, backupDir);
-
+    let backupDir = null;
     try {
+      ({ dir: backupDir } = backupOnce("migrate-from-json", (d) => {
+        for (const f of Object.values(LEGACY_FILES)) backupFile(f, d);
+      }));
+      const legacyMain = readLegacyJson(LEGACY_FILES.main);
+      const legacyUsage = readLegacyJson(LEGACY_FILES.usage);
+      const legacyDisabled = readLegacyJson(LEGACY_FILES.disabled);
+      const legacyDetails = readLegacyJson(LEGACY_FILES.details);
       adapter.transaction(() => {
         importLegacyMain(adapter, legacyMain);
         importLegacyUsage(adapter, legacyUsage);
         importLegacyDisabled(adapter, legacyDisabled);
         importLegacyDetails(adapter, legacyDetails);
+        // Keys and history arrived after migration 005 seeded the totals.
+        reseedApiKeySpend(adapter);
         setMetaSync(adapter, "appVersion", getAppVersion());
         setMetaSync(adapter, "backupSchemaVersion", SCHEMA_VERSION);
         setMetaSync(adapter, "migratedAt", new Date().toISOString());
+        setMetaSync(adapter, "legacyImportPending", "0");
       });
     } catch (err) {
-      if (err instanceof MigrationAborted) {
-        console.error(`[DB][migrate] aborted: ${err.message} | legacy JSON kept | backup: ${backupDir}`);
-        return;
-      }
-      throw err;
+      const file = err instanceof LegacyFileUnreadable ? err.file
+        : err instanceof MigrationAborted ? LEGACY_FILES.main : legacySources;
+      console.error(importAbortLine(file, err, backupDir));
+      throw new LegacyImportFailed(err);
     }
 
     // Settings just came from a pre-setup-flow install — re-evaluate the grace

@@ -1,25 +1,12 @@
 import { SignJWT, jwtVerify } from "jose";
 import bcrypt from "bcryptjs";
-import fs from "node:fs";
-import path from "node:path";
-import crypto from "node:crypto";
-import { DATA_DIR } from "@/lib/dataDir";
 import { getSettings } from "@/lib/localDb";
+import { getMeta, setMeta } from "@/lib/db/helpers/metaStore.js";
+import { SESSION_EPOCH_META_KEY, newSessionEpoch } from "@/lib/db/helpers/sessionEpoch.js";
 import { getBootstrapSecret } from "@/lib/auth/setupState";
+import { getAuthSecret } from "@/lib/auth/authSecret.js";
 
-function loadJwtSecret() {
-  if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
-  const file = path.join(DATA_DIR, "jwt-secret");
-  try {
-    return fs.readFileSync(file, "utf8").trim();
-  } catch {}
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const generated = crypto.randomBytes(32).toString("hex");
-  fs.writeFileSync(file, generated, { mode: 0o600 });
-  return generated;
-}
-
-const SECRET = new TextEncoder().encode(loadJwtSecret());
+const SECRET = new TextEncoder().encode(getAuthSecret());
 
 export function shouldUseSecureCookie(request) {
   const forceSecureCookie = process.env.AUTH_COOKIE_SECURE === "true";
@@ -28,8 +15,15 @@ export function shouldUseSecureCookie(request) {
   return forceSecureCookie || isHttpsRequest;
 }
 
+// One indexed _meta read per check. null until the first revocation, so sessions
+// issued before epochs existed (no `sep`) stay valid until then.
+async function currentSessionEpoch() {
+  return await getMeta(SESSION_EPOCH_META_KEY, null);
+}
+
 export async function createDashboardAuthToken(claims = {}) {
-  return new SignJWT({ authenticated: true, ...claims })
+  const epoch = await currentSessionEpoch();
+  return new SignJWT({ authenticated: true, ...claims, ...(epoch ? { sep: epoch } : {}) })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime("24h")
@@ -37,23 +31,35 @@ export async function createDashboardAuthToken(claims = {}) {
 }
 
 export async function verifyDashboardAuthToken(token) {
-  if (!token) return false;
-  try {
-    await jwtVerify(token, SECRET);
-    return true;
-  } catch {
-    return false;
-  }
+  return (await getDashboardAuthSession(token)) !== null;
 }
 
 export async function getDashboardAuthSession(token) {
   if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, SECRET);
+    const epoch = await currentSessionEpoch();
+    if ((payload.sep ?? null) !== epoch) return null;
     return payload;
   } catch {
     return null;
   }
+}
+
+// Invalidates every dashboard session issued so far.
+export async function revokeDashboardSessions() {
+  await setMeta(SESSION_EPOCH_META_KEY, newSessionEpoch());
+}
+
+// JWT bookkeeping and the restricted-session flag never carry over to a new session.
+const NON_IDENTITY_CLAIMS = new Set(["authenticated", "iat", "exp", "nbf", "sep", "pwChange"]);
+
+// After a revocation, signs the caller back in as the same user (the same
+// OIDC/SAML identity claims) under the new epoch. A null session is a no-op.
+export async function reissueDashboardSession(cookieStore, request, session) {
+  if (!session) return;
+  const claims = Object.fromEntries(Object.entries(session).filter(([name]) => !NON_IDENTITY_CLAIMS.has(name)));
+  await setDashboardAuthCookie(cookieStore, request, claims);
 }
 
 export async function setDashboardAuthCookie(cookieStore, request, claims = {}) {

@@ -13,16 +13,49 @@ import { timestampSlug, getAppVersion } from "./version.js";
 
 const KEEP_BACKUPS = 3;
 
+// Backup directories this process made, by step label. A boot that fails and is
+// retried reuses them instead of copying again, and pruning never removes them:
+// otherwise a few retries rotate the real pre-upgrade backup out.
+if (!global._dbBackupsThisProcess) global._dbBackupsThisProcess = new Map();
+const backupsThisProcess = global._dbBackupsThisProcess;
+
 // Tables excluded from safety backups (large, non-critical, reproducible).
 const BACKUP_EXCLUDE_TABLES = ["requestDetails"];
+
+function ownerOnly(target, mode) {
+  if (process.platform === "win32") return;
+  try { fs.chmodSync(target, mode); } catch {}
+}
 
 export function makeBackupDir(label) {
   ensureDirs();
   const ver = getAppVersion();
   const slug = `${label}-${ver}-${timestampSlug()}`;
   const dir = path.join(BACKUPS_DIR, slug);
-  fs.mkdirSync(dir, { recursive: true });
+  // Backups are full copies of the credential store (and of _meta, which holds
+  // the session epoch): owner-only, like the database itself.
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  ownerOnly(dir, 0o700);
   return dir;
+}
+
+/**
+ * Take the backup for one step (e.g. "migrate-from-json") at most once per
+ * process. Returns the directory and whether this call wrote it.
+ */
+export function backupOnce(label, write) {
+  const key = path.join(BACKUPS_DIR, label);
+  if (backupsThisProcess.has(key)) return { dir: backupsThisProcess.get(key), created: false };
+  const dir = makeBackupDir(label);
+  try {
+    write(dir);
+  } catch (err) {
+    // A half-written backup is neither kept nor counted as taken.
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    throw err;
+  }
+  backupsThisProcess.set(key, dir);
+  return { dir, created: true };
 }
 
 export function backupFile(srcPath, destDir, destName = null) {
@@ -30,6 +63,7 @@ export function backupFile(srcPath, destDir, destName = null) {
   const name = destName || path.basename(srcPath);
   const dest = path.join(destDir, name);
   fs.copyFileSync(srcPath, dest);
+  ownerOnly(dest, 0o600);
   return dest;
 }
 
@@ -59,13 +93,15 @@ export function backupDbLite(adapter, destDir, destName = "data.sqlite") {
   } finally {
     try { adapter.exec("DETACH DATABASE bak"); } catch {}
   }
+  ownerOnly(dest, 0o600);
   return dest;
 }
 
 export function pruneOldBackups() {
   if (!fs.existsSync(BACKUPS_DIR)) return;
+  const ours = new Set(backupsThisProcess.values());
   const entries = fs.readdirSync(BACKUPS_DIR, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
+    .filter((e) => e.isDirectory() && !ours.has(path.join(BACKUPS_DIR, e.name)))
     .map((e) => ({ name: e.name, full: path.join(BACKUPS_DIR, e.name), mtime: fs.statSync(path.join(BACKUPS_DIR, e.name)).mtimeMs }))
     .sort((a, b) => b.mtime - a.mtime);
 

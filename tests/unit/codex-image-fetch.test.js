@@ -126,6 +126,35 @@ describe("CodexExecutor image handling", () => {
     expect(imgBlock.image_url).toBe(REMOTE_URL);
   });
 
+  // chatCore hands every attempt at one client request the same imageCacheKey.
+  it("execute() downloads an image once per imageCacheKey", async () => {
+    global.fetch = vi.fn(async () => mockImageFetch(1024));
+    const sentBodies = [];
+    vi.spyOn(proxyFetchModule, "proxyAwareFetch").mockImplementation(async (url, init) => {
+      sentBodies.push(JSON.parse(init.body));
+      return { ok: true, status: 200, headers: new Map() };
+    });
+    const run = (imageCacheKey) => new CodexExecutor().execute({
+      model: "model-a",
+      body: { input: [{ role: "user", content: [{ type: "image_url", image_url: { url: REMOTE_URL } }] }] },
+      stream: true,
+      credentials: { accessToken: "test" },
+      imageCacheKey,
+    });
+
+    const request = new AbortController().signal;
+    await run(request);
+    await run(request);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(sentBodies).toHaveLength(2);
+    for (const sent of sentBodies) {
+      expect(sent.input[0].content[0].image_url.startsWith("data:image/jpeg;base64,")).toBe(true);
+    }
+
+    await run(new AbortController().signal);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("execute() prefetches images before sending to upstream", async () => {
     global.fetch = vi.fn(async () => mockImageFetch(IMAGE_1MB_BYTES));
 

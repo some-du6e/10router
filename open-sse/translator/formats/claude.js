@@ -1,18 +1,21 @@
 // Claude helper functions for translator
 import { DEFAULT_THINKING_CLAUDE_SIGNATURE } from "../../config/defaultThinkingSignature.js";
-import { ROLE, CLAUDE_BLOCK } from "../schema/index.js";
+import { ROLE, CLAUDE_BLOCK, TOOL_TYPE } from "../schema/index.js";
 import { adjustMaxTokens } from "./maxTokens.js";
 import { applyCloaking } from "../../utils/claudeCloaking.js";
 import { resolveSessionId } from "../../utils/sessionManager.js";
 import { isValidClaudeSignature } from "../../utils/claudeSignature.js";
 import { PROVIDERS } from "../../providers/index.js";
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
+import { applyThinking } from "../concerns/thinkingUnified.js";
+import { relaxForcedToolChoiceForThinking } from "../concerns/toolChoice.js";
+import { FORMATS } from "../formats.js";
+import { isLastMessageFromUser } from "../../services/provider.js";
 import { DEFAULT_MAX_TOKENS } from "../../config/runtimeConfig.js";
-import {
-  CLAUDE_INTERRUPTED_TOOL_RESULT_TEXT,
-  CLAUDE_PREFILL_CONTINUATION_TEXT,
-  supportsClaudeAssistantPrefill,
-} from "../../config/claudeMessageCompat.js";
+import { isToolChangeBlock, mapToolDefinitions } from "../concerns/toolChanges.js";
+import { normalizeClaudeToolSchema, normalizeClaudeToolSchemas } from "../concerns/jsonSchema.js";
+import { claudeContinuationContent } from "../concerns/message.js";
+import { supportsClaudeAssistantPrefill } from "../../config/claudeMessageCompat.js";
 
 const CACHE_CONTROL_5M = { type: "ephemeral" };
 const CACHE_CONTROL_1H = { type: "ephemeral", ttl: "1h" };
@@ -38,7 +41,9 @@ export function hasValidContent(msg) {
       block.type === CLAUDE_BLOCK.TOOL_USE ||
       block.type === CLAUDE_BLOCK.TOOL_RESULT ||
       block.type === CLAUDE_BLOCK.IMAGE ||
-      block.type === CLAUDE_BLOCK.DOCUMENT
+      block.type === CLAUDE_BLOCK.DOCUMENT ||
+      // Kept for the executor's finalizeBody, which sends or folds them by beta.
+      isToolChangeBlock(block)
     );
   }
   return false;
@@ -112,22 +117,10 @@ export function repairUnsupportedAssistantPrefill(messages, model = "") {
   const last = messages[messages.length - 1];
   if (last?.role !== ROLE.ASSISTANT) return messages;
 
-  const toolUses = Array.isArray(last.content)
-    ? last.content.filter(block => block?.type === CLAUDE_BLOCK.TOOL_USE && block.id)
-    : [];
-  const content = toolUses.length > 0
-    ? toolUses.map(block => ({
-      type: CLAUDE_BLOCK.TOOL_RESULT,
-      tool_use_id: block.id,
-      content: CLAUDE_INTERRUPTED_TOOL_RESULT_TEXT,
-      is_error: true,
-    }))
-    : [{ type: CLAUDE_BLOCK.TEXT, text: CLAUDE_PREFILL_CONTINUATION_TEXT }];
-
-  return [...messages, { role: ROLE.USER, content }];
+  return [...messages, { role: ROLE.USER, content: claudeContinuationContent(last) }];
 }
 
-// Models that reject thinking.type "adaptive" + output_config.effort (Opus 4.5+/Sonnet 4.6+ only)
+// Models that reject thinking.type "adaptive" + output_config.effort, unless capabilities mark them adaptive (Haiku 5.5)
 const ADAPTIVE_THINKING_UNSUPPORTED = /haiku/i;
 
 function handlesThinkingBlocks(provider) {
@@ -163,28 +156,47 @@ function hasForeignServerToolUseId(block) {
 
 // Normalize a native Claude passthrough body to match Anthropic Messages API spec.
 // Newer Cowork/Claude Code clients emit beta-only shapes that OAuth endpoints reject:
-// 1. thinking.type "adaptive" → unsupported on Haiku
-// 2. output_config.effort → unsupported on Haiku
+// 0. thinking.type "enabled" → rejected by adaptive models that dropped budget_tokens (all but Opus/Sonnet 4.6)
+// 1. thinking.type "adaptive" → unsupported on Haiku 4.x
+// 2. output_config.effort → unsupported on Haiku 4.x
 // 3. role "system" messages (mid-conversation-system beta) → only top-level system is allowed
-// 4. server_tool_use blocks carrying a foreign (non-srvtoolu_) id → rejected outright
-export function normalizeClaudePassthrough(body, model = "") {
+// 4. thinking blocks with a foreign signature, and server_tool_use blocks carrying
+//    a foreign (non-srvtoolu_) id → rejected outright
+// 5. empty text blocks, and messages left with no content → rejected outright
+// 6. tool input_schema with a top-level allOf/anyOf/oneOf → rejected outright
+export function normalizeClaudePassthrough(body, model = "", provider = null) {
   if (!body || typeof body !== "object") return body;
 
+  const caps = getCapabilitiesForModel(provider, model);
+  const adaptiveOnly = caps.thinkingFormat === "claude-adaptive";
+  const adaptiveUnsupported = !adaptiveOnly && ADAPTIVE_THINKING_UNSUPPORTED.test(model);
+
+  // 0. Upgrade budget thinking to adaptive + effort for models that reject budget_tokens
+  if (adaptiveOnly && !caps.thinkingBudgetAccepted && body.thinking?.type === "enabled") {
+    applyThinking(FORMATS.CLAUDE, model, body, provider);
+  }
+
   // 1. Downgrade adaptive thinking for models that don't support it
-  if (body.thinking?.type === "adaptive" && ADAPTIVE_THINKING_UNSUPPORTED.test(model)) {
+  if (body.thinking?.type === "adaptive" && adaptiveUnsupported) {
     body.thinking = { type: "enabled", budget_tokens: 10000 };
   }
 
   // 2. Strip effort param for models that don't support it (keep other output_config fields)
-  if (ADAPTIVE_THINKING_UNSUPPORTED.test(model) && body.output_config?.effort != null) {
-    delete body.output_config.effort;
-    if (Object.keys(body.output_config).length === 0) delete body.output_config;
+  // A new object rather than an edit, so the caller's output_config stays as sent.
+  if (adaptiveUnsupported && body.output_config?.effort != null) {
+    const rest = { ...body.output_config };
+    delete rest.effort;
+    if (Object.keys(rest).length > 0) body.output_config = rest;
+    else delete body.output_config;
   }
 
-  // 2. Fold mid-conversation system messages into the neighbouring turn.
+  // 3. Fold mid-conversation system messages into the neighbouring turn.
   // Hoisting them into body.system would insert volatile content (token counters,
   // reminders) ahead of the whole conversation and invalidate the prefix cache on
   // every request. Folding in place keeps the cached prefix stable.
+  // tool_addition / tool_removal blocks stay behind in a system message of
+  // their own: the executor's finalizeBody sends them with their beta, or
+  // folds them into tools[] without it.
   if (Array.isArray(body.messages)) {
     const messages = [];
     for (const msg of body.messages) {
@@ -192,12 +204,15 @@ export function normalizeClaudePassthrough(body, model = "") {
         messages.push(msg);
         continue;
       }
+      const blocks = Array.isArray(msg.content) ? msg.content : [];
+      const toolChanges = blocks.filter(isToolChangeBlock);
       const text = typeof msg.content === "string"
         ? msg.content
-        : Array.isArray(msg.content)
-          ? msg.content.map(b => (typeof b === "string" ? b : b?.text || "")).join("\n")
-          : "";
-      if (!text.trim()) continue;
+        : blocks.filter(b => !isToolChangeBlock(b)).map(b => (typeof b === "string" ? b : b?.text || "")).join("\n");
+      if (!text.trim()) {
+        if (toolChanges.length) messages.push({ ...msg, content: toolChanges });
+        continue;
+      }
 
       // Copy-on-write: the caller's body is reused across account-fallback
       // attempts, so folding must never mutate the original message.
@@ -208,14 +223,15 @@ export function normalizeClaudePassthrough(body, model = "") {
           ? [{ type: CLAUDE_BLOCK.TEXT, text: prev.content }]
           : Array.isArray(prev.content) ? [...prev.content] : [];
         messages[messages.length - 1] = { ...prev, content: [...content, block] };
-        continue;
+      } else {
+        messages.push({ role: ROLE.USER, content: [block] });
       }
-      messages.push({ role: ROLE.USER, content: [block] });
+      if (toolChanges.length) messages.push({ ...msg, content: toolChanges });
     }
     body.messages = messages;
   }
 
-  // 3. Drop thinking blocks whose signature is not Claude's (combo mixes models,
+  // 4. Drop thinking blocks whose signature is not Claude's (combo mixes models,
   // so foreign signatures leak into history and Anthropic rejects them).
   const thinkingEnabled = body.thinking?.type === "enabled";
   const droppedServerToolUseIds = new Set();
@@ -276,6 +292,11 @@ export function normalizeClaudePassthrough(body, model = "") {
     });
   }
 
+  // 6. Tool input schemas with a top-level allOf/anyOf/oneOf are rejected;
+  // flatten them, in tools[] and in tools added by value mid-conversation.
+  if (Array.isArray(body.tools)) body.tools = normalizeClaudeToolSchemas(body.tools);
+  Object.assign(body, mapToolDefinitions(body, normalizeClaudeToolSchema));
+
   return body;
 }
 
@@ -287,6 +308,8 @@ function markLastCacheableBlock(msg) {
     const block = msg.content[i];
     if (typeof block !== "object" || block === null) continue;
     if (block.type === CLAUDE_BLOCK.THINKING || block.type === CLAUDE_BLOCK.REDACTED_THINKING) continue;
+    // A tool change may be folded away before sending, taking the breakpoint with it.
+    if (isToolChangeBlock(block)) continue;
     block.cache_control = { ...CACHE_CONTROL_5M };
     return true;
   }
@@ -297,7 +320,7 @@ function markLastCacheableBlock(msg) {
 // prepareClaudeRequest): last tool + last system block at 1h, last assistant at 5m.
 // The client's own markers point at pre-normalization offsets, so they are dropped.
 // Must run LAST, after every step that can reshape system/tools/messages
-// (normalize, tool dedupe, token savers) — otherwise the anchor drifts off the tail.
+// (normalize, tool dedupe) — otherwise the anchor drifts off the tail.
 export function anchorClaudeCache(body) {
   if (!body || typeof body !== "object") return body;
 
@@ -343,6 +366,26 @@ export function anchorClaudeCache(body) {
   return body;
 }
 
+// Strip built-in tools (e.g. web_search_20250305) and custom tools with no schema, and normalize to Anthropic-native shape
+// (drop `type` field, fold `function.{name,description,parameters}`) for non-Anthropic providers
+function toProviderClaudeTools(tools, provider) {
+  if (provider === "claude") return tools;
+  return tools
+    .filter(tool => !tool.type || tool.type === TOOL_TYPE.FUNCTION
+      || (tool.type === TOOL_TYPE.CUSTOM && typeof tool.name === "string" && !!tool.input_schema))
+    .map(tool => {
+      if (tool.function) {
+        return {
+          name: tool.function.name,
+          description: tool.function.description,
+          input_schema: tool.function.parameters,
+        };
+      }
+      const { type, ...rest } = tool;
+      return rest;
+    });
+}
+
 // Prepare request for Claude format endpoints
 // - Cleanup cache_control
 // - Filter empty messages
@@ -378,7 +421,13 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
     }
   }
 
-  // 1. System: remove all cache_control, add only to last block with ttl 1h
+  // 1. System: drop blank text blocks (Anthropic rejects them), remove all
+  // cache_control, add only to last block with ttl 1h
+  if (typeof body.system === "string" && !body.system.trim()) delete body.system;
+  if (Array.isArray(body.system)) {
+    body.system = body.system.filter((block) => block && (block.type !== "text" || block.text?.trim()));
+    if (body.system.length === 0) delete body.system;
+  }
   if (body.system && Array.isArray(body.system)) {
     body.system = body.system.map((block, i) => {
       const { cache_control, ...rest } = block;
@@ -422,10 +471,7 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
 
     body.messages = filtered;
 
-    // Check if thinking is enabled AND last message is from user
-    const lastMessage = filtered[filtered.length - 1];
-    const lastMessageIsUser = lastMessage?.role === "user";
-    const thinkingEnabled = body.thinking?.type === "enabled" && lastMessageIsUser;
+    const thinkingEnabled = body.thinking?.type === "enabled" && isLastMessageFromUser({ messages: filtered });
 
     // Pass 2 (reverse): add cache_control to last assistant + handle thinking for Anthropic
     let lastAssistantProcessed = false;
@@ -489,25 +535,14 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
     }
   }
 
-  // 3. Tools: filter built-in tools for non-Anthropic providers, then handle cache_control
+  // 3. Tools: filter built-in tools for non-Anthropic providers, flatten input
+  // schemas the Messages API rejects, then handle cache_control.
+  // A tool added by value mid-conversation gets the same treatment (one that
+  // would be filtered out is dropped with its block).
+  const toClaudeTools = (tools) => normalizeClaudeToolSchemas(toProviderClaudeTools(tools, provider));
+  body = mapToolDefinitions(body, (def) => toClaudeTools([def])[0] ?? null);
   if (body.tools && Array.isArray(body.tools)) {
-    // Strip built-in tools (e.g. web_search_20250305) and normalize to Anthropic-native shape
-    // (drop `type` field, fold `function.{name,description,parameters}`) for non-Anthropic providers
-    if (provider !== "claude") {
-      body.tools = body.tools
-        .filter(tool => !tool.type || tool.type === "function")
-        .map(tool => {
-          if (tool.function) {
-            return {
-              name: tool.function.name,
-              description: tool.function.description,
-              input_schema: tool.function.parameters,
-            };
-          }
-          const { type, ...rest } = tool;
-          return rest;
-        });
-    }
+    body.tools = toClaudeTools(body.tools);
 
     const lastCacheable = lastCacheableToolIndex(body.tools);
     body.tools = body.tools.map((tool, i) => {
@@ -524,6 +559,10 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
       delete body.tool_choice;
     }
   }
+
+  // Only the thinking-independent rule here: an endpoint's overrides can still
+  // drop `thinking` or rename the model, so the thinking check runs on the outgoing body.
+  relaxForcedToolChoiceForThinking(body, provider, false);
 
   // Apply cloaking for OAuth tokens (billing header + fake user ID)
   // session_id in user_id must match X-Claude-Code-Session-Id for fingerprint consistency

@@ -1,3 +1,8 @@
+import { IMAGE_TOKEN_ESTIMATE } from "open-sse/config/mediaConfig.js";
+import { readJsonObject } from "@/sse/utils/requestBody.js";
+
+const CHARS_PER_TOKEN = 4;
+
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -36,10 +41,15 @@ function countContentBlockChars(block) {
   switch (block.type) {
     case "text":
       return countValueChars(block.text);
+    case "image":
+      // An image costs about the same whatever its size, not its base64 length.
+      return IMAGE_TOKEN_ESTIMATE * CHARS_PER_TOKEN;
     case "tool_use":
       return countValueChars(block.name) + countValueChars(block.input);
     case "tool_result":
-      return countValueChars(block.content);
+      return Array.isArray(block.content)
+        ? block.content.reduce((total, item) => total + countContentBlockChars(item), 0)
+        : countValueChars(block.content);
     case "thinking":
       return countValueChars(block.thinking);
     default:
@@ -66,22 +76,15 @@ export function estimateAnthropicInputTokens(body = {}) {
     totalChars += countMessageChars(msg);
   }
 
-  return Math.ceil(totalChars / 4);
+  return Math.ceil(totalChars / CHARS_PER_TOKEN);
 }
 
 /**
  * POST /v1/messages/count_tokens - Mock token count response
  */
 export async function POST(request) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json", ...CORS_HEADERS }
-    });
-  }
+  const { body, error } = await readJsonObject(request, { logTag: "COUNT_TOKENS" });
+  if (error) return error;
 
   const inputTokens = estimateAnthropicInputTokens(body);
 

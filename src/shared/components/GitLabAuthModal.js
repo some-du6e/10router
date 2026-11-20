@@ -71,7 +71,7 @@ export default function GitLabAuthModal({ isOpen, providerInfo, onSuccess, onClo
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Authentication failed");
-      onSuccess?.();
+      onSuccess?.(data);
       handleClose();
     } catch (err) {
       setError(err.message);
@@ -90,7 +90,7 @@ export default function GitLabAuthModal({ isOpen, providerInfo, onSuccess, onClo
         provider="gitlab"
         providerInfo={providerInfo}
         oauthMeta={oauthMeta}
-        onSuccess={() => { onSuccess?.(); handleClose(); }}
+        onSuccess={(result) => { onSuccess?.(result); handleClose(); }}
         onClose={() => { setShowOAuth(false); setOauthMeta(null); }}
       />
     );
@@ -169,7 +169,7 @@ export default function GitLabAuthModal({ isOpen, providerInfo, onSuccess, onClo
               <code className="bg-sidebar px-1 rounded text-xs">ai_features</code>.
             </p>
             <Input label="GitLab Base URL" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={GITLAB_COM} />
-            <Input label="Personal Access Token" value={pat} onChange={(e) => setPat(e.target.value)} placeholder="glpat-xxxxxxxxxxxxxxxxxxxx" type="password" />
+            <Input label="Personal Access Token" value={pat} onChange={(e) => setPat(e.target.value)} placeholder="glpat-xxxxxxxxxxxxxxxxxxxx" type="password" ignorePasswordManagers />
             {error && <p className="text-sm text-red-500">{error}</p>}
             <div className="flex gap-2">
               <Button onClick={handlePATSubmit} fullWidth disabled={!pat.trim() || loading} loading={loading}>

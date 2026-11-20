@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "fs";
+import os from "node:os";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -10,57 +11,35 @@ const repoPath = (relativePath) => path.join(repoRoot, relativePath);
 // AUDIT-002 (#1962): API key masking in usage stats
 // ============================================================
 describe("AUDIT-002: API key masking", () => {
-  it("source should contain maskApiKey function", () => {
-    const source = fs.readFileSync(
-      repoPath("src/lib/db/repos/usageRepo.js"),
-      "utf-8"
-    );
-    expect(source).toContain("function maskApiKey");
+  const originalDataDir = process.env.DATA_DIR;
+  let dir;
+  let usage;
+  const secret = "sk-security-audit-complete-secret";
+
+  beforeEach(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "db-security-audit-"));
+    process.env.DATA_DIR = dir;
+    delete global._dbAdapter;
+    vi.resetModules();
+    usage = await import("@/lib/db/repos/usageRepo.js");
+    await usage.saveRequestUsage({ provider: "audit", model: "model", apiKey: secret,
+      tokens: { prompt_tokens: 10, completion_tokens: 5 } });
   });
 
-  it("getUsageHistory should use apiKeyMasked instead of apiKey", () => {
-    const source = fs.readFileSync(
-      repoPath("src/lib/db/repos/usageRepo.js"),
-      "utf-8"
-    );
-    // The REST response should use apiKeyMasked
-    expect(source).toContain("apiKeyMasked: maskApiKey(r.apiKey)");
-    // The return mapping in getUsageHistory should not have raw apiKey
-    // (The internal ring buffer still uses apiKey: r.apiKey for internal state - that's fine)
-    const historyReturn = source.match(/return rows\.map\(\(r\)\s*=>\s*\(\{[\s\S]*?\}\)\);/);
-    expect(historyReturn).not.toBeNull();
-    expect(historyReturn[0]).toContain("apiKeyMasked");
-    expect(historyReturn[0]).not.toContain("apiKey: r.apiKey");
+  afterEach(() => {
+    global._dbAdapter?.instance?.close();
+    delete global._dbAdapter;
+    fs.rmSync(dir, { recursive: true, force: true });
+    if (originalDataDir === undefined) delete process.env.DATA_DIR;
+    else process.env.DATA_DIR = originalDataDir;
   });
 
-  it("getUsageStats should use apiKeyMasked in byApiKey entries", () => {
-    const source = fs.readFileSync(
-      repoPath("src/lib/db/repos/usageRepo.js"),
-      "utf-8"
-    );
-    // Both code paths (daily summary + 24h live) should use apiKeyMasked
-    const maskedCount = (source.match(/apiKeyMasked/g) || []).length;
-    expect(maskedCount).toBeGreaterThanOrEqual(4); // function def + 3 usage sites
-
-    // The byApiKey stats entries should use apiKeyMasked, not raw apiKey
-    // Check the daily summary path
-    const dailyPath = source.match(/stats\.byApiKey\[akKey\] = \{[^}]*apiKeyMasked[^}]*\}/);
-    expect(dailyPath).not.toBeNull();
-    // Check the 24h live path
-    const livePath = source.match(/stats\.byApiKey\[akKey\] = \{[^}]*apiKeyMasked[^}]*\}/g);
-    expect(livePath).not.toBeNull();
-    expect(livePath.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("byApiKey object keys should use masked key, not raw key", () => {
-    const source = fs.readFileSync(
-      repoPath("src/lib/db/repos/usageRepo.js"),
-      "utf-8"
-    );
-    // The 24h path should use apiKeyMasked in the akKey template
-    expect(source).toContain("${apiKeyMasked}|${r.model}|${r.provider");
-    // Should NOT use raw r.apiKey in the key
-    expect(source).not.toContain("${r.apiKey}|${r.model}|${r.provider");
+  it("returns masked history without exposing the stored API key", async () => {
+    const history = await usage.getUsageHistory();
+    expect(history).toHaveLength(1);
+    expect(history[0].apiKeyMasked).toBe("sk-secur***");
+    expect(history[0]).not.toHaveProperty("apiKey");
+    expect(JSON.stringify(history)).not.toContain(secret);
   });
 });
 

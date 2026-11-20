@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -8,6 +8,7 @@ import { restrictToVerticalAxis, restrictToParentElement } from "@dnd-kit/modifi
 import { Card, Button, Modal, Input, CardSkeleton, ModelSelectModal, ConfirmModal, CapacityBadges, Select, Toggle } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
+import api from "@/shared/utils/api";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 
 // Validate combo name: only a-z, A-Z, 0-9, -, _
@@ -54,91 +55,95 @@ export default function CombosPage() {
   const [capacityAdapter, setCapacityAdapter] = useState(EMPTY_CAPACITY_ADAPTER);
   const { getCaps } = useModelCaps();
   const [confirmState, setConfirmState] = useState(null);
+  // Load errors stay until that load succeeds; a save or delete never clears them.
+  const [combosError, setCombosError] = useState("");
+  const [providersError, setProvidersError] = useState("");
+  const [actionError, setActionError] = useState("");
+  // Strategy and capacity saves send back the whole stored map, so they stay
+  // blocked until a settings read has filled savedSettingsRef.
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [settingsError, setSettingsError] = useState("");
   const { copied, copy } = useCopyToClipboard();
+  const savedSettingsRef = useRef({ comboStrategies: {}, capacityAdapter: EMPTY_CAPACITY_ADAPTER });
+  const settingsSaveRef = useRef(Promise.resolve());
 
   useEffect(() => {
-    fetchData();
+    Promise.all([loadSettings(), loadCombos(), loadProviders()]).finally(() => setLoading(false));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const fetchData = async () => {
+  // Read once, on mount: creating or editing a combo doesn't change these settings.
+  const loadSettings = async () => {
     try {
-      const [combosRes, providersRes, settingsRes] = await Promise.all([
-        fetch("/api/combos"),
-        fetch("/api/providers"),
-        fetch("/api/settings"),
-      ]);
-      const combosData = await combosRes.json();
-      const providersData = await providersRes.json();
-      const settingsData = settingsRes.ok ? await settingsRes.json() : {};
-      
-      // Only LLM combos here - webSearch/webFetch combos belong to media-providers/web
-      if (combosRes.ok) setCombos((combosData.combos || []).filter(c => !c.kind || c.kind === "llm"));
-      if (providersRes.ok) {
-        setActiveProviders(providersData.connections || []);
-      }
-      setComboStrategies(settingsData.comboStrategies || {});
-      const rawAdapter = settingsData.capacityAdapter || {};
+      const data = (await api.get("/api/settings")) || {};
+      const strategies = data.comboStrategies || {};
+      const rawAdapter = data.capacityAdapter || {};
       const normalized = {};
       for (const cap of CAPACITY_ADAPTER_CAPS) {
         normalized[cap.key] = normalizeCapEntry(rawAdapter[cap.key]);
       }
+      savedSettingsRef.current = { comboStrategies: strategies, capacityAdapter: normalized };
+      setComboStrategies(strategies);
       setCapacityAdapter(normalized);
+      setSettingsLoaded(true);
     } catch (error) {
-      console.log("Error fetching data:", error);
-    } finally {
-      setLoading(false);
+      setSettingsError(`Could not load combo settings, so strategies and the capacity adapter can't be changed: ${error.message}`);
     }
   };
 
-  const handleSetCapacityAdapter = async (next) => {
-    setCapacityAdapter(next);
+  const loadCombos = async () => {
     try {
-      await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ capacityAdapter: next }),
-      });
+      const data = await api.get("/api/combos");
+      // Only LLM combos here - webSearch/webFetch combos belong to media-providers/web
+      setCombos((data?.combos || []).filter(c => !c.kind || c.kind === "llm"));
+      setCombosError("");
     } catch (error) {
-      console.log("Error updating capacity adapter:", error);
+      setCombosError(`Could not load combos: ${error.message}`);
     }
   };
+
+  const loadProviders = async () => {
+    try {
+      const data = await api.get("/api/providers");
+      setActiveProviders(data?.connections || []);
+      setProvidersError("");
+    } catch (error) {
+      setProvidersError(`Could not load providers: ${error.message}`);
+    }
+  };
+
+  // Settings saves run one at a time, and each builds its value from the last
+  // one the API accepted, so a change made while another is saving keeps it.
+  const saveSetting = (key, update, apply, label) => {
+    if (!settingsLoaded) return settingsSaveRef.current;
+    setActionError("");
+    const save = async () => {
+      try {
+        const current = savedSettingsRef.current[key];
+        const next = update(current);
+        if (next === current) return;
+        await api.patch("/api/settings", { [key]: next });
+        savedSettingsRef.current = { ...savedSettingsRef.current, [key]: next };
+        apply(next);
+      } catch (error) {
+        setActionError(`Failed to update ${label}: ${error.message}`);
+      }
+    };
+    settingsSaveRef.current = settingsSaveRef.current.then(save);
+    return settingsSaveRef.current;
+  };
+
+  const handleSetCapacityAdapter = (update) => saveSetting("capacityAdapter", update, setCapacityAdapter, "capacity adapter");
 
   const handleCreate = async (data) => {
-    try {
-      const res = await fetch("/api/combos", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-      if (res.ok) {
-        await fetchData();
-        setShowCreateModal(false);
-      } else {
-        const err = await res.json();
-        alert(err.error || "Failed to create combo");
-      }
-    } catch (error) {
-      console.log("Error creating combo:", error);
-    }
+    await api.post("/api/combos", data);
+    await loadCombos();
+    setShowCreateModal(false);
   };
 
   const handleUpdate = async (id, data) => {
-    try {
-      const res = await fetch(`/api/combos/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-      if (res.ok) {
-        await fetchData();
-        setEditingCombo(null);
-      } else {
-        const err = await res.json();
-        alert(err.error || "Failed to update combo");
-      }
-    } catch (error) {
-      console.log("Error updating combo:", error);
-    }
+    await api.put(`/api/combos/${id}`, data);
+    await loadCombos();
+    setEditingCombo(null);
   };
 
   const handleDelete = async (id) => {
@@ -147,13 +152,12 @@ export default function CombosPage() {
       message: "Delete this combo?",
       onConfirm: async () => {
         setConfirmState(null);
+        setActionError("");
         try {
-          const res = await fetch(`/api/combos/${id}`, { method: "DELETE" });
-          if (res.ok) {
-            setCombos(combos.filter(c => c.id !== id));
-          }
+          await api.del(`/api/combos/${id}`);
+          setCombos((prev) => prev.filter(c => c.id !== id));
         } catch (error) {
-          console.log("Error deleting combo:", error);
+          setActionError(`Failed to delete combo: ${error.message}`);
         }
       }
     });
@@ -161,28 +165,17 @@ export default function CombosPage() {
 
   // Merge a per-combo strategy patch into settings.comboStrategies. Passing an empty
   // patch (strategy back to default "fallback") drops the entry entirely.
-  const handleSetComboStrategy = async (comboName, patch) => {
-    try {
-      const updated = { ...comboStrategies };
-      const next = { ...(updated[comboName] || {}), ...patch };
-      // Prune to keep settings clean: default fallback with no extras = no entry.
-      if (!next.fallbackStrategy || next.fallbackStrategy === "fallback") {
-        delete updated[comboName];
-      } else {
-        updated[comboName] = next;
-      }
-
-      await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ comboStrategies: updated }),
-      });
-
-      setComboStrategies(updated);
-    } catch (error) {
-      console.log("Error updating combo strategy:", error);
+  const handleSetComboStrategy = (comboName, patch) => saveSetting("comboStrategies", (strategies) => {
+    const updated = { ...strategies };
+    const next = { ...(updated[comboName] || {}), ...patch };
+    // Prune to keep settings clean: default fallback with no extras = no entry.
+    if (!next.fallbackStrategy || next.fallbackStrategy === "fallback") {
+      delete updated[comboName];
+    } else {
+      updated[comboName] = next;
     }
-  };
+    return updated;
+  }, setComboStrategies, "combo strategy");
 
   if (loading) {
     return (
@@ -212,6 +205,10 @@ export default function CombosPage() {
         </Button>
       </div>
 
+      {[settingsError, combosError, providersError, actionError].filter(Boolean).map((message) => (
+        <p key={message} role="alert" className="text-sm text-red-500">{message}</p>
+      ))}
+
       {/* Combos List */}
       {combos.length === 0 ? (
         <Card>
@@ -240,6 +237,7 @@ export default function CombosPage() {
               onDelete={() => handleDelete(combo.id)}
               strategy={comboStrategies[combo.name] || {}}
               onSetStrategy={(patch) => handleSetComboStrategy(combo.name, patch)}
+              strategyDisabled={!settingsLoaded}
             />
           ))}
         </div>
@@ -249,6 +247,7 @@ export default function CombosPage() {
       <CapacityAdapterSection
         capacityAdapter={capacityAdapter}
         onChange={handleSetCapacityAdapter}
+        disabled={!settingsLoaded}
         activeProviders={activeProviders}
         getCaps={getCaps}
       />
@@ -294,7 +293,7 @@ const STRATEGY_OPTIONS = [
   { value: "fusion", label: "Fusion — panel + judge" },
 ];
 
-function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdit, onDelete, strategy = {}, onSetStrategy }) {
+function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdit, onDelete, strategy = {}, onSetStrategy, strategyDisabled = false }) {
   const [showJudgeSelect, setShowJudgeSelect] = useState(false);
   const current = strategy.fallbackStrategy || "fallback";
   const judge = strategy.judgeModel || "";
@@ -330,6 +329,7 @@ function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdi
                 <span className="text-[11px] font-medium text-text-muted">Judge</span>
                 <button
                   onClick={() => setShowJudgeSelect(true)}
+                  disabled={strategyDisabled}
                   className="inline-flex max-w-full items-center gap-1 rounded border border-dashed border-primary/40 px-1.5 py-0.5 font-mono text-[11px] text-primary hover:border-primary hover:bg-primary/5 transition-colors"
                   title="Pick the model that fuses panel answers"
                 >
@@ -339,6 +339,7 @@ function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdi
                 {judge && (
                   <button
                     onClick={() => onSetStrategy({ judgeModel: "" })}
+                    disabled={strategyDisabled}
                     className="p-0.5 rounded text-text-muted hover:text-red-500 hover:bg-red-500/10 transition-colors"
                     title="Reset judge to Auto"
                   >
@@ -358,6 +359,7 @@ function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdi
               options={STRATEGY_OPTIONS}
               value={current}
               onChange={(e) => onSetStrategy({ fallbackStrategy: e.target.value })}
+              disabled={strategyDisabled}
               selectClassName="py-1.5 text-xs"
             />
           </div>
@@ -409,7 +411,7 @@ function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdi
   );
 }
 
-function CapacityAdapterSection({ capacityAdapter, onChange, activeProviders, getCaps }) {
+function CapacityAdapterSection({ capacityAdapter, onChange, disabled = false, activeProviders, getCaps }) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -430,7 +432,12 @@ function CapacityAdapterSection({ capacityAdapter, onChange, activeProviders, ge
             key={cap.key}
             cap={cap}
             entry={capacityAdapter[cap.key] || EMPTY_CAP_ENTRY}
-            onChange={(entry) => onChange({ ...capacityAdapter, [cap.key]: entry })}
+            onChange={(updateEntry) => onChange((adapter) => {
+              const entry = adapter[cap.key] || EMPTY_CAP_ENTRY;
+              const next = updateEntry(entry);
+              return next === entry ? adapter : { ...adapter, [cap.key]: next };
+            })}
+            disabled={disabled}
             activeProviders={activeProviders}
             getCaps={getCaps}
           />
@@ -440,28 +447,36 @@ function CapacityAdapterSection({ capacityAdapter, onChange, activeProviders, ge
   );
 }
 
-function CapacityAdapterCap({ cap, entry, onChange, activeProviders, getCaps }) {
+function CapacityAdapterCap({ cap, entry, onChange, disabled = false, activeProviders, getCaps }) {
   const [showModelSelect, setShowModelSelect] = useState(false);
   const { enabled, roundRobin, models } = entry;
 
-  const patch = (p) => onChange({ ...entry, ...p });
+  // Changes are functions of the saved entry: a save may still be running, so
+  // the rendered `entry` can be out of date by the time this change is applied.
+  const patch = (p) => onChange((current) => ({ ...current, ...p }));
 
-  const handleAdd = (model) => {
-    if (models.includes(model.value)) return;
-    patch({ models: [...models, model.value] });
-  };
+  const handleAdd = (model) => onChange((current) => (
+    current.models.includes(model.value) ? current : { ...current, models: [...current.models, model.value] }
+  ));
 
   const handleRemove = (index) => {
-    const next = models.filter((_, i) => i !== index);
-    patch({ models: next.length === 0 ? [DEFAULT_FALLBACK_MODEL] : next });
+    const model = models[index];
+    return onChange((current) => {
+      const next = current.models.filter((m) => m !== model);
+      return { ...current, models: next.length === 0 ? [DEFAULT_FALLBACK_MODEL] : next };
+    });
   };
 
   const handleMove = (index, delta) => {
-    const target = index + delta;
-    if (target < 0 || target >= models.length) return;
-    const next = [...models];
-    [next[index], next[target]] = [next[target], next[index]];
-    patch({ models: next });
+    const model = models[index];
+    return onChange((current) => {
+      const from = current.models.indexOf(model);
+      const to = from + delta;
+      if (from === -1 || to < 0 || to >= current.models.length) return current;
+      const next = [...current.models];
+      [next[from], next[to]] = [next[to], next[from]];
+      return { ...current, models: next };
+    });
   };
 
   return (
@@ -472,6 +487,7 @@ function CapacityAdapterCap({ cap, entry, onChange, activeProviders, getCaps }) 
           <Toggle
             checked={enabled}
             onChange={(v) => patch({ enabled: v })}
+            disabled={disabled}
             aria-label={`Enable ${cap.label} adapter`}
           />
           <div className="size-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
@@ -493,13 +509,13 @@ function CapacityAdapterCap({ cap, entry, onChange, activeProviders, getCaps }) 
                   >
                     <span>{model}</span>
                     <CapacityBadges caps={getCaps?.(model)} />
-                    <button onClick={() => handleMove(index, -1)} disabled={index === 0} className={`leading-none opacity-0 group-hover/chip:opacity-100 ${index === 0 ? "text-text-muted/20" : "text-text-muted hover:text-primary"}`}>
+                    <button onClick={() => handleMove(index, -1)} disabled={disabled || index === 0} className={`leading-none opacity-0 group-hover/chip:opacity-100 ${index === 0 ? "text-text-muted/20" : "text-text-muted hover:text-primary"}`}>
                       <span className="material-symbols-outlined text-[12px]">arrow_upward</span>
                     </button>
-                    <button onClick={() => handleMove(index, 1)} disabled={index === models.length - 1} className={`leading-none opacity-0 group-hover/chip:opacity-100 ${index === models.length - 1 ? "text-text-muted/20" : "text-text-muted hover:text-primary"}`}>
+                    <button onClick={() => handleMove(index, 1)} disabled={disabled || index === models.length - 1} className={`leading-none opacity-0 group-hover/chip:opacity-100 ${index === models.length - 1 ? "text-text-muted/20" : "text-text-muted hover:text-primary"}`}>
                       <span className="material-symbols-outlined text-[12px]">arrow_downward</span>
                     </button>
-                    <button onClick={() => handleRemove(index)} className="leading-none opacity-0 group-hover/chip:opacity-100 text-text-muted hover:text-red-500">
+                    <button onClick={() => handleRemove(index)} disabled={disabled} className="leading-none opacity-0 group-hover/chip:opacity-100 text-text-muted hover:text-red-500">
                       <span className="material-symbols-outlined text-[12px]">close</span>
                     </button>
                   </code>
@@ -518,7 +534,7 @@ function CapacityAdapterCap({ cap, entry, onChange, activeProviders, getCaps }) 
             <Toggle
               checked={roundRobin}
               onChange={(v) => patch({ roundRobin: v })}
-              disabled={!enabled}
+              disabled={disabled || !enabled}
               aria-label={`Round-robin ${cap.label} adapter`}
             />
             <span>Round</span>
@@ -528,7 +544,7 @@ function CapacityAdapterCap({ cap, entry, onChange, activeProviders, getCaps }) 
             variant="ghost"
             size="sm"
             onClick={() => setShowModelSelect(true)}
-            disabled={!enabled}
+            disabled={disabled || !enabled}
             title={`Add ${cap.label} model`}
           >
             Add Model
@@ -656,6 +672,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
   const [models, setModels] = useState(combo?.models || []);
   const [showModelSelect, setShowModelSelect] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [nameError, setNameError] = useState("");
   const [modelAliases, setModelAliases] = useState({});
 
@@ -698,7 +715,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
       setNameError("Name is required");
       return false;
     }
-    if (!VALID_NAME_REGEX.test(value)) {
+    if (!VALID_NAME_REGEX.test(value.trim())) {
       setNameError("Only letters, numbers, -, _ and . allowed");
       return false;
     }
@@ -742,10 +759,20 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
   };
 
   const handleSave = async () => {
-    if (!validateName(name)) return;
+    if (saving || !validateName(name)) return;
+    setSaveError("");
     setSaving(true);
-    await onSave({ name: name.trim(), models });
-    setSaving(false);
+    try {
+      await onSave({ name: name.trim(), models });
+    } catch (error) {
+      setSaveError(error.message || "Failed to save combo");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleClose = () => {
+    if (!saving) onClose();
   };
 
   const isEdit = !!combo;
@@ -754,7 +781,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
     <>
       <Modal
         isOpen={isOpen}
-        onClose={onClose}
+        onClose={handleClose}
         title={isEdit ? "Edit Combo" : "Create Combo"}
       >
         <div className="flex flex-col gap-3">
@@ -819,8 +846,9 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
           </div>
 
           {/* Actions */}
+          {saveError && <p role="alert" className="text-sm text-red-500">{saveError}</p>}
           <div className="flex flex-col gap-2 pt-1 sm:flex-row">
-            <Button onClick={onClose} variant="ghost" fullWidth size="sm">
+            <Button onClick={handleClose} variant="ghost" fullWidth size="sm" disabled={saving}>
               Cancel
             </Button>
             <Button

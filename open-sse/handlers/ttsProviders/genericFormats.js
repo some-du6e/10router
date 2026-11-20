@@ -2,6 +2,7 @@
 // Each handler accepts { baseUrl, apiKey, text, modelId, voiceId } and returns { base64, format }.
 import { responseToBase64, throwUpstreamError } from "./_base.js";
 import minimaxTts from "./minimax.js";
+import { modelPathSegments } from "../../utils/modelPath.js";
 
 // Hyperbolic: POST { text } → { audio: base64 }
 async function hyperbolic({ baseUrl, apiKey, text }) {
@@ -41,8 +42,9 @@ async function nvidia({ baseUrl, apiKey, text, modelId, voiceId }) {
 
 // HuggingFace: POST {baseUrl}/{modelId} { inputs: text } → binary
 async function huggingface({ baseUrl, apiKey, text, modelId }) {
-  if (!modelId || modelId.includes("..")) throw new Error("Invalid HuggingFace model ID");
-  const res = await fetch(`${baseUrl}/${modelId}`, {
+  let path;
+  try { path = modelPathSegments(modelId); } catch { throw new Error("Invalid HuggingFace model ID"); }
+  const res = await fetch(`${baseUrl}/${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
     body: JSON.stringify({ inputs: text }),

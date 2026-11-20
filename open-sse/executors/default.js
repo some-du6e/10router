@@ -1,12 +1,27 @@
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS, PROVIDER_OAUTH } from "../config/providers.js";
-import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE, selectAnthropicBeta } from "../providers/shared.js";
-import { resolveOpenAICompatibleApiType } from "../services/provider.js";
+import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_API_HOST, ANTHROPIC_COMPAT_BASE, selectAnthropicBeta } from "../providers/shared.js";
+import { appendUrlPath, resolveOpenAICompatibleApiType, getTargetFormat } from "../services/provider.js";
 import { OAUTH_ENDPOINTS, buildKimiHeaders } from "../config/appConstants.js";
 import { buildClineHeaders } from "../shared/clineAuth.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { modelPathSegment } from "../utils/modelPath.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
+import { relaxForcedToolChoiceForThinking, relaxForcedChatToolChoiceForClaude } from "../translator/concerns/toolChoice.js";
+import { FORMATS } from "../translator/formats.js";
+import {
+  betaFlagsKey, dropFirstPartyBetas, dropFirstPartyFieldsWithoutBeta, filterBetaHeaders, isAnthropicApiUrl, parseRejectedBetas, sentBetas, stripBetaBodyFields, splitBetas,
+  BETA_HEADER_KEYS,
+} from "../utils/anthropicBeta.js";
+import { HTTP_STATUS } from "../config/runtimeConfig.js";
+import { installEndpointOverrides } from "../handlers/chatCore/endpointOverrides.js";
+
+// Named-flag retries before the last-resort attempt with no anthropic-beta at all.
+const MAX_BETA_RETRIES = 1;
+
+// The methods transformRequest and finalizeBody call on `this`.
+const BODY_HELPERS = ["applyJsonSchemaFallback", "targetFormat", "onMessagesPath"];
 
 // Auth header descriptors — derived from registry transport.auth, fallback to hardcoded defaults.
 const BEARER = { combined: true, header: "Authorization", scheme: "bearer" };
@@ -67,8 +82,29 @@ export class DefaultExecutor extends BaseExecutor {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
   }
 
-  transformRequest(model, body) {
-    const transformed = this.applyJsonSchemaFallback(body);
+  transformRequest(model, body, _stream, credentials) {
+    let transformed = this.applyJsonSchemaFallback(body);
+
+    // Some OpenAI-compatible gateways reject the legacy `max_tokens` field even
+    // though the rest of the Chat Completions shape is compatible. Keep this
+    // opt-in so other OpenAI-compatible gateways retain their existing request
+    // contract.
+    // Chat Completions only: Anthropic Messages requires max_tokens, and a
+    // two-path node can route some models there.
+    if (
+      this.targetFormat(credentials) === "openai" &&
+      credentials?.providerSpecificData?.maxCompletionTokens === true &&
+      transformed &&
+      typeof transformed === "object" &&
+      transformed.max_completion_tokens === undefined &&
+      transformed.max_tokens !== undefined
+    ) {
+      transformed = {
+        ...transformed,
+        max_completion_tokens: transformed.max_tokens,
+      };
+      delete transformed.max_tokens;
+    }
 
     if (transformed && typeof transformed === "object") {
       // quirk: some openai-compatible providers reject Anthropic's client_metadata field
@@ -76,9 +112,63 @@ export class DefaultExecutor extends BaseExecutor {
         delete transformed.client_metadata;
       }
       stripUnsupportedParams(this.provider, model, transformed);
+      // Ask OpenAI for its usage chunk on a Chat Completions stream, so the
+      // request (and the client key's budget) is charged real usage. Only the
+      // official provider: some compatible upstreams reject unknown params.
+      // Only when the outgoing body itself streams: stream_options without
+      // stream: true is a 400, and a forceStream provider passes _stream for
+      // non-streaming requests too.
+      if (this.provider === "openai" && transformed.stream === true && Array.isArray(transformed.messages)
+        && transformed.stream_options?.include_usage !== true) {
+        transformed = { ...transformed, stream_options: { ...(transformed.stream_options || {}), include_usage: true } };
+      }
+      if (this.onMessagesPath(credentials)) {
+        const psd = credentials?.providerSpecificData || {};
+        transformed = stripBetaBodyFields({ ...transformed }, { dropped: psd.droppedBetas, stripAll: psd.stripBeta === true });
+      }
     }
 
     return injectReasoningContent({ provider: this.provider, model, body: transformed });
+  }
+
+  // The wire format this request goes out in.
+  targetFormat(credentials) {
+    return credentials?.runtimeTransport?.format || getTargetFormat(this.provider, credentials);
+  }
+
+  // safeguards goes out only with its beta in the outgoing header, which
+  // buildHeaders drops for third-party hosts unless an endpoint header line
+  // adds it back. Whether Anthropic 400s or ignores safeguards without the
+  // beta is unverified; the claude and anthropic providers' fixed beta lists
+  // lack it, so they never send it. headers = null (unknown) drops it.
+  //
+  // It is also the last look at the outgoing body, after transformRequest may
+  // have stripped reasoning fields: a forced tool_choice the Claude model would
+  // reject (see concerns/toolChoice.js) goes out as auto.
+  finalizeBody(body, headers, credentials) {
+    const out = super.finalizeBody(body, headers, credentials);
+    const format = this.targetFormat(credentials);
+    if (format === FORMATS.OPENAI) return relaxForcedChatToolChoiceForClaude(out, this.provider, out?.model);
+    if (format !== FORMATS.CLAUDE) return out;
+    return relaxForcedToolChoiceForThinking(dropFirstPartyFieldsWithoutBeta(out, headers), this.provider);
+  }
+
+  // transformRequest (with its endpoint overrides) reads the connection's
+  // settings and the runtime route, never the token; finalizeBody reads the
+  // beta flags and the target format. A subclass that swaps a helper either
+  // one calls gets no reuse.
+  transformRequestInputs(model, stream, credentials) {
+    if (!this.runsOwnBodyHelpers()) return null;
+    return JSON.stringify([credentials?.providerSpecificData ?? null, credentials?.runtimeTransport ?? null]);
+  }
+
+  finalizeBodyInputs(headers, credentials) {
+    if (!this.runsOwnBodyHelpers()) return null;
+    return JSON.stringify([betaFlagsKey(headers), this.targetFormat(credentials)]);
+  }
+
+  runsOwnBodyHelpers() {
+    return BODY_HELPERS.every((name) => this[name] === DefaultExecutor.prototype[name]);
   }
 
   // Fallback json_schema → json_object for openai-compatible providers without native Structured Output.
@@ -109,18 +199,16 @@ export class DefaultExecutor extends BaseExecutor {
     }
     if (this.provider?.startsWith?.("openai-compatible-")) {
       const baseUrl = credentials?.providerSpecificData?.baseUrl || OPENAI_COMPAT_BASE;
-      const normalized = baseUrl.replace(/\/$/, "");
       const path = resolveOpenAICompatibleApiType(this.provider, credentials) === "responses" ? "/responses" : "/chat/completions";
-      return `${normalized}${path}`;
+      return appendUrlPath(baseUrl, path);
     }
     if (this.provider?.startsWith?.("anthropic-compatible-")) {
       const baseUrl = credentials?.providerSpecificData?.baseUrl || ANTHROPIC_COMPAT_BASE;
-      const normalized = baseUrl.replace(/\/$/, "");
-      return `${normalized}/messages`;
+      return appendUrlPath(baseUrl, "/messages");
     }
     // gemini-format: build :streamGenerateContent / :generateContent path
     if (this.config.format === "gemini") {
-      return `${this.config.baseUrl}/${model}:${stream ? "streamGenerateContent?alt=sse" : "generateContent"}`;
+      return `${this.config.baseUrl}/${modelPathSegment(model)}:${stream ? "streamGenerateContent?alt=sse" : "generateContent"}`;
     }
     // urlSuffix (e.g. ?beta=true) declared per-provider in registry
     if (this.config.urlSuffix) {
@@ -153,15 +241,30 @@ export class DefaultExecutor extends BaseExecutor {
     // Hooks run BEFORE auth so dynamic overlays can't clobber the token.
     for (const hook of desc.hooks || []) HEADER_HOOKS[hook]?.(headers, credentials);
     applyAuth(headers, desc, credentials);
+    // Azure-style custom endpoints take the key in an api-key header instead of Bearer.
+    if (credentials?.providerSpecificData?.apiKeyHeader === "api-key" && credentials.apiKey && !this.onMessagesPath(credentials)) {
+      delete headers["Authorization"];
+      headers["api-key"] = credentials.apiKey;
+    }
 
     if (this.provider === "claude" && model) {
       headers["Anthropic-Beta"] = selectAnthropicBeta(model);
     }
 
-    // Strip first-party Claude Code identity headers for non-Anthropic anthropic-compatible upstreams
-    if (this.provider?.startsWith?.("anthropic-compatible-")) {
+    // Strip first-party Claude Code identity headers for non-Anthropic anthropic-compatible
+    // upstreams (including an openai-compatible node routing a model to its Messages path).
+    if (this.onMessagesPath(credentials)) {
+      // Forward the client's anthropic-beta (context-1m-*, interleaved-thinking, ...).
+      // Messages paths only: OpenAI upstreams never see it.
+      const clientBeta = credentials?.rawHeaders?.["anthropic-beta"];
+      if (clientBeta) {
+        const key = BETA_HEADER_KEYS.find((k) => k in headers) || BETA_HEADER_KEYS[0];
+        headers[key] = [...new Set([...splitBetas(headers[key]), ...splitBetas(clientBeta)])].join(",");
+      }
       const baseUrl = credentials?.providerSpecificData?.baseUrl || "";
-      const isOfficialAnthropic = baseUrl === "" || baseUrl.includes("api.anthropic.com");
+      // Substring match on purpose (relays keep master's auth); talksToAnthropic
+      // checks the hostname for safeguards. Unifying them is a follow-up.
+      const isOfficialAnthropic = baseUrl === "" || baseUrl.includes(ANTHROPIC_API_HOST);
       if (!isOfficialAnthropic) {
         // Some third-party Anthropic-compatible gateways require Bearer auth in
         // addition to x-api-key. Send both (x-api-key already set above) so
@@ -173,26 +276,70 @@ export class DefaultExecutor extends BaseExecutor {
         delete headers["Anthropic-Dangerous-Direct-Browser-Access"];
         delete headers["x-app"];
         delete headers["X-App"];
-        // Strip claude-code-20250219 from Anthropic-Beta / anthropic-beta
-        for (const betaKey of ["anthropic-beta", "Anthropic-Beta"]) {
-          if (headers[betaKey]) {
-            const filtered = headers[betaKey]
-              .split(",")
-              .map(s => s.trim())
-              .filter(f => f && f !== "claude-code-20250219")
-              .join(",");
-            if (filtered) {
-              headers[betaKey] = filtered;
-            } else {
-              delete headers[betaKey];
-            }
-          }
-        }
       }
+      // Strip claude-code-20250219, plus any flags this endpoint has rejected
+      // before (learned in execute) or every flag when the user opted in. Runs
+      // for official hosts too, so execute's retry actually drops what it learned.
+      const psd = credentials?.providerSpecificData || {};
+      filterBetaHeaders(headers, { dropped: psd.droppedBetas, stripAll: psd.stripBeta === true });
     }
+
+    // Third-party hosts never get Anthropic-only flags; an endpoint header line
+    // (applied after this) can still add one back as a deliberate opt-in.
+    if (this.targetFormat(credentials) === "claude" && !this.talksToAnthropic(credentials)) dropFirstPartyBetas(headers);
 
     if (stream) headers["Accept"] = "text/event-stream";
     return headers;
+  }
+
+  // Custom endpoint request going to an Anthropic Messages path: the node's own
+  // path, or a two-path route (credentials.runtimeTransport.compatibleRoute).
+  onMessagesPath(credentials) {
+    const route = credentials?.runtimeTransport?.compatibleRoute;
+    if (route) return route === "anthropic";
+    return !!this.provider?.startsWith?.("anthropic-compatible-");
+  }
+
+  // Anthropic's own API: a custom Messages endpoint on (or defaulting to)
+  // api.anthropic.com, or a registry provider whose base URL is that host.
+  // Decides where safeguards and its beta go; auth headers keep their own check.
+  talksToAnthropic(credentials) {
+    if (this.onMessagesPath(credentials)) return isAnthropicApiUrl(credentials?.providerSpecificData?.baseUrl || ANTHROPIC_COMPAT_BASE);
+    return isAnthropicApiUrl(this.config?.baseUrl);
+  }
+
+  // Anthropic-compatible gateways 400 on beta flags they don't know and name them,
+  // sometimes a few at a time. Drop the named ones and retry (bounded), then as a
+  // last resort send no beta header at all. Report what was learned.
+  async execute(args) {
+    let result = await super.execute(args);
+    if (!this.onMessagesPath(args.credentials)) return result;
+    const psd = args.credentials?.providerSpecificData || {};
+    if (psd.stripBeta === true) return result;
+
+    const learned = [];
+    let droppedBetas = psd.droppedBetas || [];
+    let stripAll = false;
+    for (let attempt = 0; attempt <= MAX_BETA_RETRIES && result.response?.status === HTTP_STATUS.BAD_REQUEST; attempt++) {
+      const sent = sentBetas(result.headers);
+      if (!sent.size) break;
+      const text = await result.response.clone().text().catch(() => "");
+      const rejected = parseRejectedBetas(text).filter((f) => sent.has(f));
+      if (!rejected.length) break;
+      learned.push(...rejected);
+      droppedBetas = [...new Set([...droppedBetas, ...rejected])];
+      stripAll = attempt === MAX_BETA_RETRIES;
+      args.log?.warn?.("BETA", `${this.provider} rejected anthropic-beta ${rejected.join(", ")}; retrying without${stripAll ? " any beta flags" : ""}`);
+      result.response.body?.cancel?.().catch?.(() => {});
+      const credentials = { ...args.credentials, providerSpecificData: { ...psd, droppedBetas, ...(stripAll ? { stripBeta: true } : {}) } };
+      result = await super.execute({ ...args, credentials });
+    }
+    if (!learned.length) return result;
+    // The gateway named these itself, so they're worth remembering even if the
+    // final attempt failed for another reason.
+    try { await args.onBetasRejected?.(droppedBetas); }
+    catch (e) { args.log?.warn?.("BETA", `could not save dropped flags: ${e.message}`); }
+    return { ...result, droppedBetas };
   }
 
   // Generic OAuth refresh for the common {grant_type, refresh_token, client_id[, ...]} shape.
@@ -322,5 +469,8 @@ export class DefaultExecutor extends BaseExecutor {
     return null;
   }
 }
+
+// Custom endpoints' Advanced / Ultra advanced settings (no-op for other providers).
+installEndpointOverrides(DefaultExecutor);
 
 export default DefaultExecutor;

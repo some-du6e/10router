@@ -136,6 +136,7 @@ export default function AddCustomEmbeddingModal({ isOpen, onClose, onCreated, on
           type="password"
           value={checkKey}
           onChange={(e) => setCheckKey(e.target.value)}
+          ignorePasswordManagers
         />
         <Input
           label="Model ID (for Check)"
