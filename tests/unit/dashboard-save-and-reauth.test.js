@@ -273,6 +273,129 @@ describe("reauthentication identity", () => {
   });
 });
 
+describe("provider page reauthentication", () => {
+  const providerPath = "src/app/(dashboard)/dashboard/providers/[id]/page.js";
+  const sharedComponents = ["Card", "Button", "Badge", "Input", "Modal", "CardSkeleton", "OAuthModal", "KiroOAuthWrapper", "CursorAuthModal",
+    "IFlowCookieModal", "GitLabAuthModal", "Select", "EditConnectionModal", "NoAuthProxyCard", "ConfirmModal"];
+  const providerImports = {
+    ...componentImports,
+    "@/shared/components": Object.fromEntries(sharedComponents.map((name) => [name, name])),
+    "next/navigation": { useParams: () => ({ id: "example" }), useRouter: () => ({ push: vi.fn() }) },
+    "@/shared/constants/providers": {
+      OAUTH_PROVIDERS: { example: { id: "example", name: "Example", color: "#888888" } },
+      APIKEY_PROVIDERS: {}, FREE_PROVIDERS: {}, FREE_TIER_PROVIDERS: {}, WEB_COOKIE_PROVIDERS: {}, AI_PROVIDERS: {},
+      getProviderAlias: (id) => id, isOpenAICompatibleProvider: () => false, isAnthropicCompatibleProvider: () => false,
+    },
+    "@/shared/constants/models": { getModelsByProviderId: () => [], getModelKind: () => "llm" },
+    "@/shared/constants/accountRouting": { providerRoutingOptions: () => [], SOONEST_RESET_HINT: "" },
+    "@/shared/utils/providerIcon": { getProviderIconSrc: () => null, markProviderIconMissing: () => {} },
+    "@/shared/utils/providerModelsFetcher": { fetchSuggestedModels: async () => [] },
+    "@/shared/utils/providerCustomModels": { getProviderCustomModelRows: () => [] },
+    "@/shared/utils/reauthOutcome": { authenticatedConnectionId, reauthOutcome },
+    "@/i18n/runtime": { translate: (text) => text },
+    "open-sse/providers/thinkingLevels.js": { getThinkingLevels: () => null },
+    "../utils": { fetchKeyLifespans: async () => ({}), withLifespans: (connections) => connections, withToggledActive: (connection) => connection },
+  };
+  const accounts = [
+    { id: "account-a", provider: "example", name: "A", authType: "oauth", testStatus: "error", lastError: "Token expired" },
+    { id: "account-b", provider: "example", name: "B", authType: "oauth" },
+  ];
+  const rows = (tree) => elements(tree, (element) => element.type === "ConnectionRow");
+  const authModal = (tree) => elements(tree, (element) => element.type === "OAuthModal")[0];
+  const puts = (fetch) => fetch.mock.calls.filter(([, init]) => init?.method === "PUT");
+
+  const providerPage = async () => {
+    const fetch = vi.fn(async (url, init = {}) => {
+      if (init.method === "PUT") return Response.json({ success: true });
+      if (url === "/api/providers") return Response.json({ connections: accounts });
+      if (url === "/api/provider-nodes") return Response.json({ nodes: [] });
+      if (url.startsWith("/api/proxy-pools")) return Response.json({ proxyPools: [] });
+      return Response.json({});
+    });
+    const alert = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    vi.stubGlobal("window", { alert });
+    const page = dashboardComponent(providerPath, providerImports);
+    const render = () => page.render({});
+    render();
+    await vi.waitFor(() => expect(rows(render())).toHaveLength(2));
+    return { fetch, alert, render };
+  };
+  const startReauth = (render, id) => {
+    rows(render()).find((row) => row.props.connection.id === id).props.onReauth();
+    const modal = authModal(render());
+    expect(modal.props.isOpen).toBe(true);
+    return modal;
+  };
+
+  it("clears the error of the account the sign-in saved, without a warning", async () => {
+    const { fetch, alert, render } = await providerPage();
+    await startReauth(render, "account-a").props.onSuccess({ connection: { id: "account-a" } });
+    expect(puts(fetch).map(([url]) => url)).toEqual(["/api/providers/account-a"]);
+    expect(JSON.parse(puts(fetch)[0][1].body)).toEqual({ testStatus: "active", lastError: null, lastErrorAt: null, errorCode: null });
+    expect(alert).not.toHaveBeenCalled();
+    expect(authModal(render()).props.isOpen).toBe(false);
+  });
+
+  it("keeps the error and warns when the sign-in saved a different account", async () => {
+    const { fetch, alert, render } = await providerPage();
+    await startReauth(render, "account-a").props.onSuccess({ connection: { id: "account-b" } });
+    expect(puts(fetch)).toEqual([]);
+    expect(alert).toHaveBeenCalledOnce();
+    expect(alert.mock.calls[0][0]).toContain("not confirmed");
+    expect(authModal(render()).props.isOpen).toBe(false);
+  });
+
+  it("does not warn after a plain add with no account selected", async () => {
+    const { fetch, alert, render } = await providerPage();
+    button(render(), "Add").props.onClick();
+    const modal = authModal(render());
+    expect(modal.props.isOpen).toBe(true);
+    await modal.props.onSuccess({ connection: { id: "account-c" } });
+    expect(puts(fetch)).toEqual([]);
+    expect(alert).not.toHaveBeenCalled();
+  });
+});
+
+describe("Cowork combo create", () => {
+  const coworkPath = "src/app/(dashboard)/dashboard/cli-tools/components/CoworkToolCard.js";
+  const coworkImports = {
+    ...componentImports,
+    "@/shared/components": {
+      Card: "Card", Button: "Button", ManualConfigModal: "ManualConfigModal", ComboFormModal: "ComboFormModal",
+      McpMarketplaceModal: "McpMarketplaceModal", ModelSelectModal: "ModelSelectModal",
+    },
+  };
+
+  it("rejects a refused combo create, so the shared form shows the error and stays open", async () => {
+    const fetch = vi.fn(async (url, init = {}) => init.method === "POST"
+      ? Response.json({ error: "Combo refused" }, { status: 409 })
+      : Response.json({ aliases: {} }));
+    vi.stubGlobal("fetch", fetch);
+    const card = dashboardComponent(coworkPath, coworkImports);
+    const props = {
+      tool: { name: "Claude Cowork", image: "/cowork.png", description: "" }, isExpanded: true, hasActiveProviders: true,
+      apiKeys: [], activeProviders: [], initialStatus: { installed: true, cowork: {} },
+    };
+    const comboForm = () => elements(card.render(props), (element) => element.type === "ComboFormModal")[0];
+    card.render(props);
+    elements(card.render(props), (element) => element.type === "button" && textContent(element) === "+ Combo")[0].props.onClick();
+
+    await expect(comboForm().props.onSave({ name: "claude-direct", models: [] })).rejects.toThrow("Combo refused");
+    expect(comboForm()).toBeDefined();
+
+    const formProps = comboForm().props;
+    const form = dashboardComponent("src/shared/components/ComboFormModal.js");
+    elements(form.render(formProps), (element) => element.type === "Input")[0].props.onChange({ target: { value: "mix" } });
+    await button(form.render(formProps), "Create").props.onClick();
+    expect(fetch).toHaveBeenLastCalledWith("/api/combos", expect.objectContaining({ method: "POST", body: JSON.stringify({ name: "claude-mix", models: [] }) }));
+    expect(alerts(form.render(formProps))).toContain("Combo refused");
+    expect(button(form.render(formProps), "Create").props.disabled).toBe(false);
+    expect(comboForm()).toBeDefined();
+    expect(textContent(card.render(props))).not.toContain("created and added");
+  });
+});
+
 describe("auth flows forward the saved connection", () => {
   it("forwards OAuthModal's poll-status connectionId to the parent", async () => {
     const pollResult = { status: "done", connectionId: "saved-account" };
