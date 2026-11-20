@@ -44,13 +44,18 @@ const CONN_CACHE_TTL_MS = 30 * 1000;
 const PERIOD_MS = { "24h": 86400000, "7d": 604800000, "30d": 2592000000, "60d": 5184000000 };
 
 // In-memory state shared across Next.js modules
-if (!global._pendingRequests) global._pendingRequests = { byModel: {}, byAccount: {} };
+// _pendingRequests is the {byModel, byAccount} view the dashboard reads;
+// _pendingBuckets holds one {count, timer} per account and model behind it.
+if (!global._pendingRequests) {
+  global._pendingRequests = { byModel: {}, byAccount: {} };
+  global._pendingBuckets = new Map();
+}
+if (!global._pendingBuckets) global._pendingBuckets = new Map();
 if (!global._lastErrorProvider) global._lastErrorProvider = { provider: "", ts: 0 };
 if (!global._statsEmitter) {
   global._statsEmitter = new EventEmitter();
   global._statsEmitter.setMaxListeners(50);
 }
-if (!global._pendingTimers) global._pendingTimers = {};
 if (!global._recentRing) global._recentRing = { items: [], ready: null };
 if (!global._connectionMapCache) global._connectionMapCache = { map: {}, ts: 0 };
 if (!global._statsEmitTimers) global._statsEmitTimers = { pending: null, update: null };
@@ -59,7 +64,7 @@ if (!global._usageStatsInFlight) global._usageStatsInFlight = new Map();
 
 const pendingRequests = global._pendingRequests;
 const lastErrorProvider = global._lastErrorProvider;
-const pendingTimers = global._pendingTimers;
+const pendingBuckets = global._pendingBuckets;
 const recentRing = global._recentRing;
 const connCache = global._connectionMapCache;
 const statsEmitTimers = global._statsEmitTimers;
@@ -219,39 +224,51 @@ async function calculateCost(provider, model, tokens) {
   }
 }
 
-export function trackPendingRequest(model, provider, connectionId, started, error = false) {
-  const modelKey = provider ? `${model} (${provider})` : model;
-  const timerKey = `${connectionId}|${modelKey}`;
+// Moves one bucket's count by delta and keeps the {byModel, byAccount} view in
+// step. An empty bucket is dropped with its timer, so a late completion for it
+// finds nothing to decrement.
+function adjustPending(bucket, delta) {
+  const count = Math.max(0, bucket.count + delta);
+  const change = count - bucket.count;
+  bucket.count = count;
+  const { modelKey, connectionId } = bucket;
 
-  if (!pendingRequests.byModel[modelKey]) pendingRequests.byModel[modelKey] = 0;
-  pendingRequests.byModel[modelKey] = Math.max(0, pendingRequests.byModel[modelKey] + (started ? 1 : -1));
-  if (pendingRequests.byModel[modelKey] === 0) delete pendingRequests.byModel[modelKey];
+  const modelCount = (pendingRequests.byModel[modelKey] || 0) + change;
+  if (modelCount > 0) pendingRequests.byModel[modelKey] = modelCount;
+  else delete pendingRequests.byModel[modelKey];
 
   if (connectionId) {
-    if (!pendingRequests.byAccount[connectionId]) pendingRequests.byAccount[connectionId] = {};
-    if (!pendingRequests.byAccount[connectionId][modelKey]) pendingRequests.byAccount[connectionId][modelKey] = 0;
-    pendingRequests.byAccount[connectionId][modelKey] = Math.max(0, pendingRequests.byAccount[connectionId][modelKey] + (started ? 1 : -1));
-    if (pendingRequests.byAccount[connectionId][modelKey] === 0) {
-      delete pendingRequests.byAccount[connectionId][modelKey];
-      if (Object.keys(pendingRequests.byAccount[connectionId]).length === 0) {
-        delete pendingRequests.byAccount[connectionId];
-      }
-    }
+    const models = pendingRequests.byAccount[connectionId] || (pendingRequests.byAccount[connectionId] = {});
+    if (count > 0) models[modelKey] = count;
+    else delete models[modelKey];
+    if (Object.keys(models).length === 0) delete pendingRequests.byAccount[connectionId];
   }
 
+  if (count === 0) {
+    clearTimeout(bucket.timer);
+    pendingBuckets.delete(bucket.key);
+  }
+}
+
+export function trackPendingRequest(model, provider, connectionId, started, error = false) {
+  const modelKey = provider ? `${model} (${provider})` : model;
+  const key = `${connectionId || ""}|${modelKey}`;
+  let bucket = pendingBuckets.get(key);
+
   if (started) {
-    clearTimeout(pendingTimers[timerKey]);
-    pendingTimers[timerKey] = setTimeout(() => {
-      delete pendingTimers[timerKey];
-      if (pendingRequests.byModel[modelKey] > 0) pendingRequests.byModel[modelKey] = 0;
-      if (connectionId && pendingRequests.byAccount[connectionId]?.[modelKey] > 0) {
-        pendingRequests.byAccount[connectionId][modelKey] = 0;
-      }
+    if (!bucket) {
+      bucket = { key, modelKey, connectionId: connectionId || null, count: 0, timer: null };
+      pendingBuckets.set(key, bucket);
+    }
+    adjustPending(bucket, 1);
+    // A bucket nobody completes expires a minute after its latest start.
+    clearTimeout(bucket.timer);
+    bucket.timer = setTimeout(() => {
+      adjustPending(bucket, -bucket.count);
       scheduleStatsEvent("pending");
     }, PENDING_TIMEOUT_MS);
-  } else {
-    clearTimeout(pendingTimers[timerKey]);
-    delete pendingTimers[timerKey];
+  } else if (bucket) {
+    adjustPending(bucket, -1);
   }
 
   if (!started && error && provider) {

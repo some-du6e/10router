@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import initSqlJs from "sql.js";
 import { PRAGMA_SQL } from "../schema.js";
+import { registerShutdown } from "../helpers/shutdown.js";
 
 let SQL = null;
 
@@ -23,6 +24,8 @@ export async function createSqlJsAdapter(filePath) {
 
   function persist() {
     const data = db.export();
+    // sql.js export closes/reopens its connection, resetting connection pragmas.
+    db.exec(PRAGMA_SQL);
     // Owner-only from the first write: the file holds provider credentials, and
     // on a fresh install it doesn't exist yet when the driver tightens modes.
     fs.writeFileSync(filePath, Buffer.from(data), { mode: 0o600 });
@@ -102,16 +105,18 @@ export async function createSqlJsAdapter(filePath) {
   }
 
   function close() {
+    unregisterShutdown();
     if (saveTimer) clearTimeout(saveTimer);
-    if (dirty) persist();
-    db.close();
+    try {
+      if (dirty) persist();
+    } finally {
+      db.close();
+    }
   }
 
   // Flush on shutdown
   const flush = () => { if (dirty) try { persist(); } catch {} };
-  process.on("beforeExit", flush);
-  process.on("SIGINT", flush);
-  process.on("SIGTERM", flush);
+  const unregisterShutdown = registerShutdown(flush, { exitOnSignal: false });
 
   return { driver: "sql.js", run, get, all, exec, transaction, close, raw: db };
 }

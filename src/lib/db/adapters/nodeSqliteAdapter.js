@@ -1,12 +1,16 @@
 // Built-in node:sqlite adapter — available in Node >= 22.5.0.
 // No native build, no npm install. API mirrors betterSqliteAdapter.
 import { PRAGMA_SQL } from "../schema.js";
+import { registerShutdown } from "../helpers/shutdown.js";
 
 const CHECKPOINT_INTERVAL_MS = 60 * 1000;
 
-export async function createNodeSqliteAdapter(filePath) {
-  // Suppress "ExperimentalWarning: SQLite is an experimental feature" from node:sqlite.
-  // Stable enough for production use as of Node 22.x (RC quality).
+// Suppress "ExperimentalWarning: SQLite is an experimental feature" from node:sqlite.
+// Stable enough for production use as of Node 22.x (RC quality). Installed once
+// per process (the flag survives module reloads), not once per connection.
+function silenceSqliteExperimentalWarning() {
+  if (global._nodeSqliteWarningSilenced) return;
+  global._nodeSqliteWarningSilenced = true;
   const origEmit = process.emit;
   process.emit = function (name, data, ...rest) {
     if (name === "warning" && data?.name === "ExperimentalWarning" && /SQLite/i.test(data.message || "")) {
@@ -14,6 +18,10 @@ export async function createNodeSqliteAdapter(filePath) {
     }
     return origEmit.call(process, name, data, ...rest);
   };
+}
+
+export async function createNodeSqliteAdapter(filePath) {
+  silenceSqliteExperimentalWarning();
 
   // Dynamic import — fails on Node < 22.5 → driver.js falls back to sql.js
   const sqlite = await import("node:sqlite");
@@ -43,10 +51,7 @@ export async function createNodeSqliteAdapter(filePath) {
     try { stmtCache.clear(); } catch {}
     try { db.close(); } catch {}
   }
-  const onShutdown = () => gracefulClose();
-  process.once("beforeExit", onShutdown);
-  process.once("SIGINT", () => { onShutdown(); process.exit(0); });
-  process.once("SIGTERM", () => { onShutdown(); process.exit(0); });
+  const unregisterShutdown = registerShutdown(gracefulClose);
 
   return {
     driver: "node:sqlite",
@@ -76,6 +81,7 @@ export async function createNodeSqliteAdapter(filePath) {
     },
     checkpoint() { try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch {} },
     close() {
+      unregisterShutdown();
       clearInterval(checkpointTimer);
       gracefulClose();
     },
