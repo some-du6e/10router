@@ -1,15 +1,13 @@
-import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-const dbRoot = process.env.DB_AUDIT_ROOT || path.resolve(import.meta.dirname, "../../src/lib/db");
-const stateKeys = ["_pendingRequests", "_pendingTimers", "_statsEmitTimers", "_lastErrorProvider", "_statsEmitter"];
+const stateKeys = ["_pendingRequests", "_pendingBuckets", "_statsEmitTimers", "_lastErrorProvider", "_statsEmitter"];
 let track;
 
 beforeEach(async () => {
   vi.useFakeTimers();
   for (const key of stateKeys) delete global[key];
   vi.resetModules();
-  track = (await import(`${dbRoot}/repos/usageRepo.js`)).trackPendingRequest;
+  track = (await import("@/lib/db/repos/usageRepo.js")).trackPendingRequest;
 });
 
 afterEach(() => {
