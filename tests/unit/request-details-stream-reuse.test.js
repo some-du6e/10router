@@ -149,15 +149,4 @@ describe("request detail capping on a repeated save", () => {
     const capped = truncateField(obj, 10 * 1024);
     expect(truncateField(obj, 10 * 1024)).toBe(capped);
   });
-
-  it("does not keep a body's JSON alive after capping it", () => {
-    const { truncateField } = repo.__test__;
-    const obj = big("x");
-    const first = {};
-    const capped = truncateField(obj, 10 * 1024, first, "request");
-    expect(first.request).toBe(JSON.stringify(obj));
-    const again = {};
-    expect(truncateField(obj, 10 * 1024, again, "request")).toBe(capped);
-    expect(again.request).toBeUndefined();
-  });
 });

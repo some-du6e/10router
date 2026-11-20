@@ -90,7 +90,17 @@ describe("measureJson", () => {
     const json = JSON.stringify(value);
     expect(json.length).toBeGreaterThan(MB);
     for (const prefixChars of [1, 30, 2001]) {
+      const real = JSON.stringify;
+      let longest = 0;
+      vi.spyOn(JSON, "stringify").mockImplementation(function (v, ...rest) {
+        const out = real.call(JSON, v, ...rest);
+        if (typeof out === "string") longest = Math.max(longest, out.length);
+        return out;
+      });
       const measured = measureJson(value, prefixChars);
+      vi.restoreAllMocks();
+      // Not the string escaped whole, only the piece at the cut.
+      expect(longest).toBeLessThan(64 * 1024);
       expect(measured.length).toBe(json.length);
       expect(json.startsWith(measured.prefix)).toBe(true);
       expect(measured.prefix.length).toBeLessThanOrEqual(prefixChars + 8);
@@ -135,24 +145,28 @@ describe("request details memory caps", () => {
     vi.resetModules();
   });
 
-  it("build no full copy the ring couldn't hold, and don't serialize it", () => {
-    const { limits, truncateField, fullCopySource } = __test__;
+  it("make no full copy the ring couldn't hold, and serialize one only when it is packed", async () => {
+    const { limits, truncateField, fullCopySource, packSource, unpackFullData } = __test__;
     const cap = limits.fullRingMaxBytes;
     const request = { messages: [{ role: "user", content: "q".repeat(300_000) }] };
     const record = { request: truncateField(request, 5 * 1024) };
     expect(record.request._truncated).toBe(true);
+    const stringify = vi.spyOn(JSON, "stringify");
+    const serialized = () => stringify.mock.calls.filter(([value]) => value === request).length;
     try {
-      // 2 bytes a character: 600 KB.
+      // Counted at 2 bytes a character: 600 KB.
       limits.fullRingMaxBytes = 500 * 1024;
-      const stringify = vi.spyOn(JSON, "stringify");
       expect(fullCopySource({ request }, record)).toBeNull();
-      expect(stringify.mock.calls.some(([value]) => value === request)).toBe(false);
-      stringify.mockRestore();
       limits.fullRingMaxBytes = 700 * 1024;
       const source = fullCopySource({ request }, record);
+      expect(source.bytes).toBe(2 * record.request._originalSize);
       expect(source.bytes).toBeLessThanOrEqual(limits.fullRingMaxBytes);
-      expect(JSON.parse(source.json)).toEqual({ request });
+      expect(serialized()).toBe(0);
+      const packed = await packSource(source);
+      expect(serialized()).toBe(1);
+      expect(await unpackFullData(packed)).toEqual({ request });
     } finally {
+      stringify.mockRestore();
       limits.fullRingMaxBytes = cap;
     }
   });

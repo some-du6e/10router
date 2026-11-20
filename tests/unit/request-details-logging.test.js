@@ -6,8 +6,8 @@ import { FORMATS } from "../../open-sse/translator/formats.js";
 import { createSSETransformStreamWithLogger } from "../../open-sse/utils/stream.js";
 
 // A row's full copy: what the repo builds at save time, packed as a flush does.
-async function packFullData(item, record, fieldJson) {
-  const source = requestDetailsTest.fullCopySource(item, record, fieldJson);
+async function packFullData(item, record) {
+  const source = requestDetailsTest.fullCopySource(item, record);
   return source ? requestDetailsTest.packSource(source) : null;
 }
 
@@ -62,16 +62,17 @@ describe("request detail logging", () => {
     await expect(requestDetailsTest.unpackFullData("not gzip")).rejects.toThrow();
   });
 
-  it("reuses the compact JSON from truncation instead of serializing the full payload again", async () => {
+  it("serializes a cut payload once, when its full copy is packed", async () => {
     const big = { messages: [{ role: "user", content: "x".repeat(200 * 1024) }] };
-    const fieldJson = {};
-    const record = { request: requestDetailsTest.truncateField(big, 5 * 1024, fieldJson, "request") };
-    expect(fieldJson.request).toBe(JSON.stringify(big));
     const stringify = vi.spyOn(JSON, "stringify");
-    const packed = await packFullData({ request: big }, record, fieldJson);
-    const large = stringify.mock.calls.filter(([value]) => value === big || value?.request === big).length;
+    const record = { request: requestDetailsTest.truncateField(big, 5 * 1024) };
+    const source = requestDetailsTest.fullCopySource({ request: big }, record);
+    const beforePack = stringify.mock.calls.filter(([value]) => value === big).length;
+    const packed = await requestDetailsTest.packSource(source);
+    const total = stringify.mock.calls.filter(([value]) => value === big).length;
     stringify.mockRestore();
-    expect(large).toBe(0);
+    expect(beforePack).toBe(0);
+    expect(total).toBe(1);
     expect(await requestDetailsTest.unpackFullData(packed)).toEqual({ request: big });
   });
 

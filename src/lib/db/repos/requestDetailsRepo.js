@@ -21,13 +21,17 @@ const FULL_DATA_MAX_BYTES = 16 * 1024 * 1024;
 // way once it holds any character above U+00FF, which prompts almost always do.
 // A packed copy is base64, one byte a character.
 const JSON_BYTES_PER_CHAR = 2;
-// The most the full copies waiting to be written may take (see fullRing).
+// The most the payloads waiting for a full copy may take, counted by the
+// size of their JSON (see fullRing).
 const FULL_RING_MAX_BYTES = 256 * 1024 * 1024;
 // A stream's row is saved twice, when it starts and when it ends, so past
 // SAVES_PER_ROW × maxRecords queued saves the oldest are ones the trim would
 // delete anyway. Queued records, a running write's included, are also capped
-// in bytes, which only a stalled write reaches; past it the oldest saves go,
-// so a stream's end save can be lost and its row left looking unfinished.
+// in bytes; past it the oldest saves go, so a stream's end save can be lost
+// and its row left looking unfinished. With full details on a record can take
+// up to 1 MB (four fields of 128 KB, at 2 bytes a character), so in a 2 GiB
+// container the cap holds about 60 to 120 records: several seconds of saves
+// under heavy fallback, which a write that keeps up never reaches.
 const SAVES_PER_ROW = 2;
 const QUEUED_RECORDS_MAX_BYTES = 128 * 1024 * 1024;
 // In a container, both caps are also held to a share of its memory limit
@@ -161,55 +165,51 @@ const packedFullData = new WeakMap();   // first capped field → its packed ful
 
 const sameCapped = (a, b) => a.length === b.length && a.every((c, i) => c === b[i]);
 
-// What a row's full copy is made from: the untruncated payloads that
-// truncateField cut, as JSON, or null when there is none or it is over
-// FULL_DATA_MAX_BYTES or the ring's byte cap. For the same capped objects as an earlier save (a
-// stream's start save), that save's packed copy, or its JSON when it is still
-// waiting (`earlier`), so nothing is serialized again. Otherwise the fields
-// are serialized here, once the copy is known to fit; `fieldJson` holds any
-// compact JSON a caller already built. The capped objects
-// are kept only as WeakRefs (`cappedRefs`), so a waiting copy never keeps them,
-// or the strings their previews came from, alive.
-function fullCopySource(item, record, fieldJson = {}, earlier = null) {
+// What a row's full copy is made from, or null when there is none to make:
+// the payloads truncateField cut, by reference, with the size of their JSON
+// (truncateField measured it) at 2 bytes a character. Nothing is serialized
+// here: a copy that is pushed out of the ring, or replaced by a later save of
+// its row (a stream's end save), is never serialized at all. One over
+// FULL_DATA_MAX_BYTES or the ring's byte cap is skipped. For the same capped
+// objects as an earlier save whose copy was already packed (a stream that
+// outlived a flush), that packed copy.
+function fullCopySource(item, record) {
   const parts = [];
   let chars = 0;
   for (const key of PAYLOAD_KEYS) {
     if (record[key]?._truncated === true && item[key] != null) {
-      parts.push([key, fieldJson[key]]);
+      parts.push([key, item[key]]);
       chars += record[key]._originalSize ?? 0;
     }
   }
   if (!parts.length) return null;
   // UTF-8 never takes fewer bytes than characters, so this skips oversized
-  // payloads without serializing them. Nor is a copy built that the ring
-  // couldn't hold.
+  // payloads without serializing them.
   if (chars > FULL_DATA_MAX_BYTES || chars * JSON_BYTES_PER_CHAR > limits.fullRingMaxBytes) return null;
   const keys = parts.map(([key]) => key).join();
   const capped = parts.map(([key]) => record[key]);
   const prior = packedFullData.get(capped[0]);
   if (prior?.keys === keys && sameCapped(prior.capped, capped)) return { packed: prior.packed, bytes: prior.packed.length };
-  if (earlier?.json && earlier.keys === keys && sameCapped(earlier.cappedRefs.map((ref) => ref.deref()), capped)) {
-    return { json: earlier.json, keys, cappedRefs: earlier.cappedRefs, bytes: earlier.bytes };
-  }
+  return { parts, keys, capped, bytes: chars * JSON_BYTES_PER_CHAR };
+}
+
+// Serializes and gzips a full copy's source, or null: only for a row being
+// written. Compression runs on the libuv pool so a big payload doesn't stall
+// streams.
+async function packSource(source) {
+  if (source.packed) return source.packed;
+  let json;
   try {
-    const json = `{${parts.map(([key, value]) => `${JSON.stringify(key)}:${value ?? JSON.stringify(item[key])}`).join(",")}}`;
-    // A UTF-16 code unit is at most 3 UTF-8 bytes, so only count bytes when that bound could exceed the limit.
-    if (json.length * 3 > FULL_DATA_MAX_BYTES && Buffer.byteLength(json, "utf8") > FULL_DATA_MAX_BYTES) return null;
-    return { json, keys, cappedRefs: capped.map((c) => new WeakRef(c)), bytes: json.length * JSON_BYTES_PER_CHAR };
+    json = `{${source.parts.map(([key, value]) => `${JSON.stringify(key)}:${JSON.stringify(value)}`).join(",")}}`;
   } catch {
     return null;
   }
-}
-
-// Gzips a full copy's source, or null. Compression runs on the libuv pool so
-// a big payload doesn't stall streams.
-async function packSource(source) {
-  if (source.packed) return source.packed;
+  // A UTF-16 code unit is at most 3 UTF-8 bytes, so only count bytes when that bound could exceed the limit.
+  if (json.length * 3 > FULL_DATA_MAX_BYTES && Buffer.byteLength(json, "utf8") > FULL_DATA_MAX_BYTES) return null;
   try {
-    const packed = (await gzipAsync(source.json)).toString("base64");
+    const packed = (await gzipAsync(json)).toString("base64");
     // Kept for a later save of the same objects (a stream's end save) only while they live.
-    const capped = source.cappedRefs.map((ref) => ref.deref());
-    if (capped.every(Boolean)) packedFullData.set(capped[0], { keys: source.keys, capped, packed });
+    packedFullData.set(source.capped[0], { keys: source.keys, capped: source.capped, packed });
     return packed;
   } catch {
     return null;
@@ -221,7 +221,10 @@ async function packSource(source) {
 // `source.save`), oldest-inserted first. Only FULL_DATA_KEEP_ROWS rows keep a
 // copy after the trim, so a 26th id pushes the oldest out. Going over
 // limits.fullRingMaxBytes does too, so with large payloads fewer than 25 rows get
-// a new copy. Queued saves hold only their capped record.
+// a new copy. A source holds its payload objects, not their JSON: those
+// objects are the request's own, alive anyway while it runs, and a copy is
+// serialized only for a row a write packs. Queued saves hold only their
+// capped record.
 const fullRing = new Map();
 let fullRingBytes = 0;
 
@@ -306,17 +309,16 @@ function prettyJsonPrefix(json, limit) {
   return out.substring(0, limit);
 }
 
-function truncateField(obj, maxSize, fieldJson, key) {
+function truncateField(obj, maxSize) {
   if (obj === undefined || obj === null) return {};
   const cached = typeof obj === "object" ? cappedPayloads.get(obj) : undefined;
-  // No JSON is kept with it (1 MB per body while the stream runs): a full copy
-  // reuses an earlier save's, or serializes again when it can't.
+  // No JSON is kept with it (1 MB per body while the stream runs).
   if (cached?.maxSize === maxSize) return cached.truncated;
   const previewChars = Math.min(2000, Math.max(0, maxSize - 256));
   // A capped record needs only the JSON's length and head, which measureJson
   // reads without putting a body-sized string on the heap for every account a
-  // request tries. A caller passing `fieldJson` gets the whole JSON in it.
-  let measured = fieldJson ? undefined : measureJson(obj, previewChars + 1);
+  // request tries. What it can't measure is serialized.
+  let measured = measureJson(obj, previewChars + 1);
   if (!measured) {
     let str;
     try {
@@ -324,10 +326,9 @@ function truncateField(obj, maxSize, fieldJson, key) {
     } catch {
       return { _truncated: true, _originalSize: null, _preview: "[Payload could not be serialized]" };
     }
-    measured = { length: str.length, prefix: str, json: str };
+    measured = { length: str.length, prefix: str };
   }
   if (measured.length > maxSize) {
-    if (fieldJson) fieldJson[key] = measured.json;
     const truncated = {
       _truncated: true,
       _originalSize: measured.length,
@@ -429,8 +430,8 @@ function buildSave(item, maxJsonSize, keepFull) {
   // stored as its size only.
   for (const key of PAYLOAD_KEYS) if (isBinaryBody(item[key])) item[key] = binaryBodyMarker(item[key]);
 
-  // Capped without the full JSON, even with `keepFull`: fullCopySource
-  // serializes the cut fields only once it knows the copy is kept.
+  // Capped without serializing a payload whole, with `keepFull` too: a full
+  // copy is serialized only when a write packs it.
   const record = {
     id: item.id,
     provider: item.provider || null,
@@ -451,7 +452,7 @@ function buildSave(item, maxJsonSize, keepFull) {
     id: record.id, timestamp: record.timestamp, provider: record.provider, model: record.model,
     connectionId: record.connectionId, status: record.status, data, bytes: data.length * JSON_BYTES_PER_CHAR,
   };
-  return { save, source: keepFull ? fullCopySource(item, record, {}, fullRing.get(item.id)) : null };
+  return { save, source: keepFull ? fullCopySource(item, record) : null };
 }
 
 function armFlushTimer() {
