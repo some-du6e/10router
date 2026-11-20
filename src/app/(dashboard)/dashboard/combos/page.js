@@ -56,6 +56,7 @@ export default function CombosPage() {
   const { getCaps } = useModelCaps();
   const [confirmState, setConfirmState] = useState(null);
   const [actionError, setActionError] = useState("");
+  const [settingsError, setSettingsError] = useState("");
   const { copied, copy } = useCopyToClipboard();
   const savedSettingsRef = useRef({ comboStrategies: {}, capacityAdapter: EMPTY_CAPACITY_ADAPTER });
   const settingsSaveRef = useRef(Promise.resolve());
@@ -66,20 +67,27 @@ export default function CombosPage() {
 
   const fetchData = async () => {
     try {
-      const [combosRes, providersRes, settingsRes] = await Promise.all([
+      const [combosRes, providersRes, settings] = await Promise.all([
         fetch("/api/combos"),
         fetch("/api/providers"),
-        fetch("/api/settings"),
+        api.get("/api/settings").then((data) => ({ data }), (error) => ({ error })),
       ]);
       const combosData = await combosRes.json();
       const providersData = await providersRes.json();
-      const settingsData = settingsRes.ok ? await settingsRes.json() : {};
-      
+
       // Only LLM combos here - webSearch/webFetch combos belong to media-providers/web
       if (combosRes.ok) setCombos((combosData.combos || []).filter(c => !c.kind || c.kind === "llm"));
       if (providersRes.ok) {
         setActiveProviders(providersData.connections || []);
       }
+      // Strategy and capacity saves replace the whole stored map, so they stay
+      // blocked until the saved one has loaded.
+      if (settings.error) {
+        setSettingsError(`Could not load combo settings, so strategies and the capacity adapter can't be changed: ${settings.error.message}`);
+        return;
+      }
+      setSettingsError("");
+      const settingsData = settings.data || {};
       const strategies = settingsData.comboStrategies || {};
       const rawAdapter = settingsData.capacityAdapter || {};
       const normalized = {};
@@ -99,6 +107,7 @@ export default function CombosPage() {
   // Settings saves run one at a time, and each builds its value from the last
   // one the API accepted, so a change made while another is saving keeps it.
   const saveSetting = (key, update, apply, label) => {
+    if (settingsError) return settingsSaveRef.current;
     setActionError("");
     const save = async () => {
       try {
@@ -189,6 +198,7 @@ export default function CombosPage() {
         </Button>
       </div>
 
+      {settingsError && <p role="alert" className="text-sm text-red-500">{settingsError}</p>}
       {actionError && <p role="alert" className="text-sm text-red-500">{actionError}</p>}
 
       {/* Combos List */}
@@ -219,6 +229,7 @@ export default function CombosPage() {
               onDelete={() => handleDelete(combo.id)}
               strategy={comboStrategies[combo.name] || {}}
               onSetStrategy={(patch) => handleSetComboStrategy(combo.name, patch)}
+              strategyDisabled={!!settingsError}
             />
           ))}
         </div>
@@ -228,6 +239,7 @@ export default function CombosPage() {
       <CapacityAdapterSection
         capacityAdapter={capacityAdapter}
         onChange={handleSetCapacityAdapter}
+        disabled={!!settingsError}
         activeProviders={activeProviders}
         getCaps={getCaps}
       />
@@ -273,7 +285,7 @@ const STRATEGY_OPTIONS = [
   { value: "fusion", label: "Fusion — panel + judge" },
 ];
 
-function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdit, onDelete, strategy = {}, onSetStrategy }) {
+function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdit, onDelete, strategy = {}, onSetStrategy, strategyDisabled = false }) {
   const [showJudgeSelect, setShowJudgeSelect] = useState(false);
   const current = strategy.fallbackStrategy || "fallback";
   const judge = strategy.judgeModel || "";
@@ -309,6 +321,7 @@ function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdi
                 <span className="text-[11px] font-medium text-text-muted">Judge</span>
                 <button
                   onClick={() => setShowJudgeSelect(true)}
+                  disabled={strategyDisabled}
                   className="inline-flex max-w-full items-center gap-1 rounded border border-dashed border-primary/40 px-1.5 py-0.5 font-mono text-[11px] text-primary hover:border-primary hover:bg-primary/5 transition-colors"
                   title="Pick the model that fuses panel answers"
                 >
@@ -318,6 +331,7 @@ function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdi
                 {judge && (
                   <button
                     onClick={() => onSetStrategy({ judgeModel: "" })}
+                    disabled={strategyDisabled}
                     className="p-0.5 rounded text-text-muted hover:text-red-500 hover:bg-red-500/10 transition-colors"
                     title="Reset judge to Auto"
                   >
@@ -337,6 +351,7 @@ function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdi
               options={STRATEGY_OPTIONS}
               value={current}
               onChange={(e) => onSetStrategy({ fallbackStrategy: e.target.value })}
+              disabled={strategyDisabled}
               selectClassName="py-1.5 text-xs"
             />
           </div>
@@ -388,7 +403,7 @@ function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdi
   );
 }
 
-function CapacityAdapterSection({ capacityAdapter, onChange, activeProviders, getCaps }) {
+function CapacityAdapterSection({ capacityAdapter, onChange, disabled = false, activeProviders, getCaps }) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -414,6 +429,7 @@ function CapacityAdapterSection({ capacityAdapter, onChange, activeProviders, ge
               const next = updateEntry(entry);
               return next === entry ? adapter : { ...adapter, [cap.key]: next };
             })}
+            disabled={disabled}
             activeProviders={activeProviders}
             getCaps={getCaps}
           />
@@ -423,7 +439,7 @@ function CapacityAdapterSection({ capacityAdapter, onChange, activeProviders, ge
   );
 }
 
-function CapacityAdapterCap({ cap, entry, onChange, activeProviders, getCaps }) {
+function CapacityAdapterCap({ cap, entry, onChange, disabled = false, activeProviders, getCaps }) {
   const [showModelSelect, setShowModelSelect] = useState(false);
   const { enabled, roundRobin, models } = entry;
 
@@ -463,6 +479,7 @@ function CapacityAdapterCap({ cap, entry, onChange, activeProviders, getCaps }) 
           <Toggle
             checked={enabled}
             onChange={(v) => patch({ enabled: v })}
+            disabled={disabled}
             aria-label={`Enable ${cap.label} adapter`}
           />
           <div className="size-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
@@ -484,13 +501,13 @@ function CapacityAdapterCap({ cap, entry, onChange, activeProviders, getCaps }) 
                   >
                     <span>{model}</span>
                     <CapacityBadges caps={getCaps?.(model)} />
-                    <button onClick={() => handleMove(index, -1)} disabled={index === 0} className={`leading-none opacity-0 group-hover/chip:opacity-100 ${index === 0 ? "text-text-muted/20" : "text-text-muted hover:text-primary"}`}>
+                    <button onClick={() => handleMove(index, -1)} disabled={disabled || index === 0} className={`leading-none opacity-0 group-hover/chip:opacity-100 ${index === 0 ? "text-text-muted/20" : "text-text-muted hover:text-primary"}`}>
                       <span className="material-symbols-outlined text-[12px]">arrow_upward</span>
                     </button>
-                    <button onClick={() => handleMove(index, 1)} disabled={index === models.length - 1} className={`leading-none opacity-0 group-hover/chip:opacity-100 ${index === models.length - 1 ? "text-text-muted/20" : "text-text-muted hover:text-primary"}`}>
+                    <button onClick={() => handleMove(index, 1)} disabled={disabled || index === models.length - 1} className={`leading-none opacity-0 group-hover/chip:opacity-100 ${index === models.length - 1 ? "text-text-muted/20" : "text-text-muted hover:text-primary"}`}>
                       <span className="material-symbols-outlined text-[12px]">arrow_downward</span>
                     </button>
-                    <button onClick={() => handleRemove(index)} className="leading-none opacity-0 group-hover/chip:opacity-100 text-text-muted hover:text-red-500">
+                    <button onClick={() => handleRemove(index)} disabled={disabled} className="leading-none opacity-0 group-hover/chip:opacity-100 text-text-muted hover:text-red-500">
                       <span className="material-symbols-outlined text-[12px]">close</span>
                     </button>
                   </code>
@@ -509,7 +526,7 @@ function CapacityAdapterCap({ cap, entry, onChange, activeProviders, getCaps }) 
             <Toggle
               checked={roundRobin}
               onChange={(v) => patch({ roundRobin: v })}
-              disabled={!enabled}
+              disabled={disabled || !enabled}
               aria-label={`Round-robin ${cap.label} adapter`}
             />
             <span>Round</span>
@@ -519,7 +536,7 @@ function CapacityAdapterCap({ cap, entry, onChange, activeProviders, getCaps }) 
             variant="ghost"
             size="sm"
             onClick={() => setShowModelSelect(true)}
-            disabled={!enabled}
+            disabled={disabled || !enabled}
             title={`Add ${cap.label} model`}
           >
             Add Model

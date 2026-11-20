@@ -66,7 +66,7 @@ describe("combos page saves", () => {
     await saving;
   });
 
-  const combosPage = async (writeError, { write } = {}) => {
+  const combosPage = async (writeError, { write, settingsError } = {}) => {
     const fetch = vi.fn(async (url, init = {}) => {
       if (init.method && init.method !== "GET") {
         if (write) return write(init);
@@ -74,6 +74,7 @@ describe("combos page saves", () => {
       }
       if (url === "/api/combos") return Response.json({ combos: [{ id: "combo-1", name: "alpha", models: ["provider/model"] }] });
       if (url === "/api/providers") return Response.json({ connections: [] });
+      if (settingsError) return Response.json({ error: settingsError }, { status: 503 });
       return Response.json({ comboStrategies: {}, capacityAdapter: {} });
     });
     vi.stubGlobal("fetch", fetch);
@@ -108,6 +109,23 @@ describe("combos page saves", () => {
     expect(picker.props.closeOnSelect).toBe(false);
     values.forEach((value) => picker.props.onSelect({ value }));
   };
+
+  it("blocks strategy and capacity saves, and says why, when settings fail to load", async () => {
+    const { render, fetch } = await combosPage(null, { settingsError: "Settings unavailable" });
+    expect(alerts(render())).toContain("Could not load combo settings");
+    expect(alerts(render())).toContain("Settings unavailable");
+
+    const comboCard = dashboardComponent(combosPath, componentImports, "ComboCard").render(card(render()).props);
+    expect(elements(comboCard, (element) => element.type === "Select")[0].props.disabled).toBe(true);
+    const vision = capacityCap(render(), "vision").render();
+    expect(enableToggle(vision).props.disabled).toBe(true);
+    expect(button(vision, "Add Model").props.disabled).toBe(true);
+
+    await card(render()).props.onSetStrategy({ fallbackStrategy: "round-robin" });
+    await enableToggle(vision).props.onChange(false);
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === "PATCH")).toEqual([]);
+    expect(card(render()).props.strategy).toEqual({});
+  });
 
   it("keeps every capacity change made while an earlier one is still saving", async () => {
     const { writes, write } = heldWrites();
