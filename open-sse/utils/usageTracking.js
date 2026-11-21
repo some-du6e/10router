@@ -344,7 +344,7 @@ export function estimateInputTokens(body) {
   // Total body size (messages, tools, system, thinking config, etc.) at ~4 chars
   // per token, with inline images and files counted by kind, not as base64 text.
   const measured = measureInlineMedia(body);
-  return measured ? Math.ceil(measured.json.length / 4) + measured.inline : 0;
+  return measured ? Math.ceil(measured.length / 4) + measured.inline : 0;
 }
 
 /**
@@ -390,32 +390,124 @@ export function formatUsage(inputTokens, outputTokens, targetFormat) {
 const NON_ASCII = /[^\x00-\x7f]/g;
 const DATA_URL = /^data:([^;,]+);base64,/;
 
-/** Tokens a base64 payload counts as: an image flat, any other file by its decoded size. */
-function inlinePayloadTokens(mime, base64) {
+/** Tokens a base64 payload of `length` characters counts as: an image flat, any other file by its decoded size. */
+function inlinePayloadTokens(mime, length) {
   if (/^image\//i.test(mime || "")) return IMAGE_TOKEN_ESTIMATE;
-  return Math.ceil((base64.length * 3) / 4 / 4);
+  return Math.ceil((length * 3) / 4 / 4);
 }
 
+const MEDIA_MIN_CHARS = 256;
+
+// The tokens of `value`, the string under `key` in `holder`, when it is an
+// inline file; null when it is text.
+function inlineMediaTokens(key, holder, value) {
+  if (value.length <= MEDIA_MIN_CHARS) return null;
+  const url = DATA_URL.exec(value);
+  if (url) return inlinePayloadTokens(url[1], value.length - url[0].length);
+  if (key === "data" && holder && typeof holder === "object") {
+    const mime = holder.media_type || holder.mimeType || holder.mime_type || (holder.format ? `audio/${holder.format}` : null);
+    if (holder.type === "base64" || mime) return inlinePayloadTokens(mime, value.length);
+  }
+  return null;
+}
+
+// Strings JSON.stringify writes as they are: printable ASCII with no `"` or `\`.
+const NOT_PLAIN_ASCII = /[^ -!#-[\]-~]/;
+const UNSUPPORTED = Symbol("unsupported");
+// Far below the nesting JSON.stringify overflows on; a cycle reaches it too.
+const MAX_DEPTH = 1000;
+
 /**
- * The body as JSON with inline files blanked, and their tokens. Inline files: a
- * data: URL (OpenAI), a { type: "base64", media_type, data } source (Anthropic
+ * The length of the body's JSON with inline files blanked, how many of its
+ * characters are non-ASCII, and the inline files' tokens, without building the
+ * JSON: one walk the way JSON.stringify would write it. Inline files: a data:
+ * URL (OpenAI), a { type: "base64", media_type, data } source (Anthropic
  * image/document), { mimeType, data } (Gemini inlineData), { data, format }
  * (OpenAI input_audio). Null when the body can't be serialized.
  */
 function measureInlineMedia(body) {
+  try {
+    return walkForTokens(body);
+  } catch (error) {
+    if (error !== UNSUPPORTED) return null;
+  }
+  return stringifyForTokens(body);
+}
+
+function walkForTokens(body) {
+  let length = 0;
+  let nonAscii = 0;
+  let inline = 0;
+  const text = (s) => {
+    length += s.length + 2;
+    if (!NOT_PLAIN_ASCII.test(s)) return;
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      if (c < 0x20) length += c === 8 || c === 9 || c === 10 || c === 12 || c === 13 ? 1 : 5;
+      else if (c === 0x22 || c === 0x5c) length += 1;
+      else if (c < 0x80) continue;
+      else if (c < 0xd800 || c > 0xdfff) nonAscii += 1;
+      else if (c <= 0xdbff && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+        nonAscii += 2;
+        i++;
+      } else length += 5; // a lone surrogate goes out as \udxxx
+    }
+  };
+  const skipped = (v) => v === undefined || typeof v === "function" || typeof v === "symbol";
+  const walk = (v, key, holder, depth) => {
+    if (v === null) { length += 4; return; }
+    switch (typeof v) {
+      case "string": {
+        const tokens = inlineMediaTokens(key, holder, v);
+        if (tokens === null) text(v);
+        else { inline += tokens; length += 2; }
+        return;
+      }
+      case "number": length += Number.isFinite(v) ? String(v).length : 4; return;
+      case "boolean": length += v ? 4 : 5; return;
+      case "object": break;
+      default:
+        if (skipped(v)) { length += 4; return; }
+        throw UNSUPPORTED;
+    }
+    if (depth >= MAX_DEPTH || Object.hasOwn(v, "toJSON")) throw UNSUPPORTED;
+    const proto = Object.getPrototypeOf(v);
+    if (Array.isArray(v)) {
+      if (proto !== Array.prototype) throw UNSUPPORTED;
+      length += 2 + Math.max(0, v.length - 1);
+      for (let i = 0; i < v.length; i++) walk(v[i], i, v, depth + 1);
+      return;
+    }
+    if (proto !== Object.prototype && proto !== null) throw UNSUPPORTED;
+    let fields = 0;
+    for (const k of Object.keys(v)) {
+      const child = v[k];
+      if (skipped(child)) continue;
+      fields++;
+      text(k);
+      length += 1;
+      walk(child, k, v, depth + 1);
+    }
+    length += 2 + Math.max(0, fields - 1);
+  };
+  if (skipped(body)) return null;
+  walk(body, "", null, 0);
+  return { length, nonAscii, inline };
+}
+
+// What walkForTokens can't follow (a toJSON, a class instance): serialized.
+function stringifyForTokens(body) {
   let inline = 0;
   try {
     const json = JSON.stringify(body, function replacer(key, value) {
-      if (typeof value !== "string" || value.length <= 256) return value;
-      const url = DATA_URL.exec(value);
-      if (url) { inline += inlinePayloadTokens(url[1], value.slice(url[0].length)); return ""; }
-      if (key === "data" && this && typeof this === "object") {
-        const mime = this.media_type || this.mimeType || this.mime_type || (this.format ? `audio/${this.format}` : null);
-        if (this.type === "base64" || mime) { inline += inlinePayloadTokens(mime, value); return ""; }
-      }
-      return value;
+      if (typeof value !== "string") return value;
+      const tokens = inlineMediaTokens(key, this, value);
+      if (tokens === null) return value;
+      inline += tokens;
+      return "";
     });
-    return typeof json === "string" ? { json, inline } : null;
+    if (typeof json !== "string") return null;
+    return { length: json.length, nonAscii: (json.match(NON_ASCII) || []).length, inline };
   } catch {
     return null;
   }
@@ -435,7 +527,20 @@ export function weighChars(text) {
 export function estimateBillingInputTokens(body) {
   if (!body || typeof body !== "object") return 0;
   const measured = measureInlineMedia(body);
-  return measured ? Math.ceil(weighChars(measured.json) / 4) + measured.inline : 0;
+  return measured ? Math.ceil((measured.length + measured.nonAscii * 3) / 4) + measured.inline : 0;
+}
+
+/**
+ * Both input estimates in one walk: { input } as estimateInputTokens gives it,
+ * { billing } as estimateBillingInputTokens does.
+ */
+export function estimatePromptTokens(body) {
+  const measured = body && typeof body === "object" ? measureInlineMedia(body) : null;
+  if (!measured) return { input: 0, billing: 0 };
+  return {
+    input: Math.ceil(measured.length / 4) + measured.inline,
+    billing: Math.ceil((measured.length + measured.nonAscii * 3) / 4) + measured.inline,
+  };
 }
 
 /**
@@ -443,7 +548,11 @@ export function estimateBillingInputTokens(body) {
  * output from the weighted streamed length. Marked `estimated`, no buffer.
  */
 export function estimateBillingUsage(body, outputWeight, targetFormat = FORMATS.OPENAI) {
-  const input = estimateBillingInputTokens(body);
+  return billingUsage(estimateBillingInputTokens(body), outputWeight, targetFormat);
+}
+
+/** estimateBillingUsage for input tokens already estimated. */
+export function billingUsage(input, outputWeight, targetFormat = FORMATS.OPENAI) {
   const output = estimateOutputTokens(outputWeight);
   if (targetFormat === FORMATS.CLAUDE) return { input_tokens: input, output_tokens: output, estimated: true };
   return { prompt_tokens: input, completion_tokens: output, total_tokens: input + output, estimated: true };

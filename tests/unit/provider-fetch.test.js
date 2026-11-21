@@ -30,8 +30,16 @@ describe("Provider fetch routing", () => {
     for (const host of ["daily-cloudcode-pa.googleapis.com", "api.individual.githubcopilot.com", "q.us-east-1.amazonaws.com", "api2.cursor.sh"]) {
       const url = `https://${host}/chat`;
       expect(await proxyAwareFetch(url, options)).toBe(response);
-      // Sent without undici's redirect clone (see upstream-body-memory.test.js).
-      expect(fetchMock).toHaveBeenLastCalledWith(url, { ...options, redirect: "error", window: null });
+      // Sent without undici's redirect clone, the string as a stream of its
+      // bytes with the headers fetch would add (see upstream-body-memory.test.js).
+      expect(fetchMock).toHaveBeenLastCalledWith(url, {
+        ...options,
+        body: expect.any(ReadableStream),
+        duplex: "half",
+        headers: { "content-length": "2", "content-type": "text/plain;charset=UTF-8" },
+        redirect: "error",
+        window: null,
+      });
     }
     expect(proxyAgent).not.toHaveBeenCalled();
   });

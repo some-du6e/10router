@@ -1,6 +1,8 @@
 // A streaming request is saved twice under one id: when the stream starts and
 // when it ends. The second save must store exactly what a cold save would,
-// without capping the ~1 MB request bodies a second time.
+// without capping the ~1 MB request bodies a second time, and without the
+// stream holding those bodies until it ends: it stores the records the first
+// save capped.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,10 +15,12 @@ const big = (tag) => ({
   tools: [{ name: "Read", description: "read a file", input_schema: { type: "object", properties: { path: { type: "string" } } } }],
 });
 
-describe("streaming saves share one request object", () => {
-  it("passes the same request config to the start and the complete row", async () => {
+describe("a streaming row's end save", () => {
+  it("stores the records the start save capped, not the request bodies", async () => {
     vi.resetModules();
-    const saveRequestDetail = vi.fn(() => Promise.resolve());
+    // As the repository does: resolves to the record it stores, payloads capped.
+    const capped = { request: { _truncated: true, _preview: "req" }, providerRequest: { _truncated: true, _preview: "prov" } };
+    const saveRequestDetail = vi.fn(() => Promise.resolve(capped));
     vi.doMock("@/lib/usageDb.js", () => ({
       saveRequestDetail,
       saveRequestUsage: vi.fn(() => Promise.resolve()),
@@ -28,23 +32,54 @@ describe("streaming saves share one request object", () => {
     const body = big("b");
     const translatedBody = { ...body, model: "claude-opus-5-5" };
     const ctx = { provider: "anthropic", model: "claude-opus-5-5", body, stream: true, translatedBody, requestStartTime: Date.now() };
-    const { onStreamComplete, streamDetailId, streamRequest } = buildOnStreamComplete(ctx);
+    const { onStreamComplete, streamDetailId, streamDetail, streamRequest } = buildOnStreamComplete(ctx);
     const controller = { signal: new AbortController().signal, isConnected: () => true, handleComplete: vi.fn(), handleError: vi.fn(), handleDisconnect: vi.fn() };
     await handleStreamingResponse({
       ...ctx, providerResponse: new Response("", { headers: { "content-type": "text/event-stream" } }),
-      sourceFormat: "claude", targetFormat: "claude", streamController: controller, onStreamComplete, streamDetailId, streamRequest,
+      sourceFormat: "claude", targetFormat: "claude", streamController: controller, onStreamComplete, streamDetailId, streamDetail, streamRequest,
     });
     onStreamComplete({ content: "hi", thinking: "", toolCalls: [] }, { prompt_tokens: 1, completion_tokens: 1 }, Date.now());
 
-    expect(saveRequestDetail).toHaveBeenCalledTimes(2);
-    const [start, end] = saveRequestDetail.mock.calls.map(([detail]) => detail);
+    // The empty test stream also ends by itself: that is an end save too.
+    await vi.waitFor(() => expect(saveRequestDetail.mock.calls.length).toBeGreaterThanOrEqual(2));
+    const [start, ...ends] = saveRequestDetail.mock.calls.map(([detail]) => detail);
     expect(start.id).toBe(streamDetailId);
-    expect(end.id).toBe(streamDetailId);
-    expect(end.request).toBe(start.request);
     expect(start.request).toEqual(extractRequestConfig(body, true));
-    expect(end.providerRequest).toBe(start.providerRequest);
+    expect(start.providerRequest).toBe(translatedBody);
+    for (const end of ends) {
+      expect(end.id).toBe(streamDetailId);
+      expect(end.request).toBe(capped.request);
+      expect(end.providerRequest).toBe(capped.providerRequest);
+    }
+    expect(ends.map((end) => end.response.content)).toContain("hi");
     vi.doUnmock("@/lib/usageDb.js");
-  });
+  }, 30_000);
+
+  it("waits for a start save still being built", async () => {
+    vi.resetModules();
+    let resolveStart;
+    const capped = { request: { _truncated: true }, providerRequest: null };
+    const saveRequestDetail = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveStart = () => resolve(capped); }))
+      .mockImplementation(() => Promise.resolve(null));
+    vi.doMock("@/lib/usageDb.js", () => ({
+      saveRequestDetail,
+      saveRequestUsage: vi.fn(() => Promise.resolve()),
+      appendRequestLog: vi.fn(() => Promise.resolve()),
+      trackPendingRequest: vi.fn(),
+    }));
+    const { streamDetailRow } = await import("../../open-sse/handlers/chatCore/requestDetail.js");
+    const row = streamDetailRow("row-1");
+    row.start({ request: big("x"), providerRequest: big("y"), response: { content: "…" } });
+    const finished = row.finish({ response: { content: "done" } });
+    await Promise.resolve();
+    expect(saveRequestDetail).toHaveBeenCalledTimes(1);
+    resolveStart();
+    await finished;
+    expect(saveRequestDetail).toHaveBeenCalledTimes(2);
+    expect(saveRequestDetail.mock.calls[1][0]).toMatchObject({ id: "row-1", request: capped.request, providerRequest: null, response: { content: "done" } });
+    vi.doUnmock("@/lib/usageDb.js");
+  }, 30_000);
 });
 
 describe("request detail capping on a repeated save", () => {
@@ -141,6 +176,59 @@ describe("request detail capping on a repeated save", () => {
     await repo.__test__.flush();
     expect(gzip).toHaveBeenCalledTimes(1);
     expect(await db.getRequestDetailFullData("long-reply")).toEqual({ request, providerRequest, providerResponse: reply, response: reply });
+  });
+
+  // The end save as a stream makes it: the start save's capped records in
+  // place of the request bodies, which the stream no longer holds.
+  const endSave = (id, start, response) => db.saveRequestDetail(detail(id, start.request, start.providerRequest, response));
+
+  it("stores an end save of the start's capped records as a cold save would, start still queued", async () => {
+    const request = big("c");
+    const providerRequest = { ...big("d"), system: "be brief" };
+    const start = await db.saveRequestDetail(detail("carried", request, providerRequest, progress));
+    expect(start.request._truncated).toBe(true);
+    await endSave("carried", start, done);
+    await repo.__test__.flush();
+    await db.saveRequestDetail(detail("carried-cold", structuredClone(request), structuredClone(providerRequest), done));
+    await repo.__test__.flush();
+
+    expect(row("carried").data).toBe(row("carried-cold").data.replace('"id":"carried-cold"', '"id":"carried"'));
+    expect(row("carried").fullData).toBe(row("carried-cold").fullData);
+    expect(await db.getRequestDetailFullData("carried")).toEqual({ request, providerRequest });
+  });
+
+  it("keeps the start's stored full copy and packs nothing again when the start was already written", async () => {
+    const request = big("e");
+    const providerRequest = big("f");
+    const start = await db.saveRequestDetail(detail("carried-written", request, providerRequest, progress));
+    await repo.__test__.flush();
+    const stored = row("carried-written").fullData;
+    const stringify = vi.spyOn(JSON, "stringify");
+    try {
+      gzip.mockClear();
+      await endSave("carried-written", start, done);
+      await repo.__test__.flush();
+      expect(stringify.mock.calls.filter(([value]) => value === request || value === providerRequest)).toHaveLength(0);
+    } finally {
+      stringify.mockRestore();
+    }
+    expect(gzip).not.toHaveBeenCalled();
+    expect(row("carried-written").fullData).toBe(stored);
+    expect(JSON.parse(row("carried-written").data).response.content).toBe("all done");
+    expect(await db.getRequestDetailFullData("carried-written")).toEqual({ request, providerRequest });
+  });
+
+  it("adds a long reply to the start's stored full copy", async () => {
+    const request = big("g");
+    const providerRequest = big("h");
+    const start = await db.saveRequestDetail(detail("carried-long", request, providerRequest, progress));
+    await repo.__test__.flush();
+    const reply = { content: "y".repeat(200 * 1024), thinking: null, tool_calls: [], type: "streaming" };
+    await endSave("carried-long", start, reply);
+    gzip.mockClear();
+    await repo.__test__.flush();
+    expect(gzip).toHaveBeenCalledTimes(1);
+    expect(await db.getRequestDetailFullData("carried-long")).toEqual({ request, providerRequest, providerResponse: reply, response: reply });
   });
 
   it("caps again when the size limit changed", () => {

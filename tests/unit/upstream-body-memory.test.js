@@ -40,6 +40,10 @@ beforeAll(async () => {
         res.writeHead(421, { "content-type": "text/plain" });
         return res.end("misdirected");
       }
+      if (path === "/wire") {
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ bytes, length: req.headers["content-length"], chunked: "transfer-encoding" in req.headers, type: req.headers["content-type"] }));
+      }
       if (path === "/echo" || path === "/misdirected-once") {
         res.writeHead(200, { "content-type": "application/json" });
         return res.end(JSON.stringify({ method: req.method, bytes }));
@@ -94,6 +98,23 @@ describe("upstream request body memory", () => {
       expect(held).toBeLessThan(4 * MB);
       await finish(responses);
     }
+  }, 60_000);
+
+  // fetch keeps a string body on its request as the source it could send
+  // again, on the JS heap, until the response ends.
+  it("keeps no heap copy of a streaming request's string body", async () => {
+    const executor = new BaseExecutor("test-upstream", { baseUrl: `${base}/v1/chat/completions` });
+    await settle();
+    const before = process.memoryUsage().heapUsed;
+    const responses = [];
+    for (let i = 0; i < 4; i++) {
+      responses.push((await executor.execute({ model: `model-${i}`, body: prompt(i), stream: true, credentials: { apiKey: "test-key-0000" } })).response);
+    }
+    expect(responses.every((r) => r.status === 200)).toBe(true);
+    await settle();
+    // Each body's JSON is BODY_MB MB of one-byte characters.
+    expect(process.memoryUsage().heapUsed - before).toBeLessThan(4 * MB);
+    await finish(responses);
   }, 60_000);
 
   const IN_FLIGHT = 4;
@@ -189,6 +210,18 @@ describe("upstream redirects", () => {
     // Each sent once: no second try.
     expect(hits.get("/moved-307")).toBe(2);
     expect(hits.get("/echo")).toBeUndefined();
+  });
+
+  // The string goes out as a stream of its bytes: with the Content-Length and
+  // Content-Type fetch gives a string, not chunked.
+  it.each([
+    ["ASCII", '{"x":1}', { "content-type": "application/json" }, "application/json"],
+    ["multi-byte", JSON.stringify({ text: "é日本😀".repeat(1000) }), { "Content-Type": "application/json" }, "application/json"],
+    ["no Content-Type", "plain words", {}, "text/plain;charset=UTF-8"],
+    ["a Headers object", '{"y":2}', new Headers({ "content-type": "application/json", "content-length": "1" }), "application/json"],
+  ])("sends a %s string body whole, with its length", async (_, body, headers, type) => {
+    const res = await proxyAwareFetch(`${base}/wire`, { method: "POST", headers, body });
+    expect(await res.json()).toEqual({ bytes: Buffer.byteLength(body), length: String(Buffer.byteLength(body)), chunked: false, type });
   });
 
   it("sends a request without a redirect once", async () => {

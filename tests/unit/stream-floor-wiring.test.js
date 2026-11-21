@@ -19,7 +19,7 @@ describe("the floor's start time reaches the stream", () => {
     }
   });
 
-  it("handleStreamingResponse copies upstreamStartedAt and the sent body onto the stream", async () => {
+  it("handleStreamingResponse copies upstreamStartedAt and the sent body's output cap onto the stream", async () => {
     vi.resetModules();
     let seen = null;
     vi.doMock("open-sse/utils/streamHandler.js", async (orig) => ({
@@ -40,7 +40,9 @@ describe("the floor's start time reaches the stream", () => {
     const controller = { signal: new AbortController().signal, isConnected: () => true, handleComplete: vi.fn(), handleError: vi.fn(), handleDisconnect: vi.fn() };
     await handleStreamingResponse({ ...ctx, providerResponse, sourceFormat: "claude", targetFormat: "claude", streamController: controller, onStreamComplete, streamDetailId, streamRequest });
     expect(seen?.upstreamStartedAt).toBe(12345);
-    expect(seen?.upstreamBody?.max_tokens).toBe(64000);
+    expect(seen?.prompt?.outputCap).toBe(64000);
+    // Only what it reads: the stream keeps neither body.
+    expect(seen?.upstreamBody).toBeUndefined();
     vi.doUnmock("open-sse/utils/streamHandler.js");
     vi.doUnmock("@/lib/usageDb.js");
   });

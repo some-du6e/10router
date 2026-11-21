@@ -192,6 +192,9 @@ function subscribe(s: Store) {
 }
 
 const cut = (t: string) => (t.length > MAX_TEXT ? `${t.slice(0, MAX_TEXT)}\n… (${t.length - MAX_TEXT} more characters)` : t);
+// A copy of `text` with no tie to the capture it was cut from: V8 keeps a
+// slice's whole source string alive, so a kept entry held its 256 KB capture.
+const own = (text: string) => Buffer.from(text, "utf16le").toString("utf16le");
 const pretty = (t: string) => { try { return JSON.stringify(JSON.parse(t), null, 2); } catch { return t; } };
 
 // What the user said last, for the summary line.
@@ -277,10 +280,10 @@ function finish(s: Store, p: Pending, error: unknown) {
   const entry: EndpointRequestEntry = {
     id: `r${++s.seq}-${Date.now().toString(36)}`,
     at: new Date().toISOString(),
-    kind: "request", ok, status: p.status, ms, model, prompt: lastPrompt(body), error: errText, reply: ok ? replyText(resText) : "",
+    kind: "request", ok, status: p.status, ms, model: own(model), prompt: own(lastPrompt(body)), error: own(errText), reply: ok ? own(replyText(resText)) : "",
     note: error ? "no answer" : tokens != null ? `${p.status} · ${tokens} token${tokens === 1 ? "" : "s"}` : `${p.status} · ${ms}ms`,
-    request: `${p.method} ${redact(p.url)}\n${p.reqHeaders.map(showHeader).join("\n")}\n\n${cut(pretty(reqText))}`,
-    response: error ? `No response\n\n${errText}` : `HTTP ${p.status}\n${p.resHeaders.map(showHeader).join("\n")}\n\n${cut(pretty(resText))}`,
+    request: own(`${p.method} ${redact(p.url)}\n${p.reqHeaders.map(showHeader).join("\n")}\n\n${cut(pretty(reqText))}`),
+    response: own(error ? `No response\n\n${errText}` : `HTTP ${p.status}\n${p.resHeaders.map(showHeader).join("\n")}\n\n${cut(pretty(resText))}`),
   };
   pushEndpointRequest(ctx.provider, entry);
   // A gateway that named beta flags it rejects: the executor drops them and
