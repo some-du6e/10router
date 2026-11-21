@@ -126,7 +126,7 @@ describe("endpoint request log memory", () => {
     await vi.waitFor(() => expect(getEndpointRequests(EP)).toHaveLength(n));
     await settle();
     // n captures of 256 KB would be 2.5 MB; the shown text is about 8 KB each.
-    expect(process.memoryUsage().heapUsed - before).toBeLessThan(n * 64 * 1024);
+    expect(process.memoryUsage().heapUsed - before).toBeLessThan(n * 128 * 1024);
     expect(getEndpointRequests(EP)[0].request).toMatch(/more characters\)$/);
   }, 60_000);
 

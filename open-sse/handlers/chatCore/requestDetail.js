@@ -85,9 +85,10 @@ export function extractUsageFromResponse(responseBody) {
 /**
  * A streaming request's row: saved by `start` as the reply starts and again by
  * `finish` when it ends, under one id. `start` takes the request payloads
- * (`request`, `providerRequest`); the record it stores holds them capped, and
- * `finish` saves those, so the row keeps no request body while the reply
- * streams. `finish` saves at once unless `start`'s save is still being built.
+ * (`request`, `providerRequest`); `finish` saves what that save handed back for
+ * them, their capped records, so the row keeps no request body while the reply
+ * streams (with full request details on, the bodies: see saveRequestDetail).
+ * `finish` saves at once unless `start`'s save is still being built.
  */
 export function streamDetailRow(id = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`) {
   let payloads = {};
@@ -96,8 +97,8 @@ export function streamDetailRow(id = `${Date.now()}-${Math.random().toString(36)
     id,
     start(detail) {
       const started = (async () => saveRequestDetail({ ...detail, id }))().then(
-        (record) => {
-          if (record && typeof record === "object") payloads = { request: record.request, providerRequest: record.providerRequest };
+        (carried) => {
+          if (carried && typeof carried === "object") payloads = { request: carried.request, providerRequest: carried.providerRequest };
         },
         (error) => console.error("[RequestDetail] Failed to save streaming request:", error?.message),
       );

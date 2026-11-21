@@ -157,9 +157,9 @@ function sanitizeHeaders(headers) {
 }
 
 // A streaming request is saved twice under one id, when it starts and when it
-// ends, with the same request objects both times. Capping a ~1 MB body is
-// the costly part of a save, so the second save reuses the first's capped
-// record.
+// ends. While full copies are kept, its end save passes the same request
+// objects again (see saveRequestDetail); capping a ~1 MB body is the costly
+// part of a save, so it reuses the first's capped record.
 const cappedPayloads = new WeakMap();   // payload object → its capped copy
 // Capped record → the UTF-8 bytes of its payload's JSON, from the same walk
 // that capped it, so a full copy is sized without another one.
@@ -186,36 +186,22 @@ function fullCopyBytes(parts) {
 // the ring's byte cap, or over FULL_DATA_MAX_BYTES of UTF-8, is skipped. Only
 // a record truncateField cut counts as cut: a small payload is stored as the
 // client sent it, so its own `_truncated` and `_originalSize` mean nothing.
-//
-// A payload given as the capped record an earlier save of the row made (a
-// stream's end save, see startStreamDetail) is in that save's copy: taken from
-// `earlier`, that save's copy while it waits in the ring, or else from the copy
-// already stored, which a write of this one then extends (`extendsStored`).
-function fullCopySource(item, record, earlier = null) {
+// A payload passed as an earlier save's capped record has no full copy here.
+function fullCopySource(item, record) {
   const parts = [];
   let chars = 0;
-  let extendsStored = false;
   for (const key of PAYLOAD_KEYS) {
     const capped = record[key];
-    if (item[key] == null || !payloadBytes.has(capped)) continue;
-    if (item[key] === capped) {
-      const part = earlier?.parts.find(([k]) => k === key);
-      if (!part) {
-        extendsStored = true;
-        continue;
-      }
-      parts.push(part);
-      chars += part[2]._originalSize;
-      continue;
+    if (item[key] != null && item[key] !== capped && payloadBytes.has(capped)) {
+      parts.push([key, item[key], capped]);
+      chars += capped._originalSize;
     }
-    parts.push([key, item[key], capped]);
-    chars += capped._originalSize;
   }
   if (!parts.length) return null;
   if (chars > FULL_DATA_MAX_BYTES || chars * JSON_BYTES_PER_CHAR > limits.fullRingMaxBytes) return null;
   const utf8 = fullCopyBytes(parts);
   if (utf8 > FULL_DATA_MAX_BYTES) return null;
-  return { parts, bytes: chars * JSON_BYTES_PER_CHAR, utf8, extendsStored };
+  return { parts, bytes: chars * JSON_BYTES_PER_CHAR, utf8 };
 }
 
 // A full copy's JSON as UTF-8, written straight into one buffer of its exact
@@ -249,19 +235,10 @@ function fullCopyBuffer(parts, utf8) {
 // Serializes and gzips a full copy's source, or null: only for a row being
 // written. Compression runs on the libuv pool so a big payload doesn't stall
 // streams.
-//
-// One that extends the row's stored copy (`stored`, that copy as written) gets
-// its payloads appended to that copy's: earlier saves hold the earlier keys.
-async function packSource(source, stored = null) {
+async function packSource(source) {
   try {
-    let input = fullCopyBuffer(source.parts, source.utf8);
+    const input = fullCopyBuffer(source.parts, source.utf8);
     if (!input) return null;
-    const head = source.extendsStored && stored ? await gunzipAsync(Buffer.from(stored, "base64")) : null;
-    // `{…}` + `{…}` → `{…,…}`; a stored `{}` has nothing to keep.
-    if (head && head.length > 2 && head[head.length - 1] === 0x7d) {
-      if (head.length - 1 + input.length > FULL_DATA_MAX_BYTES) return null;
-      input = Buffer.concat([head.subarray(0, head.length - 1), Buffer.from(","), input.subarray(1)]);
-    }
     return (await gzipAsync(input)).toString("base64");
   } catch {
     return null;
@@ -363,6 +340,9 @@ function prettyJsonPrefix(json, limit) {
 
 function truncateField(obj, maxSize) {
   if (obj === undefined || obj === null) return {};
+  // An earlier save's capped record (a stream's end save) is stored as it is:
+  // capping it again would describe the record, not the request.
+  if (payloadBytes.has(obj)) return obj;
   const cached = typeof obj === "object" ? cappedPayloads.get(obj) : undefined;
   // No JSON is kept with it (1 MB per body while the stream runs).
   if (cached?.maxSize === maxSize) return cached.truncated;
@@ -431,9 +411,7 @@ async function writeBufferedRows() {
         // Only a row's newest save has a copy in fullRing, so a write packs
         // at most FULL_DATA_KEEP_ROWS.
         const source = takeCopy(save);
-        const pack = config.keepFullData && source && !shuttingDown;
-        const stored = pack && source.extendsStored ? db.get(`SELECT fullData FROM requestDetails WHERE id = ?`, [save.id])?.fullData : null;
-        rows.push({ save, fullData: pack ? await packSource(source, stored) : null });
+        rows.push({ save, fullData: config.keepFullData && source && !shuttingDown ? await packSource(source) : null });
       }
       // The setting may have been turned off (and stored payloads cleared)
       // while compression was awaited. Nothing awaits between this check and
@@ -476,8 +454,7 @@ async function writeBufferedRows() {
 
 // A save as it waits to be written: the columns and the capped record stored
 // in `data`, built now, so the save holds no body. With `keepFull` it also
-// returns the source of its full copy (null for none), for fullRing, and the
-// capped record.
+// returns the source of its full copy (null for none), for fullRing.
 function buildSave(item, maxJsonSize, keepFull) {
   if (!item.id) item.id = generateDetailId(item.model);
   if (!item.timestamp) item.timestamp = new Date().toISOString();
@@ -508,7 +485,7 @@ function buildSave(item, maxJsonSize, keepFull) {
     id: record.id, timestamp: record.timestamp, provider: record.provider, model: record.model,
     connectionId: record.connectionId, status: record.status, data, bytes: data.length * JSON_BYTES_PER_CHAR,
   };
-  return { save, record, source: keepFull ? fullCopySource(item, record, fullRing.get(record.id)) : null };
+  return { save, record, source: keepFull ? fullCopySource(item, record) : null };
 }
 
 function armFlushTimer() {
@@ -527,11 +504,14 @@ function dropOldestSave() {
 }
 
 /**
- * Queues a save. Resolves to the record it stores, its payloads capped, or null
- * when request details are off. A later save of the row can pass that record's
- * payloads for its own (a stream's end save, see open-sse's streamDetailRow),
- * so it needs no request body; with full request details on, its full copy
- * takes them from the earlier save's.
+ * Queues a save. Resolves to what a later save of the same row (a stream's end
+ * save, see open-sse's streamDetailRow) passes as its `request` and
+ * `providerRequest`, so it need not hold the bodies: their capped records. While
+ * full copies are kept it is the payloads themselves, which the later save's
+ * full copy is built from (the trim keeps full copies on the newest 25 rows
+ * only, so the earlier save's may be gone by then). Null when request details
+ * are off.
+ * @returns {Promise<{ request: unknown, providerRequest: unknown } | null>}
  */
 export async function saveRequestDetail(detail) {
   const config = await getObservabilityConfig();
@@ -540,10 +520,12 @@ export async function saveRequestDetail(detail) {
   // No full copies are built during the shutdown drain, or on sql.js.
   const keepFull = config.keepFullData && !shuttingDown && (dbDriver ??= (await getAdapter()).driver) !== "sql.js";
   const { save, source, record } = buildSave(detail, config.maxJsonSize, keepFull);
+  const carried = keepFull
+    ? { request: detail.request, providerRequest: detail.providerRequest }
+    : { request: record.request, providerRequest: record.providerRequest };
   writeBuffer.push(save);
   queuedBytes += save.bytes;
-  // A stream's end save replaces its start save's copy (taking over the parts
-  // it carries); one with none clears it.
+  // A stream's end save replaces its start save's copy; one with none clears it.
   if (keepFull) setRingEntry(save.id, source && { ...source, save });
 
   // Past either cap the oldest saves go; the newest always stays.
@@ -558,7 +540,7 @@ export async function saveRequestDetail(detail) {
   } else {
     armFlushTimer();
   }
-  return record;
+  return carried;
 }
 
 const SUMMARY_DROPPED_KEYS = ["request", "providerRequest", "providerResponse", "response"];

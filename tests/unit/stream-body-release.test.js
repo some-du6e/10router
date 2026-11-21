@@ -10,12 +10,8 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import v8 from "node:v8";
-import vm from "node:vm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-
-v8.setFlagsFromString("--expose-gc");
-const gc = vm.runInNewContext("gc");
+import { heap, settle, socketBody } from "../helpers/heldStreams.js";
 
 const MB = 1024 * 1024;
 const STREAMS = 4;
@@ -74,17 +70,6 @@ afterAll(async () => {
   else process.env.DATA_DIR = originalDataDir;
 });
 
-const settle = async () => {
-  for (let i = 0; i < 4; i++) {
-    gc();
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-};
-const heap = () => {
-  const m = process.memoryUsage();
-  return m.heapUsed + m.external;
-};
-
 // A ~4 MB Claude Code style prompt, its text in a few large blocks, each
 // request's own (`i`), so only the router can keep it.
 function promptText(i) {
@@ -102,22 +87,6 @@ function promptText(i) {
   });
 }
 
-// The body as Next hands it over: a stream off the socket.
-function socketBody(text) {
-  let bytes = new TextEncoder().encode(text);
-  return new ReadableStream({
-    pull(controller) {
-      const part = bytes.subarray(0, 64 * 1024);
-      bytes = bytes.subarray(part.length);
-      controller.enqueue(part.slice());
-      if (!bytes.length) {
-        bytes = null;
-        controller.close();
-      }
-    },
-  });
-}
-
 const request = (text) => new Request("http://localhost/v1/messages", {
   method: "POST",
   headers: { "content-type": "application/json", "x-api-key": routerKey, "anthropic-version": "2023-06-01", "user-agent": "claude-cli/2.1.0 (external, cli)" },
@@ -125,19 +94,23 @@ const request = (text) => new Request("http://localhost/v1/messages", {
   duplex: "half",
 });
 
-// Starts STREAMS streams and reads each reply's first bytes; returns the heap
-// they hold after a full GC while still open, and their readers.
-async function startStreams() {
+// Starts `n` streams and reads each reply's first bytes; returns the heap they
+// hold after a full GC while still open, and their readers. The Requests stay
+// referenced until the streams end, as Next keeps them.
+async function startStreams(n = STREAMS) {
+  received.length = 0;
   await settle();
   const before = heap();
   const bodyBytes = promptText(0).length;
-  const responses = await Promise.all(Array.from({ length: STREAMS }, (_, i) => POST(request(promptText(i)))));
-  expect(responses.map((r) => r.status)).toEqual(Array(STREAMS).fill(200));
+  const requests = Array.from({ length: n }, (_, i) => request(promptText(i)));
+  const responses = await Promise.all(requests.map((r) => POST(r)));
+  expect(responses.map((r) => r.status)).toEqual(Array(n).fill(200));
   const readers = responses.map((r) => r.body.getReader());
   for (const reader of readers) expect((await reader.read()).done).toBe(false);
   await settle();
-  const held = () => (heap() - before) / STREAMS;
-  return { perStream: held(), held, bodyBytes, readers };
+  expect(received).toHaveLength(n);
+  const held = () => (heap() - before) / n;
+  return { perStream: held(), held, bodyBytes, readers, requests };
 }
 
 async function endStreams(readers) {
@@ -168,12 +141,15 @@ async function rows() {
 
 describe("a streamed reply holds no copy of its prompt", () => {
   it("lets go of every copy once the reply has started, and still records the request", async () => {
-    received.length = 0;
-    const { perStream, bodyBytes, readers } = await startStreams();
-    // Each copy of the prompt is about bodyBytes; the old path held about four.
+    // A first request warms the route, the DB and the JIT, so they don't count.
+    await endStreams((await startStreams(1)).readers);
+    await rows();
+    const { perStream, bodyBytes, readers, requests } = await startStreams();
+    // Each copy of the prompt is about bodyBytes; the old path held about 2.4.
     expect(perStream).toBeLessThan(bodyBytes * 0.25);
 
     const texts = await endStreams(readers);
+    expect(requests).toHaveLength(STREAMS);
     for (const text of texts) expect(text).toContain("there");
     // Sent with its length, not chunked, and whole.
     for (const r of received) {
@@ -181,8 +157,7 @@ describe("a streamed reply holds no copy of its prompt", () => {
       expect(r.bytes).toBe(r.length);
       expect(r.bytes).toBeGreaterThan(1.5 * MB);
     }
-    const saved = await rows();
-    expect(saved).toHaveLength(STREAMS);
+    const saved = (await rows()).slice(0, STREAMS);
     for (const row of saved) {
       expect(row.status).toBe("success");
       expect(row.response.content).toContain("Hi there");
@@ -193,15 +168,18 @@ describe("a streamed reply holds no copy of its prompt", () => {
     }
   }, 120_000);
 
-  it("with full request details on, holds the prompts only until their start rows are written", async () => {
+  // The end row's full copy is built from the bodies (the start row's may be
+  // trimmed by then), so they stay; the string sent upstream doesn't.
+  it("with full request details on, keeps only the bodies its full copy is built from", async () => {
     await db.updateSettings({ showSensitiveRequestDetails: true });
     await db.clearRequestDetailFullData();
     const { held, bodyBytes, readers } = await startStreams();
     // The 5 s flush writes the start rows, packing their full copies.
     await repo.__test__.flush();
     await settle();
-    // What is left is the rows' capped records (128 KB a field with full details).
-    expect(held()).toBeLessThan(bodyBytes * 0.4);
+    // The client's body and the translated one: two. The old path also kept
+    // the string sent upstream, three in all.
+    expect(held()).toBeLessThan(bodyBytes * 2.5);
 
     await endStreams(readers);
     const saved = (await rows()).slice(0, STREAMS);

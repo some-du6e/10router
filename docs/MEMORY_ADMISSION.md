@@ -1,9 +1,10 @@
 # Memory admission
 
 A chat request in flight holds its prompt several times over until its reply
-starts: the parsed body, the translated body, and the string sent upstream. A
-streamed reply lets go of them once it is under way; the gate still counts the
-request until its reply ends.
+starts streaming, or until a non-streamed reply ends: the parsed body, the
+translated body, and the string sent upstream. A streamed reply lets go of
+them once it is under way; the gate still counts the request until its reply
+ends.
 Coding agents send prompts of several MB, and after a restart they all retry at
 once. Enough of them together take the process past its memory limit; it is
 killed and every request in flight fails with it.

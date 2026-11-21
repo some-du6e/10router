@@ -18,7 +18,7 @@ const big = (tag) => ({
 describe("a streaming row's end save", () => {
   it("stores the records the start save capped, not the request bodies", async () => {
     vi.resetModules();
-    // As the repository does: resolves to the record it stores, payloads capped.
+    // As the repository does with full details off: resolves to the capped records.
     const capped = { request: { _truncated: true, _preview: "req" }, providerRequest: { _truncated: true, _preview: "prov" } };
     const saveRequestDetail = vi.fn(() => Promise.resolve(capped));
     vi.doMock("@/lib/usageDb.js", () => ({
@@ -32,11 +32,12 @@ describe("a streaming row's end save", () => {
     const body = big("b");
     const translatedBody = { ...body, model: "claude-opus-5-5" };
     const ctx = { provider: "anthropic", model: "claude-opus-5-5", body, stream: true, translatedBody, requestStartTime: Date.now() };
-    const { onStreamComplete, streamDetailId, streamDetail, streamRequest } = buildOnStreamComplete(ctx);
+    const { onStreamComplete, streamDetail } = buildOnStreamComplete(ctx);
+    const streamDetailId = streamDetail.id;
     const controller = { signal: new AbortController().signal, isConnected: () => true, handleComplete: vi.fn(), handleError: vi.fn(), handleDisconnect: vi.fn() };
     await handleStreamingResponse({
       ...ctx, providerResponse: new Response("", { headers: { "content-type": "text/event-stream" } }),
-      sourceFormat: "claude", targetFormat: "claude", streamController: controller, onStreamComplete, streamDetailId, streamDetail, streamRequest,
+      sourceFormat: "claude", targetFormat: "claude", streamController: controller, onStreamComplete, streamDetail,
     });
     onStreamComplete({ content: "hi", thinking: "", toolCalls: [] }, { prompt_tokens: 1, completion_tokens: 1 }, Date.now());
 
@@ -178,57 +179,73 @@ describe("request detail capping on a repeated save", () => {
     expect(await db.getRequestDetailFullData("long-reply")).toEqual({ request, providerRequest, providerResponse: reply, response: reply });
   });
 
-  // The end save as a stream makes it: the start save's capped records in
-  // place of the request bodies, which the stream no longer holds.
-  const endSave = (id, start, response) => db.saveRequestDetail(detail(id, start.request, start.providerRequest, response));
+  // The end save as a stream makes it: with what its start save handed back
+  // for the request payloads (streamDetailRow).
+  const endSave = (id, start, response, timestamp) => db.saveRequestDetail({ ...detail(id, start.request, start.providerRequest, response), ...(timestamp && { timestamp }) });
 
-  it("stores an end save of the start's capped records as a cold save would, start still queued", async () => {
+  // The trim keeps full copies on the newest 25 rows: a long stream's start
+  // copy is gone by its end, so the end save rebuilds it from the bodies.
+  it("with full details on, hands back the bodies, so a long stream's end row gets its full copy back", async () => {
     const request = big("c");
     const providerRequest = { ...big("d"), system: "be brief" };
-    const start = await db.saveRequestDetail(detail("carried", request, providerRequest, progress));
-    expect(start.request._truncated).toBe(true);
-    await endSave("carried", start, done);
+    const start = await db.saveRequestDetail({ ...detail("long-stream", request, providerRequest, progress), timestamp: "2026-01-01T00:00:00.000Z" });
+    expect(start.request).toBe(request);
+    expect(start.providerRequest).toBe(providerRequest);
     await repo.__test__.flush();
-    await db.saveRequestDetail(detail("carried-cold", structuredClone(request), structuredClone(providerRequest), done));
+    for (let i = 0; i < 26; i++) await db.saveRequestDetail({ ...detail(`newer-${i}`, big(`n${i}`), null, done), timestamp: "2026-01-01T00:00:01.000Z" });
     await repo.__test__.flush();
+    expect(row("long-stream").fullData).toBeNull();
 
-    expect(row("carried").data).toBe(row("carried-cold").data.replace('"id":"carried-cold"', '"id":"carried"'));
-    expect(row("carried").fullData).toBe(row("carried-cold").fullData);
-    expect(await db.getRequestDetailFullData("carried")).toEqual({ request, providerRequest });
+    await endSave("long-stream", start, done, "2026-01-01T00:00:02.000Z");
+    await repo.__test__.flush();
+    expect(await db.getRequestDetailFullData("long-stream")).toEqual({ request, providerRequest });
   });
 
-  it("keeps the start's stored full copy and packs nothing again when the start was already written", async () => {
-    const request = big("e");
-    const providerRequest = big("f");
-    const start = await db.saveRequestDetail(detail("carried-written", request, providerRequest, progress));
-    await repo.__test__.flush();
-    const stored = row("carried-written").fullData;
-    const stringify = vi.spyOn(JSON, "stringify");
-    try {
-      gzip.mockClear();
-      await endSave("carried-written", start, done);
+  describe("with full details off", () => {
+    beforeAll(async () => {
+      await db.updateSettings({ showSensitiveRequestDetails: false });
+      await db.clearRequestDetailFullData();
+    });
+    afterAll(async () => {
+      await db.updateSettings({ showSensitiveRequestDetails: true });
+      await db.clearRequestDetailFullData();
+    });
+
+    it("hands back the capped records, and an end save of them stores what a cold save would", async () => {
+      const request = big("e");
+      const providerRequest = big("f");
+      const start = await db.saveRequestDetail(detail("carried", request, providerRequest, progress));
+      expect(start.request._truncated).toBe(true);
+      expect(start.providerRequest._truncated).toBe(true);
+      const stringify = vi.spyOn(JSON, "stringify");
+      try {
+        await endSave("carried", start, done);
+        await repo.__test__.flush();
+        expect(stringify.mock.calls.filter(([value]) => value === request || value === providerRequest)).toHaveLength(0);
+      } finally {
+        stringify.mockRestore();
+      }
+      await db.saveRequestDetail(detail("carried-cold", structuredClone(request), structuredClone(providerRequest), done));
       await repo.__test__.flush();
-      expect(stringify.mock.calls.filter(([value]) => value === request || value === providerRequest)).toHaveLength(0);
-    } finally {
-      stringify.mockRestore();
-    }
-    expect(gzip).not.toHaveBeenCalled();
-    expect(row("carried-written").fullData).toBe(stored);
-    expect(JSON.parse(row("carried-written").data).response.content).toBe("all done");
-    expect(await db.getRequestDetailFullData("carried-written")).toEqual({ request, providerRequest });
-  });
+      expect(row("carried").data).toBe(row("carried-cold").data.replace('"id":"carried-cold"', '"id":"carried"'));
+      expect(row("carried").fullData).toBeNull();
+    });
 
-  it("adds a long reply to the start's stored full copy", async () => {
-    const request = big("g");
-    const providerRequest = big("h");
-    const start = await db.saveRequestDetail(detail("carried-long", request, providerRequest, progress));
-    await repo.__test__.flush();
-    const reply = { content: "y".repeat(200 * 1024), thinking: null, tool_calls: [], type: "streaming" };
-    await endSave("carried-long", start, reply);
-    gzip.mockClear();
-    await repo.__test__.flush();
-    expect(gzip).toHaveBeenCalledTimes(1);
-    expect(await db.getRequestDetailFullData("carried-long")).toEqual({ request, providerRequest, providerResponse: reply, response: reply });
+    it("stores a capped record as it is when the size limit shrank since", async () => {
+      const start = await db.saveRequestDetail(detail("shrunk", big("g"), big("h"), progress));
+      await db.updateSettings({ observabilityMaxJsonSize: 2 });
+      await db.clearRequestDetailFullData();
+      try {
+        await endSave("shrunk", start, done);
+        await repo.__test__.flush();
+      } finally {
+        await db.updateSettings({ observabilityMaxJsonSize: 0 });
+        await db.clearRequestDetailFullData();
+      }
+      const stored = JSON.parse(row("shrunk").data);
+      expect(stored.request).toEqual(start.request);
+      expect(stored.request._preview).toContain('"messages"');
+    });
   });
 
   it("caps again when the size limit changed", () => {

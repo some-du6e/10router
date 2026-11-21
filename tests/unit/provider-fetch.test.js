@@ -36,10 +36,11 @@ describe("Provider fetch routing", () => {
         ...options,
         body: expect.any(ReadableStream),
         duplex: "half",
-        headers: { "content-length": "2", "content-type": "text/plain;charset=UTF-8" },
+        headers: expect.any(Headers),
         redirect: "error",
         window: null,
       });
+      expect(Object.fromEntries(fetchMock.mock.lastCall[1].headers)).toEqual({ "content-length": "2", "content-type": "text/plain;charset=UTF-8" });
     }
     expect(proxyAgent).not.toHaveBeenCalled();
   });

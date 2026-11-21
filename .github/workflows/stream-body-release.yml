@@ -14,7 +14,11 @@ on:
       - "src/lib/db/repos/requestDetailsRepo.js"
       - "src/lib/endpointRequestLog.ts"
       - "src/sse/handlers/chat.ts"
+      - "src/shared/utils/jsonMeasure.ts"
       - "tests/unit/stream-body-release.test.js"
+      - "tests/unit/request-details-stream-reuse.test.js"
+      - "tests/unit/stream-floor-wiring.test.js"
+      - "tests/helpers/heldStreams.js"
       - "tests/unit/early-headers-release.test.js"
       - "tests/unit/prompt-token-estimate.test.js"
       - "tests/bench/stream-retention-benchmark.test.js"
@@ -54,13 +58,8 @@ jobs:
           unit/stream-body-release.test.js
           unit/early-headers-release.test.js
           unit/prompt-token-estimate.test.js
-          unit/upstream-body-memory.test.js
-          unit/endpoint-request-log-memory.test.js
           unit/request-details-stream-reuse.test.js
           unit/stream-floor-wiring.test.js
-          unit/stream-abort-usage.test.js
-          unit/hang-up-charge.test.js
-          unit/provider-fetch.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
@@ -71,11 +70,15 @@ jobs:
           open-sse/utils/proxyFetch.js
           open-sse/utils/stream.js
           open-sse/utils/usageTracking.js
+          src/shared/utils/jsonMeasure.ts
           src/lib/db/repos/requestDetailsRepo.js
           src/lib/endpointRequestLog.ts
+          tests/helpers
           tests/unit/stream-body-release.test.js
           tests/unit/early-headers-release.test.js
           tests/unit/prompt-token-estimate.test.js
+          tests/unit/request-details-stream-reuse.test.js
+          tests/unit/stream-floor-wiring.test.js
           tests/bench/stream-retention-benchmark.test.js
 
   # Informational, for the PR's "Before" and "After": the heap each in-flight

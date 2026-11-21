@@ -1,7 +1,7 @@
 import { translateResponse, initState } from "../translator/index.js";
 import { FORMATS } from "../translator/formats.js";
 import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
-import { extractUsage, mergeUsage, hasValidUsage, formatUsage, estimateOutputTokens, estimatePromptTokens, billingUsage, weighChars, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
+import { extractUsage, mergeUsage, hasValidUsage, formatUsage, estimateOutputTokens, promptTokenEstimates, billingUsage, weighChars, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE, buildStreamErrorBytes } from "./streamHelpers.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
@@ -20,10 +20,8 @@ export { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER };
  * starts, so the request's bodies can go while the reply streams.
  */
 export function promptFacts(body, sentBody = null) {
-  const { input, billing } = estimatePromptTokens(body);
   return {
-    inputTokens: input,
-    billingInputTokens: billing,
+    ...promptTokenEstimates(body),
     outputCap: sentOutputCap(sentBody, body),
     includeUsage: body?.stream_options?.include_usage === true,
   };

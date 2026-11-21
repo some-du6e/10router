@@ -2,7 +2,7 @@
 // give exactly what serializing it gave: JSON length with inline files blanked
 // (/ 4), non-ASCII counted extra for billing, files by kind.
 import { describe, expect, it } from "vitest";
-import { estimateInputTokens, estimateBillingInputTokens, estimatePromptTokens, weighChars } from "../../open-sse/utils/usageTracking.js";
+import { estimateInputTokens, estimateBillingInputTokens, promptTokenEstimates, weighChars } from "../../open-sse/utils/usageTracking.js";
 import { IMAGE_TOKEN_ESTIMATE } from "../../open-sse/config/mediaConfig.js";
 import { claudeCodeBody } from "../helpers/claudeCodeBody.js";
 
@@ -67,20 +67,21 @@ describe("prompt token estimates", () => {
     const expected = reference(body);
     expect(estimateInputTokens(body)).toBe(expected.input);
     expect(estimateBillingInputTokens(body)).toBe(expected.billing);
-    expect(estimatePromptTokens(body)).toEqual(expected);
+    expect(promptTokenEstimates(body)).toEqual({ inputTokens: expected.input, billingInputTokens: expected.billing });
   });
 
   it("is 0 for a body that can't be serialized", () => {
     const cyclic = { a: 1 };
     cyclic.self = cyclic;
-    expect(estimatePromptTokens(cyclic)).toEqual({ input: 0, billing: 0 });
-    expect(estimatePromptTokens({ big: 10n })).toEqual({ input: 0, billing: 0 });
-    expect(estimatePromptTokens(null)).toEqual({ input: 0, billing: 0 });
+    expect(promptTokenEstimates(cyclic)).toEqual({ inputTokens: 0, billingInputTokens: 0 });
+    expect(promptTokenEstimates({ big: 10n })).toEqual({ inputTokens: 0, billingInputTokens: 0 });
+    expect(promptTokenEstimates(null)).toEqual({ inputTokens: 0, billingInputTokens: 0 });
   });
 
   it("matches on deep nesting past the walk's limit", () => {
     let deep = { leaf: "x" };
     for (let i = 0; i < 1500; i++) deep = { child: deep };
-    expect(estimatePromptTokens(deep)).toEqual(reference(deep));
+    expect(estimateInputTokens(deep)).toBe(reference(deep).input);
+    expect(estimateBillingInputTokens(deep)).toBe(reference(deep).billing);
   });
 });

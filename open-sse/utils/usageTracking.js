@@ -4,6 +4,7 @@
 
 import { FORMATS } from "../translator/formats.js";
 import { IMAGE_TOKEN_ESTIMATE } from "../config/mediaConfig.js";
+import { walkJson, quotedSizes, sized } from "@/shared/utils/jsonMeasure.js";
 
 // Legacy per-chunk usage console line; off by default (superseded by "📊 done")
 const DEBUG_USAGE = process.env.LOG_USAGE_VERBOSE === "1";
@@ -340,11 +341,9 @@ export function mergeUsage(prev, next) {
  * Calculate total body size for more accurate estimation
  */
 export function estimateInputTokens(body) {
-  if (!body || typeof body !== "object") return 0;
   // Total body size (messages, tools, system, thinking config, etc.) at ~4 chars
   // per token, with inline images and files counted by kind, not as base64 text.
-  const measured = measureInlineMedia(body);
-  return measured ? Math.ceil(measured.length / 4) + measured.inline : 0;
+  return promptTokenEstimates(body).inputTokens;
 }
 
 /**
@@ -411,12 +410,6 @@ function inlineMediaTokens(key, holder, value) {
   return null;
 }
 
-// Strings JSON.stringify writes as they are: printable ASCII with no `"` or `\`.
-const NOT_PLAIN_ASCII = /[^ -!#-[\]-~]/;
-const UNSUPPORTED = Symbol("unsupported");
-// Far below the nesting JSON.stringify overflows on; a cycle reaches it too.
-const MAX_DEPTH = 1000;
-
 /**
  * The length of the body's JSON with inline files blanked, how many of its
  * characters are non-ASCII, and the inline files' tokens, without building the
@@ -425,77 +418,29 @@ const MAX_DEPTH = 1000;
  * image/document), { mimeType, data } (Gemini inlineData), { data, format }
  * (OpenAI input_audio). Null when the body can't be serialized.
  */
-function measureInlineMedia(body) {
-  try {
-    return walkForTokens(body);
-  } catch (error) {
-    if (error !== UNSUPPORTED) return null;
-  }
-  return stringifyForTokens(body);
-}
-
-function walkForTokens(body) {
+function measureForTokens(body) {
   let length = 0;
   let nonAscii = 0;
   let inline = 0;
-  const text = (s) => {
-    length += s.length + 2;
-    if (!NOT_PLAIN_ASCII.test(s)) return;
-    for (let i = 0; i < s.length; i++) {
-      const c = s.charCodeAt(i);
-      if (c < 0x20) length += c === 8 || c === 9 || c === 10 || c === 12 || c === 13 ? 1 : 5;
-      else if (c === 0x22 || c === 0x5c) length += 1;
-      else if (c < 0x80) continue;
-      else if (c < 0xd800 || c > 0xdfff) nonAscii += 1;
-      else if (c <= 0xdbff && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
-        nonAscii += 2;
-        i++;
-      } else length += 5; // a lone surrogate goes out as \udxxx
-    }
-  };
-  const skipped = (v) => v === undefined || typeof v === "function" || typeof v === "symbol";
-  const walk = (v, key, holder, depth) => {
-    if (v === null) { length += 4; return; }
-    switch (typeof v) {
-      case "string": {
-        const tokens = inlineMediaTokens(key, holder, v);
-        if (tokens === null) text(v);
-        else { inline += tokens; length += 2; }
+  try {
+    walkJson(body, (token) => { length += token.length; }, (s, key, holder) => {
+      const tokens = holder ? inlineMediaTokens(key, holder, s) : null;
+      if (tokens !== null) {
+        inline += tokens;
+        length += 2;
         return;
       }
-      case "number": length += Number.isFinite(v) ? String(v).length : 4; return;
-      case "boolean": length += v ? 4 : 5; return;
-      case "object": break;
-      default:
-        if (skipped(v)) { length += 4; return; }
-        throw UNSUPPORTED;
-    }
-    if (depth >= MAX_DEPTH || Object.hasOwn(v, "toJSON")) throw UNSUPPORTED;
-    const proto = Object.getPrototypeOf(v);
-    if (Array.isArray(v)) {
-      if (proto !== Array.prototype) throw UNSUPPORTED;
-      length += 2 + Math.max(0, v.length - 1);
-      for (let i = 0; i < v.length; i++) walk(v[i], i, v, depth + 1);
-      return;
-    }
-    if (proto !== Object.prototype && proto !== null) throw UNSUPPORTED;
-    let fields = 0;
-    for (const k of Object.keys(v)) {
-      const child = v[k];
-      if (skipped(child)) continue;
-      fields++;
-      text(k);
-      length += 1;
-      walk(child, k, v, depth + 1);
-    }
-    length += 2 + Math.max(0, fields - 1);
-  };
-  if (skipped(body)) return null;
-  walk(body, "", null, 0);
-  return { length, nonAscii, inline };
+      quotedSizes(s);
+      length += sized.length;
+      nonAscii += sized.nonAscii;
+    });
+    return { length, nonAscii, inline };
+  } catch {
+    return stringifyForTokens(body);
+  }
 }
 
-// What walkForTokens can't follow (a toJSON, a class instance): serialized.
+// What walkJson can't follow (a toJSON, a class instance): serialized.
 function stringifyForTokens(body) {
   let inline = 0;
   try {
@@ -519,27 +464,27 @@ function stringifyForTokens(body) {
  */
 export function weighChars(text) {
   if (typeof text !== "string" || !text) return 0;
-  const nonAscii = (text.match(NON_ASCII) || []).length;
-  return text.length + nonAscii * 3;
+  return weighedLength(text.length, (text.match(NON_ASCII) || []).length);
 }
+
+const weighedLength = (length, nonAscii) => length + nonAscii * 3;
 
 /** Input tokens a request body is billed at when the provider reports none. */
 export function estimateBillingInputTokens(body) {
-  if (!body || typeof body !== "object") return 0;
-  const measured = measureInlineMedia(body);
-  return measured ? Math.ceil((measured.length + measured.nonAscii * 3) / 4) + measured.inline : 0;
+  return promptTokenEstimates(body).billingInputTokens;
 }
 
 /**
- * Both input estimates in one walk: { input } as estimateInputTokens gives it,
- * { billing } as estimateBillingInputTokens does.
+ * Both input estimates in one walk: `inputTokens` as estimateInputTokens gives
+ * it (JSON length / 4), `billingInputTokens` as estimateBillingInputTokens does
+ * (non-ASCII weighed); inline files by kind in both. 0 when it can't be measured.
  */
-export function estimatePromptTokens(body) {
-  const measured = body && typeof body === "object" ? measureInlineMedia(body) : null;
-  if (!measured) return { input: 0, billing: 0 };
+export function promptTokenEstimates(body) {
+  const measured = body && typeof body === "object" ? measureForTokens(body) : null;
+  if (!measured) return { inputTokens: 0, billingInputTokens: 0 };
   return {
-    input: Math.ceil(measured.length / 4) + measured.inline,
-    billing: Math.ceil((measured.length + measured.nonAscii * 3) / 4) + measured.inline,
+    inputTokens: Math.ceil(measured.length / 4) + measured.inline,
+    billingInputTokens: Math.ceil(weighedLength(measured.length, measured.nonAscii) / 4) + measured.inline,
   };
 }
 

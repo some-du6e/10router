@@ -9,6 +9,7 @@ export const HTTP_STATUS = {
   REQUEST_TIMEOUT: 408,
   CONFLICT: 409,
   PAYLOAD_TOO_LARGE: 413,
+  MISDIRECTED_REQUEST: 421,
   UNPROCESSABLE_ENTITY: 422,
   RATE_LIMITED: 429,
   CLIENT_CLOSED_REQUEST: 499,
@@ -113,8 +114,9 @@ export const SAME_REQUEST_ERROR_STATUSES = new Set([HTTP_STATUS.BAD_REQUEST, HTT
 
 // Memory admission for the chat routes (src/sse/services/memoryAdmission.js).
 // Every request in flight holds its prompt several times over (parsed, then
-// translated, then serialized for the upstream) until its reply starts, so a burst
-// of big prompts can take the process past its memory limit. A request that
+// translated, then serialized for the upstream) until its reply starts streaming
+// (a non-streamed one: until it ends), so a burst of big prompts can take the
+// process past its memory limit. A request that
 // would push the held total over the budget, or that arrives while the process
 // is above its high-water mark, waits in a FIFO queue; if it still can't go
 // after maxWaitMs it gets a 503 with Retry-After, which agents retry. With
@@ -124,7 +126,8 @@ export const MEMORY_ADMISSION = {
   // Bytes of request bodies (times bodyCopies) admitted requests may hold.
   // Env: INFLIGHT_BODY_BUDGET_MB (0 turns the budget off).
   budgetBytes: envInt("INFLIGHT_BODY_BUDGET_MB", 900) * MB,
-  // Copies of its body one request holds while it runs.
+  // Copies of its body one request holds until its reply starts. The gate
+  // counts them until the reply ends, more than a stream holds by then.
   bodyCopies: 3,
   // Longest a request waits for room before it is refused.
   // Env: INFLIGHT_QUEUE_WAIT_MS (0 refuses at once).

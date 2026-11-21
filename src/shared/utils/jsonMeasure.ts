@@ -12,19 +12,23 @@ const NOT_PLAIN_ASCII = /[^ -!#-[\]-~]/;
 
 const shortEscape = (c: number): boolean => c === 8 || c === 9 || c === 10 || c === 12 || c === 13;
 
-// quotedSizes' results, in module state so a call allocates nothing.
-let sizedLength = 0;
-let sizedBytes = 0;
+/**
+ * quotedSizes' results for the last string it measured, in module state so a
+ * call allocates nothing: JSON.stringify(s)'s length, its UTF-8 bytes, and how
+ * many of its characters are non-ASCII (UTF-16 units; an escape is ASCII).
+ */
+export const sized = { length: 0, bytes: 0, nonAscii: 0 };
 
-// Both sizes of JSON.stringify(s) in one pass: characters into sizedLength,
-// UTF-8 bytes into sizedBytes.
-function quotedSizes(s: string): void {
+// The sizes of JSON.stringify(s), in one pass, into `sized`.
+export function quotedSizes(s: string): void {
   if (!NOT_PLAIN_ASCII.test(s)) {
-    sizedLength = sizedBytes = s.length + 2;
+    sized.length = sized.bytes = s.length + 2;
+    sized.nonAscii = 0;
     return;
   }
   let length = s.length + 2;
   let bytes = 2;
+  let nonAscii = 0;
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
     if (c < 0x20) {
@@ -35,21 +39,28 @@ function quotedSizes(s: string): void {
       length += 1;
       bytes += 2;
     } else if (c < 0x80) bytes += 1;
-    else if (c < 0x800) bytes += 2;
-    else if (c >= 0xd800 && c <= 0xdfff) {
+    else if (c < 0x800) {
+      bytes += 2;
+      nonAscii += 1;
+    } else if (c >= 0xd800 && c <= 0xdfff) {
       const next = s.charCodeAt(i + 1);
       if (c <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
         bytes += 4;
+        nonAscii += 2;
         i++;
       } else {
         // \udxxx
         length += 5;
         bytes += 6;
       }
-    } else bytes += 3;
+    } else {
+      bytes += 3;
+      nonAscii += 1;
+    }
   }
-  sizedLength = length;
-  sizedBytes = bytes;
+  sized.length = length;
+  sized.bytes = bytes;
+  sized.nonAscii = nonAscii;
 }
 
 // Far below the nesting JSON.stringify overflows the stack on (about 4,500
@@ -63,15 +74,20 @@ const skipped = (v: unknown): boolean => v === undefined || typeof v === "functi
 
 /**
  * Walks `value` as JSON.stringify would, handing each token to `emit` and each
- * string (keys too) to `emitString`. Throws UNSUPPORTED for what it can't
- * follow the same way (a toJSON, a class instance, a BigInt, nesting past
- * MAX_MEASURE_DEPTH).
+ * string to `emitString`: a value with its key and the object or array holding
+ * it (as a replacer sees them; none for the top level), a key with neither.
+ * Throws for what it can't follow the same way (a toJSON, a class instance, a
+ * BigInt, nesting past MAX_MEASURE_DEPTH).
  */
-function walkJson(value: unknown, emit: (token: string) => void, emitString: (s: string) => void): void {
-  const walk = (v: unknown, depth: number): void => {
+export function walkJson(
+  value: unknown,
+  emit: (token: string) => void,
+  emitString: (s: string, key?: string | number, holder?: object) => void,
+): void {
+  const walk = (v: unknown, depth: number, key?: string | number, holder?: object): void => {
     if (v === null) return emit("null");
     switch (typeof v) {
-      case "string": return emitString(v);
+      case "string": return emitString(v, key, holder);
       case "number": return emit(Number.isFinite(v) ? String(v) : "null");
       case "boolean": return emit(v ? "true" : "false");
       case "object": break;
@@ -88,7 +104,7 @@ function walkJson(value: unknown, emit: (token: string) => void, emitString: (s:
       emit("[");
       for (let i = 0; i < obj.length; i++) {
         if (i > 0) emit(",");
-        walk(obj[i], depth + 1);
+        walk(obj[i], depth + 1, i, obj);
       }
       emit("]");
       return;
@@ -103,7 +119,7 @@ function walkJson(value: unknown, emit: (token: string) => void, emitString: (s:
       first = false;
       emitString(key);
       emit(":");
-      walk(child, depth + 1);
+      walk(child, depth + 1, key, obj);
     }
     emit("}");
   };
@@ -141,12 +157,12 @@ export function measureJson(value: unknown, prefixChars: number): JsonMeasure | 
       },
       (s) => {
         quotedSizes(s);
-        const n = sizedLength;
+        const n = sized.length;
         const need = prefixChars - prefix.length;
         // One character past the cut, so a surrogate pair there is escaped as a pair.
         if (need > 0) prefix += n <= need ? JSON.stringify(s) : JSON.stringify(s.slice(0, need + 1)).slice(0, need);
         length += n;
-        bytes += sizedBytes;
+        bytes += sized.bytes;
       },
     );
   } catch {

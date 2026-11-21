@@ -1,4 +1,4 @@
-import { MEMORY_CONFIG, UNDICI_HEADERS_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { HTTP_STATUS, MEMORY_CONFIG, UNDICI_HEADERS_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { isUndiciHeadersTimeout } from "./headersTimeout.js";
 import { isInvalidHeaderValueError, sanitizeSecrets } from "./redact.js";
 
@@ -208,8 +208,9 @@ async function getDirectDispatcher() {
 // redirect "error" it sends the request itself (window: null is already the case
 // in Node). A body that can be sent again goes out that way, and the request is
 // sent again as the caller asked when the upstream answers with a redirect
-// (which that follows) or a 421 (which fetch retries by re-sending the body it
-// has already sent, so it fails with a length mismatch). Neither reply means the
+// (which that follows) or a 421 (which fetch retries by re-sending a byte body
+// it has already sent, so it fails with a length mismatch; a string body is
+// sent as a stream, below, which fetch doesn't retry). Neither reply means the
 // upstream acted on the request. Bun's fetch fails these differently, so this is
 // Node only.
 const SEND_WITHOUT_CLONE = Boolean(process.versions?.undici) && !process.versions?.bun;
@@ -224,27 +225,6 @@ function needsTheClone(error) {
   return error?.name === "TypeError" && (error.cause?.message === UNDICI_REDIRECT_ERROR || error.cause?.code === UNDICI_LENGTH_MISMATCH);
 }
 
-const MISDIRECTED = 421;
-
-function hasHeader(headers, name) {
-  if (!headers) return false;
-  if (headers instanceof Headers) return headers.has(name);
-  if (Array.isArray(headers)) return headers.some(([key]) => String(key).toLowerCase() === name);
-  return Object.keys(headers).some((key) => key.toLowerCase() === name && headers[key] != null);
-}
-
-function withHeader(headers, name, value) {
-  if (headers instanceof Headers || Array.isArray(headers)) {
-    const out = new Headers(headers);
-    out.set(name, value);
-    return out;
-  }
-  const out = {};
-  for (const [key, v] of Object.entries(headers || {})) if (key.toLowerCase() !== name) out[key] = v;
-  out[name] = value;
-  return out;
-}
-
 // fetch also keeps a string body on its request until the response ends (the
 // source it would send again), so a streamed reply kept its whole prompt for
 // minutes. The string goes out as a stream of its UTF-8 bytes instead, with the
@@ -254,9 +234,9 @@ function streamedOnce(init) {
   const method = String(init.method || "GET").toUpperCase();
   if (typeof init.body !== "string" || !init.body || method === "GET" || method === "HEAD") return null;
   let text = init.body;
-  const length = Buffer.byteLength(text, "utf8");
-  let headers = withHeader(init.headers, "content-length", String(length));
-  if (!hasHeader(init.headers, "content-type")) headers = withHeader(headers, "content-type", "text/plain;charset=UTF-8");
+  const headers = new Headers(init.headers);
+  headers.set("content-length", String(Buffer.byteLength(text, "utf8")));
+  if (!headers.has("content-type")) headers.set("content-type", "text/plain;charset=UTF-8");
   const body = new ReadableStream({
     pull(controller) {
       controller.enqueue(Buffer.from(text, "utf8"));
@@ -276,7 +256,7 @@ async function send(target, init) {
     const response = await originalFetch(target, { ...(streamed || init), redirect: "error", window: null });
     // fetch re-sends a string body on a 421 by itself, but not a stream: the
     // request goes again as the caller asked, which fetch handles as before.
-    if (streamed && response.status === MISDIRECTED) {
+    if (streamed && response.status === HTTP_STATUS.MISDIRECTED_REQUEST) {
       response.body?.cancel().catch(() => { });
       return originalFetch(target, init);
     }

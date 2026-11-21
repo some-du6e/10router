@@ -11,21 +11,18 @@
 //
 //   cd tests && ./node_modules/.bin/vitest run --config vitest.benchmark.config.js bench/stream-retention-benchmark.test.js
 //
-// STREAMS (default 20) sets the concurrent streams. SNAPSHOT=<path> writes a
-// heap snapshot while they stream (use a small STREAMS).
+// BENCH_STREAMS (default 20) sets the concurrent streams. BENCH_SNAPSHOT=<path>
+// writes a heap snapshot while they stream (use a small BENCH_STREAMS).
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import v8 from "node:v8";
-import vm from "node:vm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { claudeCodeBody } from "../helpers/claudeCodeBody.js";
+import { heap, settle, socketBody } from "../helpers/heldStreams.js";
 
-v8.setFlagsFromString("--expose-gc");
-const gc = vm.runInNewContext("gc");
-
-const STREAMS = Number(process.env.STREAMS || 20);
+const STREAMS = Number(process.env.BENCH_STREAMS || 20);
 const MB = 1024 * 1024;
 const MODEL = "kimi-k3";
 
@@ -55,17 +52,6 @@ function finishAll() {
     res.end("data: [DONE]\n\n");
   }
 }
-
-const settle = async () => {
-  for (let i = 0; i < 4; i++) {
-    gc();
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-};
-const heap = () => {
-  const m = process.memoryUsage();
-  return m.heapUsed + m.external;
-};
 
 let tempDir;
 let upstream;
@@ -126,22 +112,6 @@ const clientHeaders = () => ({
 // or with the bench.
 const bodyText = (i) => JSON.stringify({ ...claudeCodeBody("kimi", { messages: 90, toolResultChars: 22000 }), metadata: { user_id: `user_bench_${i}` } });
 
-// The body as Next hands it over: a stream read off the socket, so the Request
-// holds no copy of its own once it has been read.
-function socketBody(text) {
-  let bytes = new TextEncoder().encode(text);
-  return new ReadableStream({
-    pull(controller) {
-      const chunk = bytes.subarray(0, 64 * 1024);
-      bytes = bytes.subarray(chunk.length);
-      if (chunk.length) controller.enqueue(chunk.slice());
-      if (!bytes.length) {
-        bytes = null;
-        controller.close();
-      }
-    },
-  });
-}
 
 async function measure(label, n) {
   await repo.__test__.flush();
@@ -162,7 +132,7 @@ async function measure(label, n) {
   await settle();
   const held = heap() - before;
   const queued = { ring: repo.__test__.ringSize(), ringBytes: repo.__test__.ringBytes(), queuedBytes: repo.__test__.queuedBytes() };
-  if (process.env.SNAPSHOT) v8.writeHeapSnapshot(`${process.env.SNAPSHOT}-${label.replace(/\W+/g, "-")}.heapsnapshot`);
+  if (process.env.BENCH_SNAPSHOT) v8.writeHeapSnapshot(`${process.env.BENCH_SNAPSHOT}-${label.replace(/\W+/g, "-")}.heapsnapshot`);
   // The start rows written, as the 5 s flush does while the replies stream.
   await repo.__test__.flush();
   await settle();

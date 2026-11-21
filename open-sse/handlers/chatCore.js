@@ -688,8 +688,8 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   }
 
   // Streaming response
-  const { onStreamComplete, streamDetailId, streamDetail, streamRequest } = buildOnStreamComplete({ ...sharedCtx });
-  const streaming = handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, toolNamespaces, streamController, onStreamComplete, streamDetailId, streamDetail, streamRequest, endPending });
+  const { onStreamComplete, streamDetail } = buildOnStreamComplete({ ...sharedCtx });
+  const streaming = handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, toolNamespaces, streamController, onStreamComplete, streamDetail, endPending });
   // The reply is under way and nothing is sent upstream again. The stream's
   // callbacks (endPending, the hang-up listener) keep this call's closures,
   // and so these, alive until it ends: let go of the prompt.
