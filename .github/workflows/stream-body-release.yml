@@ -4,6 +4,10 @@ on:
   pull_request:
     paths:
       - "open-sse/handlers/chatCore.js"
+      - "open-sse/executors/base.js"
+      - "open-sse/executors/default.js"
+      - "open-sse/utils/streamHandler.js"
+      - "src/app/api/v1/messages/route.js"
       - "open-sse/handlers/chatCore/requestDetail.js"
       - "open-sse/handlers/chatCore/streamingHandler.js"
       - "open-sse/utils/earlyHeaders.js"
@@ -18,6 +22,10 @@ on:
       - "tests/unit/stream-body-release.test.js"
       - "tests/unit/request-details-stream-reuse.test.js"
       - "tests/unit/stream-floor-wiring.test.js"
+      - "tests/unit/upstream-body-memory.test.js"
+      - "tests/unit/endpoint-request-log-memory.test.js"
+      - "tests/unit/provider-fetch.test.js"
+      - "tests/unit/upstream-json-reply.test.js"
       - "tests/helpers/heldStreams.js"
       - "tests/unit/early-headers-release.test.js"
       - "tests/unit/prompt-token-estimate.test.js"
@@ -101,13 +109,14 @@ jobs:
       - name: This branch
         working-directory: tests
         shell: bash
-        run: set -o pipefail; ./node_modules/.bin/vitest run --config vitest.benchmark.config.js bench/stream-retention-benchmark.test.js 2>&1 | tee "$RUNNER_TEMP/after.txt"
+        # bash runs with -eo pipefail, so a crashed bench fails the step.
+        run: ./node_modules/.bin/vitest run --config vitest.benchmark.config.js bench/stream-retention-benchmark.test.js 2>&1 | tee "$RUNNER_TEMP/after.txt"
       - name: The base branch's source files
         run: git checkout "origin/${{ github.base_ref || 'master' }}" -- open-sse src
       - name: Base
         working-directory: tests
         shell: bash
-        run: set -o pipefail; ./node_modules/.bin/vitest run --config vitest.benchmark.config.js bench/stream-retention-benchmark.test.js 2>&1 | tee "$RUNNER_TEMP/before.txt"
+        run: ./node_modules/.bin/vitest run --config vitest.benchmark.config.js bench/stream-retention-benchmark.test.js 2>&1 | tee "$RUNNER_TEMP/before.txt"
       - name: Summary
         run: |
           {

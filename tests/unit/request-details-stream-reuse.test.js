@@ -42,7 +42,7 @@ describe("a streaming row's end save", () => {
     onStreamComplete({ content: "hi", thinking: "", toolCalls: [] }, { prompt_tokens: 1, completion_tokens: 1 }, Date.now());
 
     // The empty test stream also ends by itself: that is an end save too.
-    await vi.waitFor(() => expect(saveRequestDetail.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await vi.waitFor(() => expect(saveRequestDetail.mock.calls.some(([d]) => d.response?.content === "hi")).toBe(true));
     const [start, ...ends] = saveRequestDetail.mock.calls.map(([detail]) => detail);
     expect(start.id).toBe(streamDetailId);
     expect(start.request).toEqual(extractRequestConfig(body, true));
