@@ -201,6 +201,20 @@ describe("request detail capping on a repeated save", () => {
     expect(await db.getRequestDetailFullData("long-stream")).toEqual({ request, providerRequest });
   });
 
+  it("with full details on, hands back the capped records when the payloads are too big for a full copy", async () => {
+    const { limits } = repo.__test__;
+    const ringMax = limits.fullRingMaxBytes;
+    limits.fullRingMaxBytes = 1024;
+    let start;
+    try {
+      start = await db.saveRequestDetail(detail("too-big", big("i"), big("j"), progress));
+    } finally {
+      limits.fullRingMaxBytes = ringMax;
+    }
+    expect(start.request._truncated).toBe(true);
+    expect(start.providerRequest._truncated).toBe(true);
+  });
+
   describe("with full details off", () => {
     beforeAll(async () => {
       await db.updateSettings({ showSensitiveRequestDetails: false });

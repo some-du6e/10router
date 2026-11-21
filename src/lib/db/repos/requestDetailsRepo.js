@@ -507,10 +507,10 @@ function dropOldestSave() {
  * Queues a save. Resolves to what a later save of the same row (a stream's end
  * save, see open-sse's streamDetailRow) passes as its `request` and
  * `providerRequest`, so it need not hold the bodies: their capped records. While
- * full copies are kept it is the payloads themselves, which the later save's
- * full copy is built from (the trim keeps full copies on the newest 25 rows
- * only, so the earlier save's may be gone by then). Null when request details
- * are off.
+ * full copies are kept, and this save made one, it is the payloads themselves,
+ * which the later save's full copy is built from (the trim keeps full copies on
+ * the newest 25 rows only, so the earlier save's may be gone by then). Null when
+ * request details are off.
  * @returns {Promise<{ request: unknown, providerRequest: unknown } | null>}
  */
 export async function saveRequestDetail(detail) {
@@ -520,7 +520,8 @@ export async function saveRequestDetail(detail) {
   // No full copies are built during the shutdown drain, or on sql.js.
   const keepFull = config.keepFullData && !shuttingDown && (dbDriver ??= (await getAdapter()).driver) !== "sql.js";
   const { save, source, record } = buildSave(detail, config.maxJsonSize, keepFull);
-  const carried = keepFull
+  // A payload too big for a full copy gets none at the end either: its record.
+  const carried = keepFull && source
     ? { request: detail.request, providerRequest: detail.providerRequest }
     : { request: record.request, providerRequest: record.providerRequest };
   writeBuffer.push(save);
