@@ -1,0 +1,175 @@
+name: Stream body release
+
+on:
+  pull_request:
+    paths:
+      - "open-sse/handlers/chatCore.js"
+      - "open-sse/handlers/chatCore/requestDetail.js"
+      - "open-sse/handlers/chatCore/streamingHandler.js"
+      - "open-sse/utils/earlyHeaders.js"
+      - "open-sse/utils/proxyFetch.js"
+      - "open-sse/utils/stream.js"
+      - "open-sse/utils/usageTracking.js"
+      - "open-sse/utils/hangUpCharge.ts"
+      - "src/lib/db/repos/requestDetailsRepo.js"
+      - "src/lib/endpointRequestLog.ts"
+      - "src/sse/handlers/chat.ts"
+      - "tests/unit/stream-body-release.test.js"
+      - "tests/unit/early-headers-release.test.js"
+      - "tests/unit/prompt-token-estimate.test.js"
+      - "tests/bench/stream-retention-benchmark.test.js"
+      - "tests/helpers/claudeCodeBody.js"
+      - "tests/package.json"
+      - "tests/vitest.config.js"
+      - "tests/vitest.shared.js"
+      - ".github/workflows/stream-body-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 is what production runs; its bundled undici differs from 24's.
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Unit tests
+        working-directory: tests
+        run: >
+          ./node_modules/.bin/vitest run
+          unit/stream-body-release.test.js
+          unit/early-headers-release.test.js
+          unit/prompt-token-estimate.test.js
+          unit/upstream-body-memory.test.js
+          unit/endpoint-request-log-memory.test.js
+          unit/request-details-stream-reuse.test.js
+          unit/stream-floor-wiring.test.js
+          unit/stream-abort-usage.test.js
+          unit/hang-up-charge.test.js
+          unit/provider-fetch.test.js
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint
+          open-sse/handlers/chatCore.js
+          open-sse/handlers/chatCore/requestDetail.js
+          open-sse/handlers/chatCore/streamingHandler.js
+          open-sse/utils/earlyHeaders.js
+          open-sse/utils/proxyFetch.js
+          open-sse/utils/stream.js
+          open-sse/utils/usageTracking.js
+          src/lib/db/repos/requestDetailsRepo.js
+          src/lib/endpointRequestLog.ts
+          tests/unit/stream-body-release.test.js
+          tests/unit/early-headers-release.test.js
+          tests/unit/prompt-token-estimate.test.js
+          tests/bench/stream-retention-benchmark.test.js
+
+  # Informational, for the PR's "Before" and "After": the heap each in-flight
+  # stream keeps, on this branch and with the base branch's source files.
+  retention:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: This branch
+        working-directory: tests
+        run: ./node_modules/.bin/vitest run --config vitest.benchmark.config.js bench/stream-retention-benchmark.test.js 2>&1 | tee "$RUNNER_TEMP/after.txt"
+      - name: The base branch's source files
+        run: git checkout "origin/${{ github.base_ref || 'master' }}" -- open-sse src
+      - name: Base
+        working-directory: tests
+        run: ./node_modules/.bin/vitest run --config vitest.benchmark.config.js bench/stream-retention-benchmark.test.js 2>&1 | tee "$RUNNER_TEMP/before.txt"
+      - name: Summary
+        run: |
+          {
+            echo '```'
+            echo "Before (base source files):"
+            sed -n '/streams, body/,/^$/p' "$RUNNER_TEMP/before.txt"
+            echo "After (this branch):"
+            sed -n '/streams, body/,/^$/p' "$RUNNER_TEMP/after.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The suite is not all-green on master (see AGENTS.md), so this runs it on
+  # both the base and this branch and fails only on tests that pass on the base
+  # and fail here.
+  no-new-failures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Check out the base branch next to this one
+        run: git worktree add ../base "origin/${{ github.base_ref || 'master' }}"
+      - name: Install dependencies (branch and base)
+        run: |
+          for dir in . ../base; do
+            (cd "$dir" && bun install --ignore-scripts && cd tests && bun install --ignore-scripts)
+          done
+      - name: Run the suite on the base
+        working-directory: ../base/tests
+        # Each run gets its own HOME: tests without a DATA_DIR use ~/.9router,
+        # and one run's database must not leak into the other.
+        run: |
+          mkdir -p "$RUNNER_TEMP/home-base"
+          HOME="$RUNNER_TEMP/home-base" ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/base.json" > /dev/null 2>&1 || true
+      - name: Run the suite on this branch
+        working-directory: tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/home-head"
+          HOME="$RUNNER_TEMP/home-head" ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/head.json" > /dev/null 2>&1 || true
+      - name: Compare
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const load = (file, root) => {
+              const r = JSON.parse(readFileSync(file, "utf8"));
+              const status = new Map();
+              for (const f of r.testResults) {
+                const rel = f.name.slice(f.name.indexOf("/tests/") + 1);
+                for (const a of f.assertionResults) status.set(`${rel} :: ${a.fullName}`, a.status);
+                // A file that failed to load has no assertions; count it as one failure.
+                if (!f.assertionResults.length && f.status === "failed") status.set(`${rel} :: (file failed to load)`, "failed");
+              }
+              return { status, total: r.numTotalTests, failed: r.numFailedTests };
+            };
+            const base = load(process.env.RUNNER_TEMP + "/base.json");
+            const head = load(process.env.RUNNER_TEMP + "/head.json");
+            console.log(`base: ${base.failed}/${base.total} failed, head: ${head.failed}/${head.total} failed`);
+            const regressions = [...head.status].filter(([k, s]) => s === "failed" && base.status.get(k) === "passed").map(([k]) => k);
+            const fixed = [...base.status].filter(([k, s]) => s === "failed" && head.status.get(k) === "passed").map(([k]) => k);
+            const newFailing = [...head.status].filter(([k, s]) => s === "failed" && !base.status.has(k)).map(([k]) => k);
+            if (fixed.length) console.log("Now passing:\n  " + fixed.join("\n  "));
+            if (newFailing.length) console.log("New tests failing:\n  " + newFailing.join("\n  "));
+            if (regressions.length) console.log("Passed on the base, fail here:\n  " + regressions.join("\n  "));
+            if (regressions.length || newFailing.length) process.exit(1);
+          '

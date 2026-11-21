@@ -1,7 +1,7 @@
 // Memory admission for the chat routes.
 //
 // A request in flight holds its prompt several times over (the parsed body, the
-// translated body, the string sent upstream) until its reply ends. Coding agents
+// translated body, the string sent upstream) until its reply starts. Coding agents
 // send prompts of several MB, and after a restart they all retry at once, so
 // enough of them together take the process past its memory limit, it is killed,
 // and every request in flight fails with it. This gate counts the body bytes the

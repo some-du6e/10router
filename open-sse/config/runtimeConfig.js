@@ -113,7 +113,7 @@ export const SAME_REQUEST_ERROR_STATUSES = new Set([HTTP_STATUS.BAD_REQUEST, HTT
 
 // Memory admission for the chat routes (src/sse/services/memoryAdmission.js).
 // Every request in flight holds its prompt several times over (parsed, then
-// translated, then serialized for the upstream) until its reply ends, so a burst
+// translated, then serialized for the upstream) until its reply starts, so a burst
 // of big prompts can take the process past its memory limit. A request that
 // would push the held total over the budget, or that arrives while the process
 // is above its high-water mark, waits in a FIFO queue; if it still can't go
