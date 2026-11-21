@@ -116,11 +116,11 @@ export const SAME_REQUEST_ERROR_STATUSES = new Set([HTTP_STATUS.BAD_REQUEST, HTT
 // Every request in flight holds its prompt several times over (parsed, then
 // translated, then serialized for the upstream) until its reply starts streaming
 // (a non-streamed one: until it ends), so a burst of big prompts can take the
-// process past its memory limit. A request that
-// would push the held total over the budget, or that arrives while the process
-// is above its high-water mark, waits in a FIFO queue; if it still can't go
-// after maxWaitMs it gets a 503 with Retry-After, which agents retry. With
-// nothing in flight a request is always admitted, however big.
+// process past its memory limit. A request that would push the held total over
+// the budget, or that arrives while the process is above its high-water mark,
+// waits in a FIFO queue; if it still can't go after maxWaitMs it gets a 503 with
+// Retry-After, which agents retry. With nothing in flight a request is always
+// admitted, however big.
 const MB = 1024 * 1024;
 export const MEMORY_ADMISSION = {
   // Bytes of request bodies (times bodyCopies) admitted requests may hold.

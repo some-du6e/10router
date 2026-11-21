@@ -10,6 +10,7 @@ vi.mock("../../open-sse/utils/proxyFetch.js", () => ({ proxyAwareFetch: (...a) =
 const { DefaultExecutor } = await import("../../open-sse/executors/default.js");
 const { createLimitHoldResponse } = await import("../../open-sse/utils/limitHold.js");
 const { FORMATS } = await import("../../open-sse/translator/formats.js");
+const { GithubExecutor } = await import("../../open-sse/executors/github.js");
 
 const encoder = new TextEncoder();
 
@@ -24,7 +25,7 @@ const prompt = () => ({ model: "m1", stream: true, messages: [{ role: "user", co
 
 describe("streamed reply callbacks", () => {
   it("a custom endpoint's reply filter keeps no request", async () => {
-    const upstream = openStream('data: {"choices":[{"index":0,"delta":{"content":"Hi"}}]}\n\n');
+    const upstream = openStream('data: {"choices":[{"index":0,"delta":{"content":"Hi","reasoning_content":"secret plan"}}]}\n\n');
     fetchMock.mockResolvedValue(new Response(upstream.body, { status: 200, headers: { "content-type": "text/event-stream" } }));
     let body = prompt();
     const ref = new WeakRef(body);
@@ -32,7 +33,10 @@ describe("streamed reply callbacks", () => {
     const { response } = await new DefaultExecutor("openai-compatible-chat-x").execute({ model: "m1", body, stream: true, credentials, log: { warn: vi.fn() } });
     body = null;
     const reader = response.body.getReader();
-    expect(new TextDecoder().decode((await reader.read()).value)).toContain("Hi");
+    const first = new TextDecoder().decode((await reader.read()).value);
+    expect(first).toContain("Hi");
+    // The reply went through the filter.
+    expect(first).not.toContain("secret plan");
     fetchMock.mockReset();
     await settle();
     expect(ref.deref()).toBeUndefined();
@@ -55,7 +59,31 @@ describe("streamed reply callbacks", () => {
     attempt = null;
     const reader = hold.body.getReader();
     let text = "";
-    while (!text.includes("resumed")) text += new TextDecoder().decode((await reader.read()).value);
+    while (!text.includes("resumed")) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += new TextDecoder().decode(value);
+    }
+    expect(text).toContain("resumed");
+    await settle();
+    expect(ref.deref()).toBeUndefined();
+    upstream.end();
+    for (;;) if ((await reader.read()).done) break;
+  });
+
+  it.each([
+    ["/responses", "executeWithResponsesEndpoint", 'data: {"type":"response.output_text.delta","delta":"Hi"}\n\n'],
+    ["/v1/messages", "executeWithMessagesEndpoint", 'event: message_start\ndata: {"type":"message_start","message":{"id":"m","model":"m1","usage":{"input_tokens":1}}}\n\n'],
+  ])("GitHub Copilot's %s reply transform keeps no translated body", async (_, method, first) => {
+    const upstream = openStream(first);
+    fetchMock.mockResolvedValue(new Response(upstream.body, { status: 200, headers: { "content-type": "text/event-stream" } }));
+    const credentials = { accessToken: "gho-test-0000", copilotToken: "cop-test-0000", providerSpecificData: {} };
+    let result = await new GithubExecutor()[method]({ model: "m1", body: prompt(), stream: true, credentials, log: null });
+    const ref = new WeakRef(result.transformedBody);
+    const reader = result.response.body.getReader();
+    result = null;
+    expect((await reader.read()).done).toBe(false);
+    fetchMock.mockReset();
     await settle();
     expect(ref.deref()).toBeUndefined();
     upstream.end();
