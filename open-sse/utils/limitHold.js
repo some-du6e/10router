@@ -296,6 +296,9 @@ export function createLimitHoldResponse({ sourceFormat, model, provider, retryAt
           if (cancelled) break;
 
           if (result?.success && result.response?.body) {
+            // No more attempts: let go of the route it closes over (the
+            // request) while the real reply streams through here.
+            attempt = null;
             // Close the banner's block — but not the message — so the real
             // stream's blocks can follow it. OpenAI-shaped chunks are
             // independent and need no closing, and emitting a finish_reason

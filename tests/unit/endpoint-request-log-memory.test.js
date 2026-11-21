@@ -107,6 +107,29 @@ describe("endpoint request log memory", () => {
     }
   }, 60_000);
 
+  // A kept entry shows 8000 characters of each body; it must not keep the 256 KB
+  // capture they were cut from (a long slice keeps its whole source string).
+  it("keeps only the shown text of a finished entry", async () => {
+    clearEndpointRequests(EP);
+    const creds = { apiKey: "test-key-0000000000", providerSpecificData: { baseUrl: base } };
+    const n = 10;
+    await settle();
+    const before = process.memoryUsage().heapUsed;
+    for (let i = 0; i < n; i++) {
+      const response = await recordEndpointRequests(EP, creds, () => proxyAwareFetch(`${base}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: `model-${i}`, messages: [{ role: "user", content: `${i}`.repeat(MB) }] }),
+      }));
+      await finish([response]);
+    }
+    await vi.waitFor(() => expect(getEndpointRequests(EP)).toHaveLength(n));
+    await settle();
+    // n captures of 256 KB would be 2.5 MB; the shown text is about 8 KB each.
+    expect(process.memoryUsage().heapUsed - before).toBeLessThan(n * 128 * 1024);
+    expect(getEndpointRequests(EP)[0].request).toMatch(/more characters\)$/);
+  }, 60_000);
+
   // 256 K characters of a two-byte character encode to 512 KB, so the capture
   // has to cut again in bytes: 256 KB is exactly 131072 "é".
   it("cuts a multi-byte body to 256 KB", async () => {

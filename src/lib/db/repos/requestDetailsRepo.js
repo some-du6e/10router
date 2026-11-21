@@ -157,9 +157,9 @@ function sanitizeHeaders(headers) {
 }
 
 // A streaming request is saved twice under one id, when it starts and when it
-// ends, with the same request objects both times. Capping a ~1 MB body is
-// the costly part of a save, so the second save reuses the first's capped
-// record.
+// ends. While full copies are kept, its end save passes the same request
+// objects again (see saveRequestDetail); capping a ~1 MB body is the costly
+// part of a save, so it reuses the first's capped record.
 const cappedPayloads = new WeakMap();   // payload object → its capped copy
 // Capped record → the UTF-8 bytes of its payload's JSON, from the same walk
 // that capped it, so a full copy is sized without another one.
@@ -186,12 +186,13 @@ function fullCopyBytes(parts) {
 // the ring's byte cap, or over FULL_DATA_MAX_BYTES of UTF-8, is skipped. Only
 // a record truncateField cut counts as cut: a small payload is stored as the
 // client sent it, so its own `_truncated` and `_originalSize` mean nothing.
+// A payload passed as an earlier save's capped record has no full copy here.
 function fullCopySource(item, record) {
   const parts = [];
   let chars = 0;
   for (const key of PAYLOAD_KEYS) {
     const capped = record[key];
-    if (item[key] != null && payloadBytes.has(capped)) {
+    if (item[key] != null && item[key] !== capped && payloadBytes.has(capped)) {
       parts.push([key, item[key], capped]);
       chars += capped._originalSize;
     }
@@ -339,6 +340,9 @@ function prettyJsonPrefix(json, limit) {
 
 function truncateField(obj, maxSize) {
   if (obj === undefined || obj === null) return {};
+  // An earlier save's capped record (a stream's end save) is stored as it is:
+  // capping it again would describe the record, not the request.
+  if (payloadBytes.has(obj)) return obj;
   const cached = typeof obj === "object" ? cappedPayloads.get(obj) : undefined;
   // No JSON is kept with it (1 MB per body while the stream runs).
   if (cached?.maxSize === maxSize) return cached.truncated;
@@ -481,7 +485,7 @@ function buildSave(item, maxJsonSize, keepFull) {
     id: record.id, timestamp: record.timestamp, provider: record.provider, model: record.model,
     connectionId: record.connectionId, status: record.status, data, bytes: data.length * JSON_BYTES_PER_CHAR,
   };
-  return { save, source: keepFull ? fullCopySource(item, record) : null };
+  return { save, record, source: keepFull ? fullCopySource(item, record) : null };
 }
 
 function armFlushTimer() {
@@ -499,13 +503,27 @@ function dropOldestSave() {
   takeCopy(dropped);
 }
 
+/**
+ * Queues a save. Resolves to what a later save of the same row (a stream's end
+ * save, see open-sse's streamDetailRow) passes as its `request` and
+ * `providerRequest`, so it need not hold the bodies: their capped records. While
+ * full copies are kept, and this save made one, it is the payloads themselves,
+ * which the later save's full copy is built from (the trim keeps full copies on
+ * the newest 25 rows only, so the earlier save's may be gone by then). Null when
+ * request details are off.
+ * @returns {Promise<{ request: unknown, providerRequest: unknown } | null>}
+ */
 export async function saveRequestDetail(detail) {
   const config = await getObservabilityConfig();
-  if (!config.enabled) {return;}
+  if (!config.enabled) return null;
 
   // No full copies are built during the shutdown drain, or on sql.js.
   const keepFull = config.keepFullData && !shuttingDown && (dbDriver ??= (await getAdapter()).driver) !== "sql.js";
-  const { save, source } = buildSave(detail, config.maxJsonSize, keepFull);
+  const { save, source, record } = buildSave(detail, config.maxJsonSize, keepFull);
+  // A payload too big for a full copy gets none at the end either: its record.
+  const carried = keepFull && source
+    ? { request: detail.request, providerRequest: detail.providerRequest }
+    : { request: record.request, providerRequest: record.providerRequest };
   writeBuffer.push(save);
   queuedBytes += save.bytes;
   // A stream's end save replaces its start save's copy; one with none clears it.
@@ -523,6 +541,7 @@ export async function saveRequestDetail(detail) {
   } else {
     armFlushTimer();
   }
+  return carried;
 }
 
 const SUMMARY_DROPPED_KEYS = ["request", "providerRequest", "providerResponse", "response"];

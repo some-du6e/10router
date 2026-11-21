@@ -140,9 +140,7 @@ async function terminalBytes(response, sourceFormat, wire) {
  * @param {any} [options.log]
  */
 export async function respondWithEarlyHeaders({ run, sourceFormat, json = false, signal = null, delayMs = STREAM_EARLY_HEADERS_MS, keepaliveMs = STREAM_KEEPALIVE_MS, log = null }) {
-  const abort = new AbortController();
-  if (signal?.aborted) abort.abort();
-  else signal?.addEventListener?.("abort", () => abort.abort(), { once: true });
+  const abort = forwardAbort(signal);
   const pending = Promise.resolve().then(() => run(abort.signal));
   // Without keepalives an early reply would sit silent, which proxies cut too.
   if (!(delayMs > 0) || !(keepaliveMs > 0)) return pending;
@@ -160,6 +158,16 @@ export async function respondWithEarlyHeaders({ run, sourceFormat, json = false,
   const wire = json ? WIRES.json : WIRES.sse;
   log?.info?.("STREAM", `no upstream reply after ${delayMs}ms, sent early ${json ? "JSON" : "SSE"} headers`);
   return new Response(earlyBody({ pending, sourceFormat, wire, abort, keepaliveMs, log }), { headers: wire.headers });
+}
+
+// A controller that aborts when `signal` does. The listener stays on the
+// client's signal until the request ends: made here, it holds the controller
+// alone, not `run` and the request it closes over.
+function forwardAbort(signal) {
+  const abort = new AbortController();
+  if (signal?.aborted) abort.abort();
+  else signal?.addEventListener?.("abort", () => abort.abort(), { once: true });
+  return abort;
 }
 
 function earlyBody({ pending, sourceFormat, wire, abort, keepaliveMs, log }) {

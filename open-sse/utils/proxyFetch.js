@@ -1,4 +1,4 @@
-import { MEMORY_CONFIG, UNDICI_HEADERS_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { HTTP_STATUS, MEMORY_CONFIG, UNDICI_HEADERS_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { isUndiciHeadersTimeout } from "./headersTimeout.js";
 import { isInvalidHeaderValueError, sanitizeSecrets } from "./redact.js";
 
@@ -208,8 +208,9 @@ async function getDirectDispatcher() {
 // redirect "error" it sends the request itself (window: null is already the case
 // in Node). A body that can be sent again goes out that way, and the request is
 // sent again as the caller asked when the upstream answers with a redirect
-// (which that follows) or a 421 (which fetch retries by re-sending the body it
-// has already sent, so it fails with a length mismatch). Neither reply means the
+// (which that follows) or a 421 (which fetch retries by re-sending a byte body
+// it has already sent, so it fails with a length mismatch; a string body is
+// sent as a stream, below, which fetch doesn't retry). Neither reply means the
 // upstream acted on the request. Bun's fetch fails these differently, so this is
 // Node only.
 const SEND_WITHOUT_CLONE = Boolean(process.versions?.undici) && !process.versions?.bun;
@@ -224,12 +225,43 @@ function needsTheClone(error) {
   return error?.name === "TypeError" && (error.cause?.message === UNDICI_REDIRECT_ERROR || error.cause?.code === UNDICI_LENGTH_MISMATCH);
 }
 
+// fetch also keeps a string body on its request until the response ends (the
+// source it would send again), so a streamed reply kept its whole prompt for
+// minutes. The string goes out as a stream of its UTF-8 bytes instead, with the
+// same Content-Length and Content-Type fetch would send, and nothing of it is
+// left once it is written. Only a body of MEMORY_CONFIG.streamedBodyMinChars or
+// more, on a method that has one.
+function streamedOnce(init) {
+  const method = String(init.method || "GET").toUpperCase();
+  if (typeof init.body !== "string" || init.body.length < MEMORY_CONFIG.streamedBodyMinChars || method === "GET" || method === "HEAD") return null;
+  let text = init.body;
+  const headers = new Headers(init.headers);
+  headers.set("content-length", String(Buffer.byteLength(text, "utf8")));
+  if (!headers.has("content-type")) headers.set("content-type", "text/plain;charset=UTF-8");
+  const body = new ReadableStream({
+    pull(controller) {
+      controller.enqueue(Buffer.from(text, "utf8"));
+      text = null;
+      controller.close();
+    },
+  });
+  return { ...init, body, duplex: "half", headers };
+}
+
 async function send(target, init) {
   if (!SEND_WITHOUT_CLONE || !init || init.redirect !== undefined || "window" in init || !canSendAgain(init.body)) {
     return originalFetch(target, init);
   }
+  const streamed = streamedOnce(init);
   try {
-    return await originalFetch(target, { ...init, redirect: "error", window: null });
+    const response = await originalFetch(target, { ...(streamed || init), redirect: "error", window: null });
+    // fetch re-sends a string body on a 421 by itself, but not a stream: the
+    // request goes again as the caller asked, which fetch handles as before.
+    if (streamed && response.status === HTTP_STATUS.MISDIRECTED_REQUEST) {
+      response.body?.cancel().catch(() => { });
+      return originalFetch(target, init);
+    }
+    return response;
   } catch (error) {
     if (!needsTheClone(error)) throw error;
     return originalFetch(target, init);

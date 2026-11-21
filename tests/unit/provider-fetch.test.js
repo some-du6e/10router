@@ -36,6 +36,21 @@ describe("Provider fetch routing", () => {
     expect(proxyAgent).not.toHaveBeenCalled();
   });
 
+  it("sends a large text body as a stream of its bytes, with the headers fetch would add", async () => {
+    const response = new Response("ok");
+    const fetchMock = vi.fn().mockResolvedValue(response);
+    globalThis.fetch = fetchMock;
+    const { proxyAwareFetch } = await import("../../open-sse/utils/proxyFetch.js");
+    const { MEMORY_CONFIG } = await import("../../open-sse/config/runtimeConfig.js");
+    const body = "x".repeat(MEMORY_CONFIG.streamedBodyMinChars);
+    const url = "https://api.individual.githubcopilot.com/chat";
+    expect(await proxyAwareFetch(url, { method: "POST", body, headers: { authorization: "Bearer t" } })).toBe(response);
+    const [, init] = fetchMock.mock.lastCall;
+    expect(init).toMatchObject({ method: "POST", duplex: "half", redirect: "error", window: null });
+    expect(init.body).toBeInstanceOf(ReadableStream);
+    expect(Object.fromEntries(init.headers)).toEqual({ authorization: "Bearer t", "content-length": String(body.length), "content-type": "text/plain;charset=UTF-8" });
+  });
+
   it("continues routing providers through a configured outbound proxy", async () => {
     const response = new Response("ok");
     const fetchMock = vi.fn().mockResolvedValue(response);

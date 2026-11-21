@@ -1,10 +1,11 @@
 // Memory admission for the chat routes.
 //
 // A request in flight holds its prompt several times over (the parsed body, the
-// translated body, the string sent upstream) until its reply ends. Coding agents
-// send prompts of several MB, and after a restart they all retry at once, so
-// enough of them together take the process past its memory limit, it is killed,
-// and every request in flight fails with it. This gate counts the body bytes the
+// translated body, the string sent upstream) until its reply starts streaming (a
+// non-streamed one: until it ends). Coding agents send prompts of several MB,
+// and after a restart they all retry at once, so enough of them together take
+// the process past its memory limit, it is killed, and every request in flight
+// fails with it. This gate counts the body bytes the
 // admitted requests hold and lets a new one in only while it fits a budget and
 // the process's resident memory is under a high-water mark. Otherwise the
 // request waits its turn (FIFO) for a while, then gets a 503 with Retry-After,

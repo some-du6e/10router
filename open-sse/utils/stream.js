@@ -1,7 +1,7 @@
 import { translateResponse, initState } from "../translator/index.js";
 import { FORMATS } from "../translator/formats.js";
 import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
-import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, estimateOutputTokens, estimateBillingUsage, weighChars, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
+import { extractUsage, mergeUsage, hasValidUsage, formatUsage, estimateOutputTokens, promptTokenEstimates, billingUsage, weighChars, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE, buildStreamErrorBytes } from "./streamHelpers.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
@@ -12,6 +12,20 @@ import { sentOutputCap, floorTokens } from "./hangUpCharge.js";
 
 export { COLORS, formatSSE };
 export { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER };
+
+/**
+ * What a stream reads from its request: the input estimates for a reply with no
+ * usage, the output cap sent upstream (`sentBody`, see sentOutputCap), and
+ * whether the client asked for OpenAI's usage chunk. Taken when the stream
+ * starts, so the request's bodies can go while the reply streams.
+ */
+export function promptFacts(body, sentBody = null) {
+  return {
+    ...promptTokenEstimates(body),
+    outputCap: sentOutputCap(sentBody, body),
+    includeUsage: body?.stream_options?.include_usage === true,
+  };
+}
 
 // sharedEncoder is stateless — safe to share across streams
 const sharedEncoder = new TextEncoder();
@@ -34,7 +48,7 @@ const STREAM_MODE = {
  * @param {object} options.reqLogger - Request logger instance
  * @param {string} options.model - Model name
  * @param {string} options.connectionId - Connection ID for usage tracking
- * @param {object} options.body - Request body (for input token estimation)
+ * @param {object} options.body - Request body (for input token estimation), unless the stream's `prompt` is set
  * @param {function} options.onStreamComplete - Callback when stream completes (content, usage)
  * @param {string} options.apiKey - API key for usage tracking
  */
@@ -54,6 +68,10 @@ export function createSSEStream(options = {}) {
     onStreamComplete = null,
     apiKey = null
   } = options;
+  // sse.prompt (promptFacts), set by the caller so the stream holds no body;
+  // otherwise taken from the body when first needed.
+  let facts = null;
+  const prompt = () => (facts ??= sse.prompt || promptFacts(body, sse.upstreamBody));
 
   let buffer = "";
   let usage = null;
@@ -230,9 +248,9 @@ export function createSSEStream(options = {}) {
     const visible = estimateOutputTokens(totalContentLength);
     let out = Math.max(reportedOut, visible, floor);
     // The cap bounds the floor only: what was reported or visibly streamed stands.
-    const cap = sentOutputCap(sse.upstreamBody, body);
+    const cap = prompt().outputCap;
     if (cap) out = Math.max(Math.min(out, cap), reportedOut, visible);
-    const billed = reported ? { ...reported } : estimateBillingUsage(body, 0, fmt);
+    const billed = reported ? { ...reported } : billingUsage(prompt().billingInputTokens, 0, fmt);
     const keys = outKeys.length ? outKeys : ["completion_tokens" in billed ? "completion_tokens" : "output_tokens"];
     for (const k of keys) billed[k] = out;
     if ("total_tokens" in billed) billed.total_tokens = (Number(billed.prompt_tokens) || 0) + out;
@@ -435,7 +453,7 @@ export function createSSEStream(options = {}) {
             // OpenAI's usage-only chunk, sent because 10router asked for it
             // (default.js adds include_usage): keep the usage, don't forward.
             if (provider === "openai" && Array.isArray(parsed.choices) && parsed.choices.length === 0 && parsed.usage
-              && body?.stream_options?.include_usage !== true) {
+              && !prompt().includeUsage) {
               continue;
             }
 
@@ -445,7 +463,7 @@ export function createSSEStream(options = {}) {
             if (isFinishChunk && !hasValidUsage(parsed.usage)) {
               // The client sees the context-meter estimate; billing waits for
               // the real usage chunk (or estimates once, at the end).
-              const estimated = estimateUsage(body, totalContentLength, FORMATS.OPENAI);
+              const estimated = formatUsage(prompt().inputTokens, estimateOutputTokens(totalContentLength), FORMATS.OPENAI);
               parsed.usage = filterUsageForFormat(estimated, FORMATS.OPENAI);
               output = `data: ${JSON.stringify(parsed)}\n`;
               injectedUsage = true;
@@ -593,7 +611,7 @@ export function createSSEStream(options = {}) {
           // Inject estimated usage if finish chunk has no valid usage
           const isFinishChunk = item.type === "message_delta" || item.choices?.[0]?.finish_reason;
           if (state.finishReason && isFinishChunk && !hasValidUsage(item.usage) && totalContentLength > 0) {
-            const estimated = estimateUsage(body, totalContentLength, sourceFormat);
+            const estimated = formatUsage(prompt().inputTokens, estimateOutputTokens(totalContentLength), sourceFormat);
             item.usage = filterUsageForFormat(estimated, sourceFormat); // Filter + already has buffer
 
           } else if (state.finishReason && isFinishChunk && state.usage) {
