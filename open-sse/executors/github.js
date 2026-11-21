@@ -174,12 +174,10 @@ export class GithubExecutor extends BaseExecutor {
 
     log?.debug("GITHUB", "Sending translated request to /responses");
 
-    const response = await reportedFetch(onUpstreamAttempt, signal, () => proxyAwareFetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(transformedBody),
-      signal
-    }, proxyOptions));
+    // Let go once sent: the reply's transform below shares this scope.
+    let sendOptions = { method: "POST", headers, body: JSON.stringify(transformedBody), signal };
+    const response = await reportedFetch(onUpstreamAttempt, signal, () => proxyAwareFetch(url, sendOptions, proxyOptions));
+    sendOptions = null;
 
     if (!response.ok) {
       return { response, url, headers, transformedBody };
@@ -271,12 +269,10 @@ export class GithubExecutor extends BaseExecutor {
 
     log?.debug("GITHUB", "Sending translated request to /v1/messages");
 
-    const response = await reportedFetch(onUpstreamAttempt, signal, () => proxyAwareFetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(transformedBody),
-      signal
-    }, proxyOptions));
+    // Let go once sent: the reply's transform below shares this scope.
+    let sendOptions = { method: "POST", headers, body: JSON.stringify(transformedBody), signal };
+    const response = await reportedFetch(onUpstreamAttempt, signal, () => proxyAwareFetch(url, sendOptions, proxyOptions));
+    sendOptions = null;
 
     if (!response.ok) {
       return { response, url, headers, transformedBody };

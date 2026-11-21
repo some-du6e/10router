@@ -2,20 +2,9 @@
 // listener that stays on the client's signal until the request ends. That
 // listener must not keep `run`, and with it the parsed request `run` closes
 // over, for the whole of a streamed reply.
-import v8 from "node:v8";
-import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 import { respondWithEarlyHeaders } from "../../open-sse/utils/earlyHeaders.js";
-
-v8.setFlagsFromString("--expose-gc");
-const gc = vm.runInNewContext("gc");
-
-const settle = async () => {
-  for (let i = 0; i < 3; i++) {
-    gc();
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-};
+import { settle } from "../helpers/heldStreams.js";
 
 // A route that closes over its request, as handleChat's does.
 function routeFor(request) {

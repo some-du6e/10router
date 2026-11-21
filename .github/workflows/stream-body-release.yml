@@ -4,6 +4,10 @@ on:
   pull_request:
     paths:
       - "open-sse/handlers/chatCore.js"
+      - "open-sse/handlers/chatCore/endpointOverrides.ts"
+      - "open-sse/utils/limitHold.js"
+      - "open-sse/executors/github.js"
+      - "open-sse/config/runtimeConfig.js"
       - "open-sse/executors/base.js"
       - "open-sse/executors/default.js"
       - "open-sse/utils/streamHandler.js"
@@ -20,6 +24,8 @@ on:
       - "src/sse/handlers/chat.ts"
       - "src/shared/utils/jsonMeasure.ts"
       - "tests/unit/stream-body-release.test.js"
+      - "tests/unit/stream-callback-release.test.js"
+      - "tests/vitest.benchmark.config.js"
       - "tests/unit/request-details-stream-reuse.test.js"
       - "tests/unit/stream-floor-wiring.test.js"
       - "tests/unit/upstream-body-memory.test.js"
@@ -65,6 +71,7 @@ jobs:
           ./node_modules/.bin/vitest run
           unit/stream-body-release.test.js
           unit/early-headers-release.test.js
+          unit/stream-callback-release.test.js
           unit/prompt-token-estimate.test.js
           unit/request-details-stream-reuse.test.js
           unit/stream-floor-wiring.test.js
@@ -84,6 +91,10 @@ jobs:
           tests/helpers
           tests/unit/stream-body-release.test.js
           tests/unit/early-headers-release.test.js
+          tests/unit/stream-callback-release.test.js
+          open-sse/utils/limitHold.js
+          open-sse/handlers/chatCore/endpointOverrides.ts
+          open-sse/executors/github.js
           tests/unit/prompt-token-estimate.test.js
           tests/unit/request-details-stream-reuse.test.js
           tests/unit/stream-floor-wiring.test.js

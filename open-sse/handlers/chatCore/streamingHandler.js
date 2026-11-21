@@ -123,7 +123,7 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
  */
 export function buildOnStreamComplete({ provider, model, connectionId, apiKey, requestStartTime, clientRawRequest, reqTag, log }) {
   // The row's start save (handleStreamingResponse) takes the request; this,
-  // its end save, stores what that save handed back, so it holds no request body.
+  // its end save, stores what that save handed back (see streamDetailRow).
   const streamDetail = streamDetailRow();
   const endpoint = clientRawRequest?.endpoint;
 
