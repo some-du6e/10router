@@ -30,19 +30,25 @@ describe("Provider fetch routing", () => {
     for (const host of ["daily-cloudcode-pa.googleapis.com", "api.individual.githubcopilot.com", "q.us-east-1.amazonaws.com", "api2.cursor.sh"]) {
       const url = `https://${host}/chat`;
       expect(await proxyAwareFetch(url, options)).toBe(response);
-      // Sent without undici's redirect clone, the string as a stream of its
-      // bytes with the headers fetch would add (see upstream-body-memory.test.js).
-      expect(fetchMock).toHaveBeenLastCalledWith(url, {
-        ...options,
-        body: expect.any(ReadableStream),
-        duplex: "half",
-        headers: expect.any(Headers),
-        redirect: "error",
-        window: null,
-      });
-      expect(Object.fromEntries(fetchMock.mock.lastCall[1].headers)).toEqual({ "content-length": "2", "content-type": "text/plain;charset=UTF-8" });
+      // Sent without undici's redirect clone (see upstream-body-memory.test.js).
+      expect(fetchMock).toHaveBeenLastCalledWith(url, { ...options, redirect: "error", window: null });
     }
     expect(proxyAgent).not.toHaveBeenCalled();
+  });
+
+  it("sends a large text body as a stream of its bytes, with the headers fetch would add", async () => {
+    const response = new Response("ok");
+    const fetchMock = vi.fn().mockResolvedValue(response);
+    globalThis.fetch = fetchMock;
+    const { proxyAwareFetch } = await import("../../open-sse/utils/proxyFetch.js");
+    const { MEMORY_CONFIG } = await import("../../open-sse/config/runtimeConfig.js");
+    const body = "x".repeat(MEMORY_CONFIG.streamedBodyMinChars);
+    const url = "https://api.individual.githubcopilot.com/chat";
+    expect(await proxyAwareFetch(url, { method: "POST", body, headers: { authorization: "Bearer t" } })).toBe(response);
+    const [, init] = fetchMock.mock.lastCall;
+    expect(init).toMatchObject({ method: "POST", duplex: "half", redirect: "error", window: null });
+    expect(init.body).toBeInstanceOf(ReadableStream);
+    expect(Object.fromEntries(init.headers)).toEqual({ authorization: "Bearer t", "content-length": String(body.length), "content-type": "text/plain;charset=UTF-8" });
   });
 
   it("continues routing providers through a configured outbound proxy", async () => {

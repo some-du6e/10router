@@ -146,7 +146,10 @@ describe("a streamed reply holds no copy of its prompt", () => {
     await rows();
     const { perStream, bodyBytes, readers, requests } = await startStreams();
     // Each copy of the prompt is about bodyBytes; the old path held about 2.4.
-    expect(perStream).toBeLessThan(bodyBytes * 0.25);
+    // What a stream holds without one (the custom-endpoint log's 256 KB
+    // capture, stream and socket state) is about 0.1 of a body on Node 24 and
+    // 0.25 on Node 22.
+    expect(perStream).toBeLessThan(bodyBytes * 0.4);
 
     const texts = await endStreams(readers);
     expect(requests).toHaveLength(STREAMS);

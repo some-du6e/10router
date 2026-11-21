@@ -212,14 +212,17 @@ describe("upstream redirects", () => {
     expect(hits.get("/echo")).toBeUndefined();
   });
 
-  // The string goes out as a stream of its bytes: with the Content-Length and
-  // Content-Type fetch gives a string, not chunked.
+  // A large string goes out as a stream of its bytes: with the Content-Length
+  // and Content-Type fetch gives a string, not chunked. A small one as fetch
+  // sends it.
+  const large = (text) => text.repeat(Math.ceil((64 * 1024) / text.length));
   it.each([
-    ["ASCII", '{"x":1}', { "content-type": "application/json" }, "application/json"],
-    ["multi-byte", JSON.stringify({ text: "é日本😀".repeat(1000) }), { "Content-Type": "application/json" }, "application/json"],
-    ["no Content-Type", "plain words", {}, "text/plain;charset=UTF-8"],
-    ["a Headers object", '{"y":2}', new Headers({ "content-type": "application/json", "content-length": "1" }), "application/json"],
-    ["a Map of headers", '{"z":3}', new Map([["Content-Type", "application/json"]]), "application/json"],
+    ["small", '{"x":1}', { "content-type": "application/json" }, "application/json"],
+    ["large ASCII", large('{"x":1}'), { "content-type": "application/json" }, "application/json"],
+    ["large multi-byte", JSON.stringify({ text: large("é日本😀") }), { "Content-Type": "application/json" }, "application/json"],
+    ["large, no Content-Type", large("plain words "), {}, "text/plain;charset=UTF-8"],
+    ["large, a Headers object", large('{"y":2}'), new Headers({ "content-type": "application/json", "content-length": "1" }), "application/json"],
+    ["large, a Map of headers", large('{"z":3}'), new Map([["Content-Type", "application/json"]]), "application/json"],
   ])("sends a %s string body whole, with its length", async (_, body, headers, type) => {
     const res = await proxyAwareFetch(`${base}/wire`, { method: "POST", headers, body });
     expect(await res.json()).toEqual({ bytes: Buffer.byteLength(body), length: String(Buffer.byteLength(body)), chunked: false, type });

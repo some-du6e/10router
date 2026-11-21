@@ -229,10 +229,11 @@ function needsTheClone(error) {
 // source it would send again), so a streamed reply kept its whole prompt for
 // minutes. The string goes out as a stream of its UTF-8 bytes instead, with the
 // same Content-Length and Content-Type fetch would send, and nothing of it is
-// left once it is written. Only a body that isn't empty, on a method that has one.
+// left once it is written. Only a body of MEMORY_CONFIG.streamedBodyMinChars or
+// more, on a method that has one.
 function streamedOnce(init) {
   const method = String(init.method || "GET").toUpperCase();
-  if (typeof init.body !== "string" || !init.body || method === "GET" || method === "HEAD") return null;
+  if (typeof init.body !== "string" || init.body.length < MEMORY_CONFIG.streamedBodyMinChars || method === "GET" || method === "HEAD") return null;
   let text = init.body;
   const headers = new Headers(init.headers);
   headers.set("content-length", String(Buffer.byteLength(text, "utf8")));
