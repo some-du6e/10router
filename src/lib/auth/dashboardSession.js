@@ -8,6 +8,14 @@ import { getAuthSecret } from "@/lib/auth/authSecret.js";
 
 const SECRET = new TextEncoder().encode(getAuthSecret());
 
+// How long a dashboard sign-in lasts: both the auth_token cookie's Max-Age and the JWT's exp.
+export const DASHBOARD_SESSION_MAX_AGE_SEC = 30 * 24 * 60 * 60;
+// A restricted (pwChange) session comes from a login on the public legacy default
+// password and can be had again the same way, so it stays a browser-session cookie.
+export const PASSWORD_CHANGE_SESSION_TTL_SEC = 24 * 60 * 60;
+
+const isRestrictedSession = (claims) => claims.pwChange === true;
+
 export function shouldUseSecureCookie(request) {
   const forceSecureCookie = process.env.AUTH_COOKIE_SECURE === "true";
   const forwardedProto = request?.headers?.get?.("x-forwarded-proto");
@@ -23,10 +31,12 @@ async function currentSessionEpoch() {
 
 export async function createDashboardAuthToken(claims = {}) {
   const epoch = await currentSessionEpoch();
+  const now = Math.floor(Date.now() / 1000);
+  const ttl = isRestrictedSession(claims) ? PASSWORD_CHANGE_SESSION_TTL_SEC : DASHBOARD_SESSION_MAX_AGE_SEC;
   return new SignJWT({ authenticated: true, ...claims, ...(epoch ? { sep: epoch } : {}) })
     .setProtectedHeader({ alg: "HS256" })
-    .setIssuedAt()
-    .setExpirationTime("24h")
+    .setIssuedAt(now)
+    .setExpirationTime(now + ttl)
     .sign(SECRET);
 }
 
@@ -69,6 +79,7 @@ export async function setDashboardAuthCookie(cookieStore, request, claims = {}) 
     secure: shouldUseSecureCookie(request),
     sameSite: "lax",
     path: "/",
+    ...(isRestrictedSession(claims) ? {} : { maxAge: DASHBOARD_SESSION_MAX_AGE_SEC }),
   });
 }
 
