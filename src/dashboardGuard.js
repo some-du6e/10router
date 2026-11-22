@@ -311,8 +311,8 @@ async function readSession(request) {
 }
 
 // A restricted session is deliberately NOT a valid token anywhere else: it is
-// issued after a last login on the old default password and unlocks only the
-// change-password endpoint.
+// issued after a login on the old default password and unlocks only
+// PW_CHANGE_ALLOWED_PATHS.
 //
 // While setup is pending (after Reset Password, in any mode), only a session
 // from the SSO protocol configured now counts, for pages and API alike: a
