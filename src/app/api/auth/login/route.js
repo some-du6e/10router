@@ -82,8 +82,8 @@ export async function POST(request) {
       recordSuccess(ip);
       const cookieStore = await cookies();
 
-      // Legacy installs get exactly one login on the old default password, then
-      // must set a real one before the dashboard loads. The session issued here
+      // Legacy installs can log in on the old default password until they set
+      // a real one, and must set it before the dashboard loads. The session issued here
       // carries pwChange, which the guard honours: it unlocks nothing but
       // /api/auth/change-password, so the change cannot be skipped by simply
       // navigating to /dashboard.

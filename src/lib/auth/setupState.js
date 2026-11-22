@@ -10,7 +10,7 @@
 //                configured SSO protocol
 //   env        — operator supplied INITIAL_PASSWORD (headless/Docker bootstrap)
 //   legacy     — pre-existing install that was still on the old default
-//                password; one last login is allowed, then a change is forced
+//                password; it logs in only to a forced change
 //   setup      — nothing configured; console setup token required
 import { getSettings } from "@/lib/localDb";
 import { getMeta, setMeta } from "@/lib/db/helpers/metaStore.js";
