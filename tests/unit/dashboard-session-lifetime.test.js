@@ -1,9 +1,10 @@
-import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { SignJWT, decodeJwt } from "jose";
 import bcrypt from "bcryptjs";
+import { parseSetCookie } from "next/dist/compiled/@edge-runtime/cookies/index.js";
 
 const THIRTY_DAYS = 2592000;
 const ONE_DAY = 86400;
@@ -134,21 +135,16 @@ function setCookies(name) {
   return state.responseHeaders.getSetCookie().filter((header) => header.startsWith(`${name}=`));
 }
 
-function parseSetCookie(header) {
-  const [pair, ...attrs] = header.split(/;\s*/);
-  const attributes = Object.fromEntries(
-    attrs.map((attr) => {
-      const [key, ...rest] = attr.split("=");
-      return [key.toLowerCase(), rest.length ? rest.join("=") : true];
-    }),
-  );
-  return { value: pair.slice(pair.indexOf("=") + 1), attributes };
-}
-
 function lastAuthCookie() {
   const headers = setCookies("auth_token");
   expect(headers.length).toBeGreaterThan(0);
   return parseSetCookie(headers.at(-1));
+}
+
+function expectExpiresIn(cookie, seconds, before) {
+  const expires = cookie.expires.getTime() / 1000;
+  expect(expires, cookie.name).toBeGreaterThanOrEqual(before + seconds - 1);
+  expect(expires, cookie.name).toBeLessThanOrEqual(Date.now() / 1000 + seconds + 1);
 }
 
 function forgeLegacyToken(claims = {}) {
@@ -211,36 +207,32 @@ const SIGN_INS = {
 };
 
 describe("dashboard sign-in lasts 30 days", () => {
-  it("uses 30 days for the shared lifetime constant", () => {
-    expect(session.DASHBOARD_SESSION_MAX_AGE_SEC).toBe(THIRTY_DAYS);
-  });
-
   it.each(Object.entries(SIGN_INS))("%s sets a persistent auth_token cookie whose JWT lasts as long", async (_label, signIn) => {
     const before = Math.floor(Date.now() / 1000);
     const res = await signIn();
     expect(res.status).toBeLessThan(400);
 
-    const { value, attributes } = lastAuthCookie();
-    expect(attributes["max-age"]).toBe(String(THIRTY_DAYS));
-    const expires = Date.parse(attributes.expires) / 1000;
-    expect(expires).toBeGreaterThanOrEqual(before + THIRTY_DAYS - 1);
-    expect(expires).toBeLessThanOrEqual(Math.floor(Date.now() / 1000) + THIRTY_DAYS + 1);
-    expect(attributes).toEqual(expect.objectContaining({ path: "/", httponly: true, samesite: "lax" }));
+    const cookie = lastAuthCookie();
+    expect(cookie).toEqual(expect.objectContaining({ maxAge: THIRTY_DAYS, path: "/", httpOnly: true, sameSite: "lax" }));
+    expectExpiresIn(cookie, THIRTY_DAYS, before);
 
-    const payload = decodeJwt(value);
+    const payload = decodeJwt(cookie.value);
     expect(payload.exp - payload.iat).toBe(THIRTY_DAYS);
     expect(payload.pwChange).toBeUndefined();
-    expect(await session.getDashboardAuthSession(value)).toBeTruthy();
+    expect(await session.getDashboardAuthSession(cookie.value)).toBeTruthy();
   });
 
+  // Only dashboardSession.js mints tokens or writes auth_token.
   it("covers every route that signs a browser in", () => {
     const writers = [];
     for (const rel of fs.readdirSync(path.join(REPO_ROOT, "src"), { recursive: true })) {
-      if (!/\.(js|ts|mjs)$/.test(rel)) continue;
+      if (!/\.[cm]?[jt]sx?$/.test(rel)) continue;
       const file = path.join("src", rel).split(path.sep).join("/");
       const source = fs.readFileSync(path.join(REPO_ROOT, file), "utf8");
-      if (/\b(setDashboardAuthCookie|reissueDashboardSession)\(/.test(source)) writers.push(file);
-      if (file !== "src/lib/auth/dashboardSession.js") expect(source, file).not.toMatch(/\.set\(\s*["'`]auth_token/);
+      if (/\b(setDashboardAuthCookie|reissueDashboardSession)\b/.test(source)) writers.push(file);
+      if (file === "src/lib/auth/dashboardSession.js") continue;
+      expect(source, file).not.toMatch(/\bcreateDashboardAuthToken\b/);
+      expect(source, file).not.toMatch(/(\.set\(\s*|name:\s*)["'`]auth_token["'`]|\bauth_token=/);
     }
     expect(writers.sort()).toEqual([
       "src/app/api/auth/change-password/route.js",
@@ -261,10 +253,10 @@ describe("dashboard sign-in lasts 30 days", () => {
     const res = await routes.login.POST(jsonRequest("http://localhost/api/auth/login", { password: "123456" }));
     expect(res.status).toBe(403);
 
-    const { value, attributes } = lastAuthCookie();
-    expect(attributes["max-age"]).toBeUndefined();
-    expect(attributes.expires).toBeUndefined();
-    const payload = decodeJwt(value);
+    const cookie = lastAuthCookie();
+    expect(cookie.maxAge).toBeUndefined();
+    expect(cookie.expires).toBeUndefined();
+    const payload = decodeJwt(cookie.value);
     expect(payload.pwChange).toBe(true);
     expect(payload.exp - payload.iat).toBe(ONE_DAY);
   });
@@ -275,41 +267,77 @@ describe("dashboard sign-in lasts 30 days", () => {
     for (const name of ["oidc_state", "oidc_nonce", "oidc_code_verifier"]) {
       const headers = setCookies(name);
       expect(headers, name).toHaveLength(1);
-      const { attributes } = parseSetCookie(headers[0]);
-      expect(attributes["max-age"], name).toBe(String(TEN_MINUTES));
-      const expires = Date.parse(attributes.expires) / 1000;
-      expect(expires, name).toBeGreaterThanOrEqual(before + TEN_MINUTES - 1);
-      expect(expires, name).toBeLessThanOrEqual(Math.floor(Date.now() / 1000) + TEN_MINUTES + 1);
+      const cookie = parseSetCookie(headers[0]);
+      expect(cookie.maxAge, name).toBe(TEN_MINUTES);
+      expectExpiresIn(cookie, TEN_MINUTES, before);
     }
     expect(setCookies("auth_token")).toHaveLength(0);
   });
+
+  it("logout expires the persistent cookie on the path it was set on", async () => {
+    await SIGN_INS["password login"]();
+    const signedIn = lastAuthCookie();
+    state.requestCookies.auth_token = signedIn.value;
+    const { POST } = await import("../../src/app/api/auth/logout/route.js");
+    await POST();
+
+    const cleared = lastAuthCookie();
+    expect(cleared.value ?? "").toBe("");
+    expect(cleared.path).toBe(signedIn.path);
+    expect(cleared.domain).toBe(signedIn.domain);
+    expect(cleared.expires.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(await session.verifyDashboardAuthToken(signedIn.value)).toBe(false);
+  });
 });
 
-describe("sessions across the lifetime change", () => {
-  it("still accepts a 24-hour token issued before the change", async () => {
-    const legacy = await forgeLegacyToken();
-    expect(await session.verifyDashboardAuthToken(legacy)).toBe(true);
+describe("sessions over time", () => {
+  const START = Date.UTC(2026, 0, 1);
+  const at = (seconds) => vi.setSystemTime(START + seconds * 1000);
 
-    await session.revokeDashboardSessions();
-    const underEpoch = await forgeLegacyToken({ sep: state.meta.values().next().value });
-    expect(await session.verifyDashboardAuthToken(underEpoch)).toBe(true);
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    at(0);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a sign-in still works after 29 days and ends at 30", async () => {
+    const token = await session.createDashboardAuthToken();
+    at(29 * ONE_DAY);
+    expect(await session.verifyDashboardAuthToken(token)).toBe(true);
+    at(THIRTY_DAYS + 1);
+    expect(await session.verifyDashboardAuthToken(token)).toBe(false);
   });
 
   it("revocation ends a 30-day session long before it expires", async () => {
     const token = await session.createDashboardAuthToken({ oidc: true, oidcSub: "sub-1" });
-    expect(decodeJwt(token).exp).toBeGreaterThan(Date.now() / 1000 + THIRTY_DAYS - 60);
+    at(ONE_DAY * 2);
     expect(await session.verifyDashboardAuthToken(token)).toBe(true);
-
     await session.revokeDashboardSessions();
     expect(await session.verifyDashboardAuthToken(token)).toBe(false);
     expect(await session.verifyDashboardAuthToken(await session.createDashboardAuthToken())).toBe(true);
   });
 
-  it("logout revokes a 30-day session copied to another browser", async () => {
-    const other = await session.createDashboardAuthToken();
-    state.requestCookies.auth_token = await session.createDashboardAuthToken();
-    const { POST } = await import("../../src/app/api/auth/logout/route.js");
-    await POST();
-    expect(await session.verifyDashboardAuthToken(other)).toBe(false);
+  it("the forced-password-change session still ends after 24 hours", async () => {
+    const token = await session.createDashboardAuthToken({ pwChange: true });
+    at(ONE_DAY - 60);
+    expect(await session.getDashboardAuthSession(token)).toBeTruthy();
+    at(ONE_DAY + 1);
+    expect(await session.getDashboardAuthSession(token)).toBeNull();
+  });
+
+  it("still accepts a 24-hour token issued before the change", async () => {
+    const legacy = await forgeLegacyToken();
+    at(ONE_DAY - 60);
+    expect(await session.verifyDashboardAuthToken(legacy)).toBe(true);
+
+    at(0);
+    await session.revokeDashboardSessions();
+    const underEpoch = await forgeLegacyToken({ sep: state.meta.values().next().value });
+    at(ONE_DAY - 60);
+    expect(await session.verifyDashboardAuthToken(underEpoch)).toBe(true);
+    at(ONE_DAY + 1);
+    expect(await session.verifyDashboardAuthToken(underEpoch)).toBe(false);
   });
 });

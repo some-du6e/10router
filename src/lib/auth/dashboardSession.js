@@ -9,10 +9,10 @@ import { getAuthSecret } from "@/lib/auth/authSecret.js";
 const SECRET = new TextEncoder().encode(getAuthSecret());
 
 // How long a dashboard sign-in lasts: both the auth_token cookie's Max-Age and the JWT's exp.
-export const DASHBOARD_SESSION_MAX_AGE_SEC = 30 * 24 * 60 * 60;
+const DASHBOARD_SESSION_MAX_AGE_SEC = 30 * 24 * 60 * 60;
 // A restricted (pwChange) session comes from a login on the public legacy default
 // password and can be had again the same way, so it stays a browser-session cookie.
-export const PASSWORD_CHANGE_SESSION_TTL_SEC = 24 * 60 * 60;
+const PASSWORD_CHANGE_SESSION_TTL_SEC = 24 * 60 * 60;
 
 const isRestrictedSession = (claims) => claims.pwChange === true;
 
