@@ -1,12 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { Badge, Button, Card, Select } from "@/shared/components";
-import ProviderIcon from "@/shared/components/ProviderIcon";
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type ComponentType, type CSSProperties, type ReactNode } from "react";
+import * as Shared from "@/shared/components";
+import SharedProviderIcon from "@/shared/components/ProviderIcon";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { useNotificationStore } from "@/store/notificationStore";
 import { PROXY_DIRECT, normalizeLayerSetting, resolveProxyChain, type ProxyPoolLike, type ResolvedProxy } from "@/lib/network/proxyRouting";
+
+// The shared components are untyped JavaScript; these are the props used here.
+const Badge = Shared.Badge as unknown as ComponentType<{ variant?: string; size?: string; icon?: string; className?: string; children?: ReactNode }>;
+const Button = Shared.Button as unknown as ComponentType<{ variant?: string; size?: string; icon?: string; loading?: boolean; disabled?: boolean; onClick?: () => void; children?: ReactNode }>;
+const Card = Shared.Card as unknown as ComponentType<{ title?: string; subtitle?: string; icon?: string; children?: ReactNode }>;
+const Select = Shared.Select as unknown as ComponentType<{
+  value: string; options: { value: string; label: string }[]; onChange: (e: ChangeEvent<HTMLSelectElement>) => void;
+  placeholder?: string; disabled?: boolean; "aria-label"?: string;
+}>;
+const ProviderIcon = SharedProviderIcon as unknown as ComponentType<{ providerId: string; size?: number; className?: string }>;
 
 // The Select's placeholder option owns "", so Inherit needs its own value.
 const INHERIT = "__inherit__";
@@ -347,21 +357,21 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
       const value = accountSetting(selAccount) || INHERIT;
       control = <Select aria-label="Account proxy" placeholder="Choose a proxy" disabled={saving} value={value}
         options={optionsFor(routeLabel(resolveProvider(selAccount.provider)), value === LEGACY)}
-        onChange={(e: { target: { value: string } }) => e.target.value !== LEGACY && saveAccount(selAccount, e.target.value)} />;
+        onChange={(e) => e.target.value !== LEGACY && saveAccount(selAccount, e.target.value)} />;
     } else if (s.type === "provider") {
       kind = "Provider";
       title = `Every ${providerName(s.id, connections)} account`;
       icon = <ProviderIcon providerId={s.id} size={20} className="rounded-[4px]" />;
       control = <Select aria-label="Provider proxy" placeholder="Choose a proxy" disabled={saving} value={providerSetting(s.id) || INHERIT}
         options={optionsFor(routeLabel(resolveGlobal()))}
-        onChange={(e: { target: { value: string } }) => saveProvider(s.id, e.target.value)} />;
+        onChange={(e) => saveProvider(s.id, e.target.value)} />;
     } else {
       kind = "Global";
       title = "All providers and accounts";
       icon = <span className="material-symbols-outlined text-[20px] text-text-muted">public</span>;
       control = <Select aria-label="Global proxy" placeholder="Choose a proxy" disabled={saving} value={globalSetting || INHERIT}
         options={optionsFor(null)}
-        onChange={(e: { target: { value: string } }) => saveGlobal(e.target.value)} />;
+        onChange={(e) => saveGlobal(e.target.value)} />;
     }
     return (
       <div className="fade-in flex flex-col gap-3 self-start rounded-[10px] border border-border-subtle bg-bg p-4 lg:sticky lg:top-4">
