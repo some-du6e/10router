@@ -10,7 +10,14 @@
 // by character.
 const NOT_PLAIN_ASCII = /[^ -!#-[\]-~]/;
 
-const shortEscape = (c: number): boolean => c === 8 || c === 9 || c === 10 || c === 12 || c === 13;
+// The letter JSON.stringify escapes a control character with (\b \t \n \f \r), or 0
+// where it writes \u00xx.
+export const SHORT_ESCAPE_LETTER = new Uint8Array(0x20);
+SHORT_ESCAPE_LETTER[8] = 0x62;
+SHORT_ESCAPE_LETTER[9] = 0x74;
+SHORT_ESCAPE_LETTER[10] = 0x6e;
+SHORT_ESCAPE_LETTER[12] = 0x66;
+SHORT_ESCAPE_LETTER[13] = 0x72;
 
 /**
  * quotedSizes' results for the last string it measured, in module state so a
@@ -32,7 +39,7 @@ export function quotedSizes(s: string): void {
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
     if (c < 0x20) {
-      const extra = shortEscape(c) ? 1 : 5;
+      const extra = SHORT_ESCAPE_LETTER[c] ? 1 : 5;
       length += extra;
       bytes += extra + 1;
     } else if (c === 0x22 || c === 0x5c) {
@@ -74,7 +81,7 @@ export function quotedLength(s: string, end: number = s.length): number {
   let length = end + 2;
   for (let i = 0; i < end; i++) {
     const c = s.charCodeAt(i);
-    if (c < 0x20) length += shortEscape(c) ? 1 : 5;
+    if (c < 0x20) length += SHORT_ESCAPE_LETTER[c] ? 1 : 5;
     else if (c === 0x22 || c === 0x5c) length += 1;
     else if (c >= 0xd800 && c <= 0xdfff) {
       if (c <= 0xdbff && i + 1 < end) {
@@ -97,7 +104,8 @@ export const MAX_MEASURE_DEPTH = 1000;
 
 const UNSUPPORTED = Symbol("unsupported");
 
-const skipped = (v: unknown): boolean => v === undefined || typeof v === "function" || typeof v === "symbol";
+// What JSON.stringify leaves out of an object (and writes as null in an array).
+export const skipped = (v: unknown): boolean => v === undefined || typeof v === "function" || typeof v === "symbol";
 
 /**
  * Walks `value` as JSON.stringify would, handing each token to `emit` and each

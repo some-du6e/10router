@@ -185,6 +185,9 @@ async function oneRequest(k, profile) {
   const result = profile ? (await session.post("HeapProfiler.stopSampling")).profile : null;
   expect(res.status).toBe(200);
   expect(served.map((s) => s.status)).toEqual([...Array(k).fill(429), 200]);
+  // Every attempt got the whole body, resent or not.
+  expect(new Set(served.map((s) => s.served)).size).toBe(1);
+  expect(served[0].served).toBeGreaterThan(text.length / 2);
   return { text, result };
 }
 

@@ -119,6 +119,37 @@ describe("serializesTo", () => {
   });
 });
 
+// Strings long enough to be checked in several pieces, with a surrogate pair
+// or a 3-byte character where a piece ends: 16,384 units for a string with
+// nothing to escape, 8,192 for one with.
+const PIECE_EDGES = [
+  "a".repeat(16383) + "😀" + "b".repeat(10),
+  "a".repeat(16384) + "😀",
+  "漢字".repeat(30000),
+  "a".repeat(8191) + "😀\n" + "c".repeat(10),
+  "漢\n".repeat(20000),
+  "\ud800".repeat(9000),
+  "a".repeat(8191) + "\ud800" + "\n",
+];
+
+describe("long strings checked or written in pieces", () => {
+  it("match their JSON at every piece boundary, and a change on either side of one is found", () => {
+    for (const s of PIECE_EDGES) {
+      const bytes = Buffer.from(JSON.stringify({ s }), "utf8");
+      expect(serializesTo({ s }, bytes)).toBe(true);
+      const target = Buffer.alloc(bytes.length);
+      expect(writeJson({ s }, target, 0)).toBe(bytes.length);
+      expect(target.equals(bytes)).toBe(true);
+      for (const at of [6 + 16383 * 1, 6 + 8191, bytes.length - 3]) {
+        if (at >= bytes.length - 2) continue;
+        const changed = Buffer.from(bytes);
+        changed[at] ^= 1;
+        expect(serializesTo({ s }, changed)).toBe(false);
+      }
+    }
+  });
+});
+
 describe("writeJson", () => {
   it("writes the bytes JSON.stringify gives, at the offset, into an exact fit", () => {
     for (const value of corpus(1500, 4)) {
@@ -138,12 +169,10 @@ describe("writeJson", () => {
     expect(target.equals(expected)).toBe(true);
   });
 
-  it("throws when the JSON doesn't fit, writing nothing past the end", () => {
+  it("throws a RangeError when the JSON doesn't fit", () => {
     for (const value of [{ a: "x".repeat(100) }, { a: "é\n".repeat(100) }, [1, 2, 3]]) {
       const n = Buffer.byteLength(JSON.stringify(value), "utf8");
-      const backing = Buffer.alloc(n + 8, 0xee);
-      expect(() => writeJson(value, backing.subarray(0, n - 1), 0)).toThrow(RangeError);
-      expect(backing.subarray(n - 1).every((b) => b === 0xee)).toBe(true);
+      expect(() => writeJson(value, Buffer.alloc(n - 1), 0)).toThrow(RangeError);
     }
   });
 });

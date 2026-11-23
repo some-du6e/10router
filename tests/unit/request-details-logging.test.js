@@ -62,7 +62,7 @@ describe("request detail logging", () => {
     await expect(requestDetailsTest.unpackFullData("not gzip")).rejects.toThrow();
   });
 
-  it("serializes a cut payload once, when its full copy is packed", async () => {
+  it("builds no JSON string of a cut payload, before or when its full copy is packed", async () => {
     const big = { messages: [{ role: "user", content: "x".repeat(200 * 1024) }] };
     const stringify = vi.spyOn(JSON, "stringify");
     const record = { request: requestDetailsTest.truncateField(big, 5 * 1024) };
@@ -72,7 +72,8 @@ describe("request detail logging", () => {
     const total = stringify.mock.calls.filter(([value]) => value === big).length;
     stringify.mockRestore();
     expect(beforePack).toBe(0);
-    expect(total).toBe(1);
+    // The pack writes its JSON straight into the copy's buffer.
+    expect(total).toBe(0);
     expect(await requestDetailsTest.unpackFullData(packed)).toEqual({ request: big });
   });
 

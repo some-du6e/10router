@@ -315,7 +315,7 @@ describe("request details memory caps", () => {
     const record = { request: truncateField(request, 1024), providerRequest: truncateField(providerRequest, 1024) };
     for (const item of [{ request }, { request, providerRequest }]) {
       const packed = await packSource(fullCopySource(item, record));
-      expect(gunzipSync(Buffer.from(packed, "base64")).equals(Buffer.from(JSON.stringify(item), "utf8"))).toBe(true);
+      expect(gunzipSync(packed).equals(Buffer.from(JSON.stringify(item), "utf8"))).toBe(true);
     }
   });
 

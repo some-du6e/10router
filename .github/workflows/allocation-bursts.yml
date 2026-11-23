@@ -1,4 +1,4 @@
-name: Allocation per request
+name: Allocation bursts
 
 on:
   pull_request:
@@ -64,6 +64,8 @@ jobs:
           unit/request-details-backlog.test.js
           unit/request-details-shutdown.test.js
           unit/request-details-full-data-db.test.js
+          unit/request-details-logging.test.js
+          unit/codex-image-fetch.test.js
           unit/request-conversation.test.js
           unit/chat-core-failure-detail.test.js
       - name: Lint
@@ -118,6 +120,7 @@ jobs:
           BENCH_REPS: "4"
           BENCH_K: "0,2,5"
         run: |
+          set -o pipefail
           ./node_modules/.bin/vitest run --config vitest.benchmark.config.js bench/allocation-benchmark.test.js 2>&1 | tee "$RUNNER_TEMP/bench.txt"
           {
             echo "### ${{ matrix.code }} code"

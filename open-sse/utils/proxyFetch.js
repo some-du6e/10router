@@ -209,8 +209,8 @@ async function getDirectDispatcher() {
 // in Node). A body that can be sent again goes out that way, and the request is
 // sent again as the caller asked when the upstream answers with a redirect
 // (which that follows) or a 421 (which fetch retries by re-sending a byte body
-// it has already sent, so it fails with a length mismatch; a string body is
-// sent as a stream, below, which fetch doesn't retry). Neither reply means the
+// it has already sent, so it fails with a length mismatch; a large string or
+// byte body is sent as a stream, below, which fetch doesn't retry). Neither reply means the
 // upstream acted on the request. Bun's fetch fails these differently, so this is
 // Node only.
 const SEND_WITHOUT_CLONE = Boolean(process.versions?.undici) && !process.versions?.bun;
@@ -229,9 +229,10 @@ function needsTheClone(error) {
 // source it would send again), so a streamed reply kept its whole prompt for
 // minutes. The string goes out as a stream of its UTF-8 bytes instead, with the
 // same Content-Length and Content-Type fetch would send, and nothing of it is
-// left once it is written. A byte body (an executor's encoded body, which it
-// keeps only until a reply starts, to resend it to another account) goes out
-// the same way, as it is, so fetch keeps no hold on it either. Only a body of
+// left once it is written. A byte body (any Uint8Array: an executor's encoded
+// body, which it keeps only until a reply starts to resend it to another
+// account, or an audio upload) goes out the same way, as it is, so fetch keeps
+// no hold on it either. Only a body of
 // MEMORY_CONFIG.streamedBodyMinChars or more (characters or bytes), on a
 // method that has one.
 function streamedOnce(init) {

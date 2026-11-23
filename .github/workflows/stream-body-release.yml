@@ -23,6 +23,7 @@ on:
       - "src/lib/endpointRequestLog.ts"
       - "src/sse/handlers/chat.ts"
       - "src/shared/utils/jsonMeasure.ts"
+      - "src/shared/utils/jsonBytes.ts"
       - "tests/unit/stream-body-release.test.js"
       - "tests/unit/stream-callback-release.test.js"
       - "tests/vitest.benchmark.config.js"

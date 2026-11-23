@@ -19,20 +19,16 @@ function statedInputs(executor, describe, method, args) {
 }
 
 // One built body: the object (for request logs) and, once encoded, the exact
-// UTF-8 bytes sent. The JSON string is dropped once it is encoded.
+// UTF-8 bytes sent. Its JSON string lives only while it is encoded.
 function builtBody(value, key = null, source = null) {
   return {
-    key, source, value, text: null, bytes: null,
-    serialize() {
-      if (this.text === null) this.text = this.bytes ? this.bytes.toString("utf8") : JSON.stringify(this.value);
-      return this.text;
-    },
+    key, source, value, bytes: null,
+    // undefined for a value with no JSON, which goes out with no body.
     encode() {
       if (this.bytes === null) {
-        const text = this.serialize();
-        if (typeof text !== "string") throw new TypeError("request body has no JSON");
+        const text = JSON.stringify(this.value);
+        if (typeof text !== "string") return undefined;
         this.bytes = Buffer.from(text, "utf8");
-        this.text = null;
       }
       return this.bytes;
     },
@@ -196,7 +192,8 @@ export class BaseExecutor {
   // `onUpstreamAttempt(ts)`: when the attempt now in flight was sent, or 0 when
   // none is (backing off before a retry, or the last attempt came back with an
   // error). A client that hangs up is charged only while one is in flight.
-  // `bodyCache`: chatCore's, so the send after a token refresh can reuse this
+  // `bodyCache`: chatCore's (the account loop's for one pass over its accounts),
+  // so the next account and the send after a token refresh can reuse this
   // call's body; without one, reuse stays within this call.
   async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, onHeadersBudget = null, onUpstreamAttempt = null, bodyCache = null }) {
     const cache = bodyCache || {};
@@ -244,7 +241,7 @@ export class BaseExecutor {
       try {
         const bodyBytes = built.encode();
         const fetchT0 = Date.now();
-        dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${bodyBytes.length}B | headersTimeout=${timeoutMs}ms`);
+        dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${bodyBytes?.length ?? 0}B | headersTimeout=${timeoutMs}ms`);
         onUpstreamAttempt?.(signal?.aborted ? 0 : fetchT0);
         const response = await proxyAwareFetch(url, {
           method: "POST",

@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "open-sse/executors/base.js"
+      - "src/shared/utils/jsonBytes.ts"
       - "open-sse/executors/default.js"
       - "open-sse/executors/kiro.js"
       - "open-sse/executors/ollama-local.js"

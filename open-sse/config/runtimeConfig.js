@@ -34,8 +34,9 @@ export const MEMORY_CONFIG = {
   sessionCleanupIntervalMs: 30 * 60 * 1000,
   proxyDispatchersMaxSize: 20,
   maxAffinitySessions: 5000,
-  // A text body at least this long goes upstream as a stream of its bytes, so
-  // fetch keeps no copy while the reply streams (open-sse/utils/proxyFetch.js).
+  // A text body at least this many characters long, or a byte body this many
+  // bytes, goes upstream as a one-shot stream of its bytes, so fetch keeps no
+  // copy while the reply streams (open-sse/utils/proxyFetch.js).
   // Smaller ones cost nothing to keep and go out as fetch sends them.
   streamedBodyMinChars: 64 * 1024,
 };

@@ -228,17 +228,14 @@ function fullCopyBuffer(parts, utf8) {
   };
   for (let i = 0; i < parts.length; i++) {
     put(partHead(parts[i][0], i));
-    let end;
     try {
-      end = writeJson(parts[i][1], buffer, at);
+      at = writeJson(parts[i][1], buffer, at);
     } catch (error) {
       // Bigger than its recorded size: never store a cut copy.
       if (error instanceof RangeError) throw error;
       // Not walkable (capping serialized it too).
-      end = -1;
+      put(serialize(parts[i][1]));
     }
-    if (end < 0) put(serialize(parts[i][1]));
-    else at = end;
   }
   put(PARTS_TAIL);
   return at === utf8 ? buffer : null;
@@ -260,16 +257,13 @@ async function packSource(source) {
 
 // One flush's packed copies, so rows carrying the same payloads (a request's
 // failed attempts and its stream reuse one client request and one sent body)
-// are packed once: first payload → [{ parts, fullData }].
+// are packed once: [{ parts, fullData }], at most FULL_DATA_KEEP_ROWS.
 async function packOnce(source, packed) {
-  const first = source.parts[0][1];
-  let seen = packed.get(first);
-  const hit = seen?.find((entry) => entry.parts.length === source.parts.length
+  const hit = packed.find((entry) => entry.parts.length === source.parts.length
     && entry.parts.every(([key, payload], i) => key === source.parts[i][0] && payload === source.parts[i][1]));
   if (hit) return hit.fullData;
   const fullData = await packSource(source);
-  if (!seen) packed.set(first, (seen = []));
-  seen.push({ parts: source.parts, fullData });
+  packed.push({ parts: source.parts, fullData });
   return fullData;
 }
 
@@ -436,7 +430,7 @@ async function writeBufferedRows() {
       // A flush once shutdown starts packs nothing, checked per row: gzip eats
       // into the drain's listener budget, and the database closes when that runs out.
       const rows = [];
-      const packed = new Map();
+      const packed = [];
       for (const save of saves) {
         // Only a row's newest save has a copy in fullRing, so a write packs
         // at most FULL_DATA_KEEP_ROWS.
