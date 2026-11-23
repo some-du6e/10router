@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { withoutProviderDataSecrets } from "open-sse/utils/redact.js";
+import { PROXY_DIRECT } from "@/lib/network/proxyRouting";
 import {
   getProviderConnectionById,
   getProviderNodeById,
@@ -51,6 +52,7 @@ async function normalizeProxyPoolUpdate(proxyPoolIdInput) {
   if (!proxyPoolId) {
     return { hasProxyPoolField: true, proxyPoolId: null };
   }
+  if (proxyPoolId === PROXY_DIRECT) return { hasProxyPoolField: true, proxyPoolId };
 
   const proxyPool = await getProxyPoolById(proxyPoolId);
   if (!proxyPool) {

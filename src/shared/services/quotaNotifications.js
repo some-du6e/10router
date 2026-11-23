@@ -8,6 +8,7 @@ import {
 } from "@/lib/db/index.js";
 import { getUsageForProvider } from "open-sse/services/usage.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
+import { toProxyOptions } from "@/lib/network/proxyRouting";
 import { refreshAndUpdateCredentials } from "@/app/api/usage/[connectionId]/route.js";
 import { USAGE_APIKEY_PROVIDERS, USAGE_SUPPORTED_PROVIDERS } from "@/shared/constants/providers";
 import { NOTIFICATION_CONFIG, NOTIFICATION_EVENTS } from "@/lib/notifications/constants.js";
@@ -38,24 +39,14 @@ function pollIntervalFor(connection) {
     : NOTIFICATION_CONFIG.tickIntervalMs;
 }
 
-function buildProxyOptions(config) {
-  return {
-    connectionProxyEnabled: config.connectionProxyEnabled === true,
-    connectionProxyUrl: config.connectionProxyUrl || "",
-    connectionNoProxy: config.connectionNoProxy || "",
-    vercelRelayUrl: config.vercelRelayUrl || "",
-    strictProxy: false,
-  };
-}
-
 async function pollConnection(connection, deps, state) {
   const now = Date.now();
   const lastPoll = state.lastPolledAt[connection.id] || 0;
   if (now - lastPoll < pollIntervalFor(connection)) return;
   state.lastPolledAt[connection.id] = now;
 
-  const proxyConfig = await deps.resolveConnectionProxyConfig(connection.providerSpecificData);
-  const proxyOptions = buildProxyOptions(proxyConfig);
+  const proxyConfig = await deps.resolveConnectionProxyConfig(connection.providerSpecificData, connection.provider);
+  const proxyOptions = toProxyOptions(proxyConfig);
   let current = connection;
   if (connection.authType === "oauth") {
     current = (await deps.refreshAndUpdateCredentials(connection, false, proxyOptions)).connection;

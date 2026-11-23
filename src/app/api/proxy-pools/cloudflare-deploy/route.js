@@ -134,7 +134,7 @@ export async function POST(request) {
       type: "cloudflare",
       noProxy: "",
       isActive: true,
-      strictProxy: false,
+      strictProxy: true,
     });
 
     return NextResponse.json({ proxyPool, deployUrl }, { status: 201 });

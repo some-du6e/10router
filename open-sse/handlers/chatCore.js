@@ -480,6 +480,9 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     connectionProxyUrl: credentials?.providerSpecificData?.connectionProxyUrl || "",
     connectionNoProxy: credentials?.providerSpecificData?.connectionNoProxy || "",
     vercelRelayUrl: credentials?.providerSpecificData?.vercelRelayUrl || "",
+    strictProxy: credentials?.providerSpecificData?.connectionStrictProxy === true,
+    direct: credentials?.providerSpecificData?.connectionProxyDirect === true,
+    blockedReason: credentials?.providerSpecificData?.connectionProxyBlocked || "",
   };
 
   if (proxyOptions.vercelRelayUrl) {

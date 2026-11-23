@@ -47,12 +47,13 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
   const lifespan = lifespanLabel(connection);
   const proxyPoolMap = new Map((proxyPools || []).map((p) => [p.id, p]));
   const boundProxyPoolId = connection.providerSpecificData?.proxyPoolId || null;
-  const boundProxyPool = boundProxyPoolId ? proxyPoolMap.get(boundProxyPoolId) : null;
+  const isDirectProxy = boundProxyPoolId === "__direct__";
+  const boundProxyPool = boundProxyPoolId && !isDirectProxy ? proxyPoolMap.get(boundProxyPoolId) : null;
   const hasLegacyProxy = connection.providerSpecificData?.connectionProxyEnabled === true && !!connection.providerSpecificData?.connectionProxyUrl;
   const hasAnyProxy = !!boundProxyPoolId || hasLegacyProxy;
 
-  const proxyDisplayText = boundProxyPool
-    ? `Pool: ${boundProxyPool.name}`
+  const proxyDisplayText = isDirectProxy ? "Direct (no proxy)"
+    : boundProxyPool ? `Pool: ${boundProxyPool.name}`
     : boundProxyPoolId ? `Pool: ${boundProxyPoolId} (inactive/missing)`
     : hasLegacyProxy ? `Legacy: ${connection.providerSpecificData?.connectionProxyUrl}` : "";
 
@@ -176,7 +177,8 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
               </button>
               {showProxyDropdown && (
                 <div className="absolute right-0 top-full mt-1 z-50 bg-bg border border-border rounded-lg shadow-lg py-1 min-w-[160px]">
-                  <button onClick={() => handleSelectProxy("__none__")} className={`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${!boundProxyPoolId ? "text-primary font-medium" : "text-text-main"}`}>None</button>
+                  <button onClick={() => handleSelectProxy("__none__")} className={`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${!boundProxyPoolId ? "text-primary font-medium" : "text-text-main"}`}>Inherit</button>
+                  <button onClick={() => handleSelectProxy("__direct__")} className={`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${isDirectProxy ? "text-primary font-medium" : "text-text-main"}`}>Direct (no proxy)</button>
                   {(proxyPools || []).map((pool) => (
                     <button key={pool.id} onClick={() => handleSelectProxy(pool.id)} className={`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${boundProxyPoolId === pool.id ? "text-primary font-medium" : "text-text-main"}`}>{pool.name}</button>
                   ))}

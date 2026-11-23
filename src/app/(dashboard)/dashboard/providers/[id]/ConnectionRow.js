@@ -17,10 +17,13 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
 
   const proxyPoolMap = new Map((proxyPools || []).map((pool) => [pool.id, pool]));
   const boundProxyPoolId = connection.providerSpecificData?.proxyPoolId || null;
-  const boundProxyPool = boundProxyPoolId ? proxyPoolMap.get(boundProxyPoolId) : null;
+  const isDirectProxy = boundProxyPoolId === "__direct__";
+  const boundProxyPool = boundProxyPoolId && !isDirectProxy ? proxyPoolMap.get(boundProxyPoolId) : null;
   const hasLegacyProxy = connection.providerSpecificData?.connectionProxyEnabled === true && !!connection.providerSpecificData?.connectionProxyUrl;
   const hasAnyProxy = !!boundProxyPoolId || hasLegacyProxy;
-  const proxyDisplayText = boundProxyPool
+  const proxyDisplayText = isDirectProxy
+    ? "Direct (no proxy)"
+    : boundProxyPool
     ? `Pool: ${boundProxyPool.name}`
     : boundProxyPoolId
       ? `Pool: ${boundProxyPoolId} (inactive/missing)`
@@ -279,7 +282,13 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
                     onClick={() => handleSelectProxy("__none__")}
                     className={`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${!boundProxyPoolId ? "text-primary font-medium" : "text-text-main"}`}
                   >
-                    None
+                    Inherit
+                  </button>
+                  <button
+                    onClick={() => handleSelectProxy("__direct__")}
+                    className={`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${isDirectProxy ? "text-primary font-medium" : "text-text-main"}`}
+                  >
+                    Direct (no proxy)
                   </button>
                   {(proxyPools || []).map((pool) => (
                     <button

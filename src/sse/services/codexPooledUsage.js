@@ -25,6 +25,7 @@ import { getProviderConnections } from "@/lib/localDb";
 import { getCodexUsage } from "open-sse/services/usage/codex.js";
 import { refreshCodexToken, updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
+import { toProxyOptions } from "@/lib/network/proxyRouting";
 import { buildRateLimitHeaders } from "./codexUsagePool.js";
 
 const CACHE_TTL_MS = 60_000;
@@ -40,14 +41,8 @@ const state = globalThis[Symbol.for("10router.codexPooledUsage")] ||= {
 };
 
 async function usageForConnection(connection) {
-  const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData);
-  const proxyOptions = {
-    connectionProxyEnabled: proxyConfig.connectionProxyEnabled === true,
-    connectionProxyUrl: proxyConfig.connectionProxyUrl || "",
-    connectionNoProxy: proxyConfig.connectionNoProxy || "",
-    vercelRelayUrl: proxyConfig.vercelRelayUrl || "",
-    strictProxy: false,
-  };
+  const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData, connection.provider);
+  const proxyOptions = toProxyOptions(proxyConfig);
 
   let accessToken = connection.accessToken;
   const expiresAt = connection.expiresAt || connection.tokenExpiresAt;

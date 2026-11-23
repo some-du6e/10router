@@ -7,6 +7,7 @@ import { getUsageForProvider } from "open-sse/services/usage.js";
 import { isUnrecoverableRefreshError } from "open-sse/services/tokenRefresh.js";
 import { getExecutor } from "open-sse/executors/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
+import { toProxyOptions } from "@/lib/network/proxyRouting";
 import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
 
 // Detect auth-expired messages returned by usage providers instead of throwing
@@ -120,15 +121,8 @@ export async function GET(request, { params }) {
       return Response.json({ message: "Usage not available for this connection" });
     }
 
-    // Resolve connection proxy config; force strictProxy=false so quota/refresh fall back to direct on failure
-    const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData);
-    const proxyOptions = {
-      connectionProxyEnabled: proxyConfig.connectionProxyEnabled === true,
-      connectionProxyUrl: proxyConfig.connectionProxyUrl || "",
-      connectionNoProxy: proxyConfig.connectionNoProxy || "",
-      vercelRelayUrl: proxyConfig.vercelRelayUrl || "",
-      strictProxy: false,
-    };
+    const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData, connection.provider);
+    const proxyOptions = toProxyOptions(proxyConfig);
 
     // Refresh credentials only for OAuth connections (apikey has no token refresh)
     if (isOAuth) {

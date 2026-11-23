@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Badge, Button, Card, CardSkeleton, Input, Modal, Toggle, ConfirmModal } from "@/shared/components";
 import { useNotificationStore } from "@/store/notificationStore";
+import ProxyRoutingCard from "./ProxyRoutingCard";
 
 function getStatusVariant(status) {
   if (status === "active") return "success";
@@ -23,7 +24,8 @@ function normalizeFormData(data = {}) {
     proxyUrl: data.proxyUrl || "",
     noProxy: data.noProxy || "",
     isActive: data.isActive !== false,
-    strictProxy: data.strictProxy === true,
+    // New pools start strict; existing ones keep what they were saved with.
+    strictProxy: data.strictProxy !== false,
   };
 }
 
@@ -579,18 +581,10 @@ export default function ProxyPoolsPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-1 sm:gap-6 sm:px-0">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <h1 className="text-xl font-semibold sm:text-2xl">Proxy Pools</h1>
-          <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-800 dark:text-amber-200">
-            <span className="material-symbols-outlined mt-0.5 shrink-0 text-[18px]">warning</span>
-            <p>
-              <span className="font-semibold">Provider terms warning:</span> routing a paid or subscription account (including Claude Code/Claude OAuth) through a proxy or relay may violate its terms and can lead to throttling, suspension, or a ban. Use proxying only where the provider explicitly allows it; IP masking does not remove that risk.
-            </p>
-          </div>
-        </div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h1 className="min-w-0 text-xl font-semibold sm:text-2xl">Proxy Pools</h1>
 
-        <div className="grid grid-cols-1 gap-2 sm:flex sm:items-center">
+        <div className="grid grid-cols-1 gap-2 sm:flex sm:shrink-0 sm:items-center">
           <div className="relative" ref={relayMenuRef}>
             <Button
               size="sm"
@@ -646,6 +640,15 @@ export default function ProxyPoolsPage() {
           <Button size="sm" icon="add" onClick={openCreateModal}>Add Proxy Pool</Button>
         </div>
       </div>
+
+      <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-800 dark:text-amber-200">
+        <span className="material-symbols-outlined mt-0.5 shrink-0 text-[18px]">warning</span>
+        <p>
+          <span className="font-semibold">Provider terms warning:</span> routing a paid or subscription account (including Claude Code/Claude OAuth) through a proxy or relay may violate its terms and can lead to throttling, suspension, or a ban. Use proxying only where the provider explicitly allows it; IP masking does not remove that risk.
+        </p>
+      </div>
+
+      <ProxyRoutingCard proxyPools={proxyPools} onPoolsChanged={fetchProxyPools} />
 
       <Card>
         <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -736,6 +739,9 @@ export default function ProxyPoolsPage() {
                     <Badge variant="default" size="sm">
                       {pool.boundConnectionCount || 0} bound
                     </Badge>
+                    {pool.strictProxy !== true && (
+                      <Badge variant="warning" size="sm">falls back to direct</Badge>
+                    )}
                   </div>
                   <p className="text-xs text-text-muted truncate mt-1">{pool.proxyUrl}</p>
                   {pool.noProxy ? (

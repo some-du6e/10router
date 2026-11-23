@@ -892,8 +892,17 @@ export async function testSingleConnection(id) {
   const connection = await getProviderConnectionById(id);
   if (!connection) return { valid: false, error: "Connection not found", latencyMs: 0, testedAt: new Date().toISOString() };
 
-  const effectiveProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+  const effectiveProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {}, connection.provider);
   const isKeyAuth = connection.authType === "apikey" || connection.authType === "cookie";
+
+  if (effectiveProxy.blockedReason) {
+    await updateProviderConnection(id, {
+      testStatus: "error",
+      lastError: effectiveProxy.blockedReason,
+      lastErrorAt: new Date().toISOString(),
+    });
+    return { valid: false, error: effectiveProxy.blockedReason, latencyMs: 0, testedAt: new Date().toISOString() };
+  }
 
   if (effectiveProxy.connectionProxyEnabled && effectiveProxy.connectionProxyUrl && !effectiveProxy.vercelRelayUrl) {
     const proxyResult = await testProxyUrl({ proxyUrl: effectiveProxy.connectionProxyUrl });

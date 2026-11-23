@@ -98,10 +98,10 @@ function isModelRefusal(status, errorText) {
 // upstream they reach.
 async function networkPath(conn) {
   const psd = conn.providerSpecificData || {};
-  const p = await resolveConnectionProxyConfig(psd);
+  const p = await resolveConnectionProxyConfig(psd, conn.provider);
   const proxy = p.connectionProxyEnabled && p.connectionProxyUrl ? p.connectionProxyUrl : "";
   return {
-    transport: JSON.stringify([proxy, proxy ? p.connectionNoProxy || "" : "", p.vercelRelayUrl || ""]),
+    transport: JSON.stringify([proxy, proxy ? p.connectionNoProxy || "" : "", p.vercelRelayUrl || "", p.direct === true]),
     upstream: upstreamOf(psd),
   };
 }
@@ -123,6 +123,14 @@ export async function keysShareOneUpstream(provider) {
   const paths = await Promise.all(connections.map(networkPath));
   return new Set(paths.map(p => p.transport)).size <= 1;
 }
+
+// The resolved proxy's strictness, Direct and block flags, under the names
+// chatCore reads them from.
+const proxyFlags = (p) => ({
+  connectionStrictProxy: p.strictProxy === true,
+  connectionProxyDirect: p.direct === true,
+  connectionProxyBlocked: p.blockedReason || "",
+});
 
 // Only API keys count: an OAuth token or session cookie that fails to refresh
 // gets 401s while its peers' tokens work, and that isn't a dead account.
@@ -521,7 +529,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         const poolIds = allPools.filter(p => p.proxyUrl).map(p => p.id);
         pickedId = pickProxyPoolId(poolIds, strategy, providerId);
       }
-      const resolvedProxy = await resolveConnectionProxyConfig({ proxyPoolId: pickedId || "" });
+      const resolvedProxy = await resolveConnectionProxyConfig({ proxyPoolId: pickedId || "" }, providerId);
       return {
         id: "noauth",
         connectionName: "Public",
@@ -533,6 +541,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           connectionNoProxy: resolvedProxy.connectionNoProxy,
           connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
           vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
+          ...proxyFlags(resolvedProxy),
         },
       };
     }
@@ -823,7 +832,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       connection = availableConnections[0];
     }
 
-    const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+    const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {}, providerId);
 
     return {
       authType: connection.authType,
@@ -844,6 +853,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         connectionNoProxy: resolvedProxy.connectionNoProxy,
         connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
         vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
+        ...proxyFlags(resolvedProxy),
       },
       connectionId: connection.id,
       // Include current status for optimization check
