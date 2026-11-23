@@ -231,8 +231,8 @@ function needsTheClone(error) {
 // same Content-Length and Content-Type fetch would send, and nothing of it is
 // left once it is written. A byte body (any Uint8Array: an executor's encoded
 // body, which it keeps only until a reply starts to resend it to another
-// account, or an audio upload) goes out the same way, as it is, so fetch keeps
-// no hold on it either. Only a body of
+// account, or the binary bodies Cursor, Windsurf and Qoder build) goes out the
+// same way, as it is, so fetch keeps no hold on it either. Only a body of
 // MEMORY_CONFIG.streamedBodyMinChars or more (characters or bytes), on a
 // method that has one.
 function streamedOnce(init) {

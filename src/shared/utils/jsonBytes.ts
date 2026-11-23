@@ -3,8 +3,10 @@
 // (Buffer). A body resent to another account is checked against the bytes
 // sent the first time, and a request detail's full copy is written straight
 // into its buffer, instead of serializing a multi-MB body again for each.
-import { walkJson, quotedSizes, sized, skipped, SHORT_ESCAPE_LETTER } from "./jsonMeasure.js";
+import { walkJson, quotedSizes, sized, skipped, SHORT_ESCAPE_LETTER as SHARED_ESCAPE_LETTER } from "./jsonMeasure.js";
 
+// A local binding, read directly in the hot loop (a bundler may read imports through a getter).
+const SHORT_ESCAPE_LETTER = SHARED_ESCAPE_LETTER;
 const HEX = "0123456789abcdef";
 // A character JSON.stringify escapes, besides a lone surrogate.
 const NEEDS_ESCAPE = /["\\\u0000-\u001f]/;
