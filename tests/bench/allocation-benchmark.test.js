@@ -210,9 +210,10 @@ describe("allocation per request", () => {
     await new Promise((r) => setTimeout(r, 5100));
     for (const k of KS) rows.push(await scenario("full details on", k));
     // The full copies were made and stored, so the packer's numbers are real.
-    const latest = (await db.getRequestDetails({ pageSize: 6 })).details;
+    const lastRows = Math.min(25, KS.at(-1) + 1);
+    const latest = (await db.getRequestDetails({ pageSize: lastRows })).details;
     // The last request's rows: its K error rows and its reply's.
-    expect(latest.slice(0, KS.at(-1) + 1).map((d) => d.hasFullData)).toEqual(Array(KS.at(-1) + 1).fill(true));
+    expect(latest.map((d) => d.hasFullData)).toEqual(Array(lastRows).fill(true));
     expect((await db.getRequestDetailFullData(latest[0].id)).request.messages).toHaveLength(MESSAGES);
 
     const out = [`\nbody ${bodyMb.toFixed(2)} MB of JSON, ${REPS} requests per row, ${process.version}`];
