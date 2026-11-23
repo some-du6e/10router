@@ -1,3 +1,4 @@
+import { readJsonObject, missingModel } from "../utils/requestBody.js";
 import {
   extractApiKey, isValidApiKey,
   getProviderCredentials, markAccountUnavailable, clearAccountError,
@@ -7,6 +8,7 @@ import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels, comboLookupName } from "../services/model.js";
 import { handleTtsCore } from "open-sse/handlers/ttsCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
+import { modelIdProblem } from "open-sse/utils/modelPath.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { handleComboChat } from "open-sse/services/combo.js";
@@ -20,20 +22,22 @@ const CREDENTIALED_PROVIDERS = new Set(
     .map(([id]) => id)
 );
 
+// OpenAI's speech formats, plus `json` (base64 audio in a JSON body). The value
+// ends up in the reply's Content-Type, so nothing else gets through.
+const RESPONSE_FORMATS = ["mp3", "opus", "aac", "flac", "wav", "pcm", "json"];
+
 export async function handleTts(request) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
-  }
+  const { body, error } = await readJsonObject(request, { logTag: "TTS" });
+  if (error) return error;
 
   const url = new URL(request.url);
   const modelStr = body.model;
-  const responseFormat = url.searchParams.get("response_format") || "mp3"; // mp3 (default) | json
+  // The query parameter (the dashboard sends it) wins over the body's, which is
+  // where API clients put it. An empty query value falls through to the body.
+  const requestedFormat = url.searchParams.get("response_format") || body.response_format;
   const language = body.language || ""; // Optional language hint (currently used by Gemini)
   const style = body.style || ""; // Optional style/voice instructions (e.g. Xiaomi MiMo)
-  log.request("POST", `${url.pathname} | ${modelStr} | format=${responseFormat}${language ? ` | lang=${language}` : ""}`);
+  log.request("POST", `${url.pathname} | ${modelStr} | format=${requestedFormat ?? "mp3"}${language ? ` | lang=${language}` : ""}`);
 
   const settings = await getSettings();
   const apiKey = extractApiKey(request);
@@ -43,8 +47,17 @@ export async function handleTts(request) {
     if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
 
-  if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
-  if (!body.input) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: input");
+  if (requestedFormat != null && (typeof requestedFormat !== "string" || !requestedFormat.trim())) {
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, "response_format must be a non-empty string");
+  }
+  const responseFormat = requestedFormat == null ? "mp3" : requestedFormat.trim().toLowerCase();
+  if (!RESPONSE_FORMATS.includes(responseFormat)) {
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, `response_format must be one of ${RESPONSE_FORMATS.join(", ")}`);
+  }
+
+  const noModel = missingModel(modelStr, "TTS");
+  if (noModel) return noModel;
+  if (typeof body.input !== "string" || !body.input.trim()) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: input");
   const limitDenied = await checkApiKeyLimits(apiKey, { model: modelStr });
   if (limitDenied) return limitDenied;
 
@@ -76,6 +89,9 @@ async function handleSingleModelTts(body, modelStr, responseFormat, language, st
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
   const { provider, model } = modelInfo;
+  // Refused before any account is tried, so it locks none.
+  const badModel = modelIdProblem(model, { segments: true });
+  if (badModel) return errorResponse(HTTP_STATUS.BAD_REQUEST, badModel);
   log.info("ROUTING", `Provider: ${provider}, Voice: ${model}`);
 
   // noAuth providers — no credential needed
@@ -89,11 +105,16 @@ async function handleSingleModelTts(body, modelStr, responseFormat, language, st
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
+  // The message of the first server that rejected the request. A rejected
+  // request fails the same way on retry, so when no connection serves it this
+  // 400 is the answer, not a locked-accounts 5xx with Retry-After.
+  let rejectedError = null;
 
   while (true) {
     const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
 
     if (!credentials || credentials.allRateLimited) {
+      if (rejectedError !== null) return errorResponse(HTTP_STATUS.BAD_REQUEST, rejectedError);
       if (credentials?.allRateLimited) {
         const { status, error } = allLockedError(lastStatus, lastError, credentials);
         const msg = error || "Unavailable";
@@ -112,6 +133,20 @@ async function handleSingleModelTts(body, modelStr, responseFormat, language, st
         .catch((error) => log.warn("AUTH", `Could not clear ${credentials.connectionName} errors: ${error.message}`));
       return result.response;
     }
+    // This connection's server rejected the request. Another connection may be
+    // a different server (self-hosted ones each have their own baseUrl), so try
+    // it, but lock none: the request, not the account, was at fault.
+    if (result.upstreamRejected) {
+      // A connection that can't be excluded would come back forever.
+      if (excludeConnectionIds.has(credentials.connectionId)) return result.response;
+      log.warn("AUTH", `${credentials.connectionName} rejected the request [${result.upstreamStatus}], not locking`);
+      excludeConnectionIds.add(credentials.connectionId);
+      rejectedError ??= result.error;
+      continue;
+    }
+    // handleTtsCore's own 400s (no input, provider without TTS) are the same
+    // on every account.
+    if (result.status === HTTP_STATUS.BAD_REQUEST) return result.response;
 
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, null, credentials.apiKey);
     if (shouldFallback) {

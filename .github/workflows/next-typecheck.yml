@@ -1,0 +1,37 @@
+name: Next typecheck
+
+# `npm run build` type-checks with Next's generated types (next-env.d.ts is
+# gitignored), so a plain `tsc --noEmit` on a fresh checkout can pass while the
+# Docker build fails. Generate the types first, then run the same check.
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "open-sse/**"
+      - "tsconfig.json"
+      - "next.config.mjs"
+      - "package.json"
+      - ".github/workflows/next-typecheck.yml"
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: bun install --ignore-scripts
+      - name: Generate Next types
+        run: ./node_modules/.bin/next typegen
+      - name: Typecheck
+        run: ./node_modules/.bin/tsc --noEmit -p .

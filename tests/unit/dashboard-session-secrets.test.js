@@ -58,6 +58,7 @@ vi.mock("@/lib/auth/loginLimiter", () => ({
   recordFail: () => ({ remainingBeforeLock: 4 }),
   recordSuccess: vi.fn(),
   getClientIp: () => "127.0.0.1",
+  getClientKeys: () => ["127.0.0.1"],
 }));
 
 // Only the auth_token cookie is ever read: a route reading another name gets nothing.

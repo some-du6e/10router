@@ -1,6 +1,7 @@
-import { MEMORY_CONFIG, UNDICI_HEADERS_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { HTTP_STATUS, MEMORY_CONFIG, UNDICI_HEADERS_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { isUndiciHeadersTimeout } from "./headersTimeout.js";
 import { getEnvProxyUrl, normalizeProxyUrl, shouldBypassByNoProxy } from "./envProxy.js";
+import { isInvalidHeaderValueError, sanitizeSecrets } from "./redact.js";
 
 const originalFetch = globalThis.fetch;
 const proxyDispatchers = new Map();
@@ -151,6 +152,87 @@ async function getDirectDispatcher() {
   return directDispatcher;
 }
 
+// Node's fetch (undici) clones a request it may redirect: it tees the body, sends
+// one branch and leaves the other unread, so a copy of the whole body stays
+// queued off the JS heap until the response ends (a stream: minutes). With
+// redirect "error" it sends the request itself (window: null is already the case
+// in Node). A body that can be sent again goes out that way, and the request is
+// sent again as the caller asked when the upstream answers with a redirect
+// (which that follows) or a 421 (which fetch retries by re-sending a byte body
+// it has already sent, so it fails with a length mismatch; a large string or
+// byte body is sent as a stream, below, which fetch doesn't retry). Neither
+// reply means the upstream acted on the request. Bun's fetch fails these differently, so this is
+// Node only.
+const SEND_WITHOUT_CLONE = Boolean(process.versions?.undici) && !process.versions?.bun;
+const UNDICI_REDIRECT_ERROR = "unexpected redirect";
+const UNDICI_LENGTH_MISMATCH = "UND_ERR_REQ_CONTENT_LENGTH_MISMATCH";
+
+function canSendAgain(body) {
+  return typeof body === "string" || body instanceof ArrayBuffer || ArrayBuffer.isView(body) || body instanceof URLSearchParams;
+}
+
+function needsTheClone(error) {
+  return error?.name === "TypeError" && (error.cause?.message === UNDICI_REDIRECT_ERROR || error.cause?.code === UNDICI_LENGTH_MISMATCH);
+}
+
+// fetch also keeps a string body on its request until the response ends (the
+// source it would send again), so a streamed reply kept its whole prompt for
+// minutes. The string goes out as a stream of its UTF-8 bytes instead, with the
+// same Content-Length and Content-Type fetch would send, and nothing of it is
+// left once it is written. A byte body (any Uint8Array: an executor's encoded
+// body, which it keeps only until a reply starts to resend it to another
+// account, or the binary bodies Windsurf, Qoder and a proxied Cursor send) goes
+// out the same way, as it is, so fetch keeps no hold on it either. Only a body of
+// MEMORY_CONFIG.streamedBodyMinChars or more (characters or bytes), on a
+// method that has one.
+function streamedOnce(init) {
+  const method = String(init.method || "GET").toUpperCase();
+  const text = typeof init.body === "string";
+  if (!(text || init.body instanceof Uint8Array) || init.body.length < MEMORY_CONFIG.streamedBodyMinChars || method === "GET" || method === "HEAD") return null;
+  let source = init.body;
+  const headers = new Headers(init.headers);
+  headers.set("content-length", String(text ? Buffer.byteLength(source, "utf8") : source.byteLength));
+  // What fetch itself sends with a string body and none set; a byte body gets none.
+  if (text && !headers.has("content-type")) headers.set("content-type", "text/plain;charset=UTF-8");
+  const body = new ReadableStream({
+    pull(controller) {
+      controller.enqueue(text ? Buffer.from(source, "utf8") : source);
+      source = null;
+      controller.close();
+    },
+  });
+  return { ...init, body, duplex: "half", headers };
+}
+
+async function send(target, init) {
+  if (!SEND_WITHOUT_CLONE || !init || init.redirect !== undefined || "window" in init || !canSendAgain(init.body)) {
+    return originalFetch(target, init);
+  }
+  const streamed = streamedOnce(init);
+  try {
+    const response = await originalFetch(target, { ...(streamed || init), redirect: "error", window: null });
+    // fetch re-sends a string body on a 421 by itself, but not a stream: the
+    // request goes again as the caller asked, which fetch handles as before.
+    if (streamed && response.status === HTTP_STATUS.MISDIRECTED_REQUEST) {
+      response.body?.cancel().catch(() => { });
+      return originalFetch(target, sendableAgain(init));
+    }
+    return response;
+  } catch (error) {
+    if (!needsTheClone(error)) throw error;
+    return originalFetch(target, sendableAgain(init));
+  }
+}
+
+// The request as fetch sends it when it may follow a redirect itself. Node 22's
+// fetch can't send a byte body again on a 307 or 308 (the copy it made is
+// detached by then), but it can a Blob of it; an untyped Blob adds no
+// Content-Type, and its size is the Content-Length.
+function sendableAgain(init) {
+  const body = init.body;
+  return body instanceof ArrayBuffer || ArrayBuffer.isView(body) ? { ...init, body: new Blob([body]) } : init;
+}
+
 // An optional observer the app installs on globalThis (the custom-endpoint
 // request log, src/lib/endpointRequestLog.ts, on runtimes whose undici lacks the
 // body diagnostics channels). Kept as a global so the engine imports nothing
@@ -177,7 +259,7 @@ async function fetchVia(url, options, proxyOptions, noHeadersTimeout = false) {
   const targetUrl = typeof url === "string" ? url : url.toString();
   const direct = async (target, init) => {
     const dispatcher = noHeadersTimeout ? await getDirectDispatcher() : null;
-    return originalFetch(target, dispatcher ? { ...init, dispatcher } : init);
+    return send(target, dispatcher ? { ...init, dispatcher } : init);
   };
 
   // Vercel relay: forward request via relay headers
@@ -199,16 +281,28 @@ async function fetchVia(url, options, proxyOptions, noHeadersTimeout = false) {
   if (proxyUrl) {
     try {
       const dispatcher = await getDispatcher(proxyUrl, { noHeadersTimeout });
-      return await originalFetch(url, { ...options, dispatcher });
+      return await send(url, { ...options, dispatcher });
     } catch (proxyError) {
+      // The caller aborted (a client hang-up, or its own timer): not the proxy
+      // failing. Passed on as is, so it still reads as an abort.
+      if (proxyError?.name === "AbortError" || options?.signal?.aborted) throw proxyError;
       // The upstream got the request and sent no headers (undici's own limit,
       // which a SOCKS proxy keeps): not the proxy failing, so not retried direct.
       if (isUndiciHeadersTimeout(proxyError)) throw proxyError;
+      // A refused header value fails direct too, and its message quotes the
+      // value (a bearer token, say): pass it on without logging or retrying.
+      if (isInvalidHeaderValueError(proxyError)) throw proxyError;
+      const reason = sanitizeSecrets(proxyError.message);
       // If strictProxy is enabled, fail hard instead of falling back to direct
       if (proxyOptions?.strictProxy === true) {
-        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`, { cause: proxyError });
+        // Callers classify by the cause, so it stays, unless redaction changed
+        // its text: then a copy with the redacted text, name and code stands in.
+        const cause = reason === proxyError.message
+          ? proxyError
+          : Object.assign(new Error(reason), { name: proxyError.name, code: proxyError.code });
+        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${reason}`, { cause });
       }
-      console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${proxyError.message}`);
+      console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${reason}`);
       return direct(url, options);
     }
   }

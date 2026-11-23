@@ -21,9 +21,13 @@ vi.mock("@/lib/auth/dashboardSession", () => ({
 }));
 vi.mock("@/lib/auth/loginLimiter", () => ({
   checkLock: () => ({ locked: false }),
+  reserveAttempt: () => ({ ok: true }),
+  releaseAttempt: vi.fn(),
   recordFail: () => ({ remainingBeforeLock: 4 }),
   recordSuccess: vi.fn(),
   getClientIp: () => "127.0.0.1",
+  getClientKeys: () => ["127.0.0.1"],
+  LOCAL_LOGIN_KEY: "local",
 }));
 vi.mock("@/lib/auth/setupToken", () => ({
   issueSetupToken: mocks.issueSetupToken,

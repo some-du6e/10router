@@ -1,3 +1,4 @@
+import { readJsonObject, missingModel } from "../utils/requestBody.js";
 import {
   getProviderCredentials,
   markAccountUnavailable,
@@ -10,6 +11,7 @@ import { getSettings } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
 import { handleEmbeddingsCore } from "open-sse/handlers/embeddingsCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
+import { modelIdProblem } from "open-sse/utils/modelPath.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
@@ -32,13 +34,8 @@ function exactEmbeddingUsage(raw) {
  * @param {Request} request
  */
 export async function handleEmbeddings(request) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    log.warn("EMBEDDINGS", "Invalid JSON body");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
-  }
+  const { body, error } = await readJsonObject(request, { logTag: "EMBEDDINGS" });
+  if (error) return error;
 
   const url = new URL(request.url);
   const modelStr = body.model;
@@ -67,10 +64,8 @@ export async function handleEmbeddings(request) {
     }
   }
 
-  if (!modelStr) {
-    log.warn("EMBEDDINGS", "Missing model");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
-  }
+  const noModel = missingModel(modelStr, "EMBEDDINGS");
+  if (noModel) return noModel;
 
   if (!body.input) {
     log.warn("EMBEDDINGS", "Missing input");
@@ -87,6 +82,12 @@ export async function handleEmbeddings(request) {
   }
 
   const { provider, model } = modelInfo;
+  // Refused before any account is tried, so it locks none.
+  const badModel = modelIdProblem(model);
+  if (badModel) {
+    log.warn("EMBEDDINGS", "Invalid model id", { model: modelStr });
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, badModel);
+  }
 
   if (modelStr !== `${provider}/${model}`) {
     log.info("ROUTING", `${modelStr} → ${provider}/${model}`);
@@ -128,11 +129,7 @@ export async function handleEmbeddings(request) {
       credentials: refreshedCredentials,
       log,
       onCredentialsRefreshed: async (newCreds) => {
-        await updateProviderCredentials(credentials.connectionId, {
-          ...newCreds,
-          existingProviderSpecificData: credentials.providerSpecificData,
-          testStatus: "active"
-        });
+        await updateProviderCredentials(credentials.connectionId, newCreds);
       },
       onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, model);
@@ -155,7 +152,13 @@ export async function handleEmbeddings(request) {
       return result.response;
     }
 
-    const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, null, credentials.apiKey);
+    // A request that couldn't be built never reached the upstream: try the
+    // next account (its settings may differ) but lock none. A connection that
+    // can't be excluded (a virtual one with no id) would come back forever.
+    if (result.notSent && (!credentials.connectionId || excludeConnectionIds.has(credentials.connectionId))) return result.response;
+    const { shouldFallback } = result.notSent
+      ? { shouldFallback: true }
+      : await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, null, credentials.apiKey);
 
     if (shouldFallback) {
       log.warn("AUTH", `Account ${credentials.connectionName} unavailable (${result.status}), trying fallback`);

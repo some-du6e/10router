@@ -167,7 +167,8 @@ describe("CodexExecutor image handling", () => {
 
     let capturedBodyString = null;
     vi.spyOn(proxyFetchModule, "proxyAwareFetch").mockImplementation(async (url, init) => {
-      capturedBodyString = init.body;
+      // Executors send a body's UTF-8 bytes.
+      capturedBodyString = Buffer.from(init.body).toString("utf8");
       return { ok: true, status: 200, headers: new Map() };
     });
 

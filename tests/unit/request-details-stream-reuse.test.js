@@ -1,6 +1,8 @@
 // A streaming request is saved twice under one id: when the stream starts and
 // when it ends. The second save must store exactly what a cold save would,
-// without capping the ~1 MB request bodies a second time.
+// without capping the ~1 MB request bodies a second time, and without the
+// stream holding those bodies until it ends: it stores the records the first
+// save capped.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,10 +15,12 @@ const big = (tag) => ({
   tools: [{ name: "Read", description: "read a file", input_schema: { type: "object", properties: { path: { type: "string" } } } }],
 });
 
-describe("streaming saves share one request object", () => {
-  it("passes the same request config to the start and the complete row", async () => {
+describe("a streaming row's end save", () => {
+  it("stores the records the start save capped, not the request bodies", async () => {
     vi.resetModules();
-    const saveRequestDetail = vi.fn(() => Promise.resolve());
+    // As the repository does with full details off: resolves to the capped records.
+    const capped = { request: { _truncated: true, _preview: "req" }, providerRequest: { _truncated: true, _preview: "prov" } };
+    const saveRequestDetail = vi.fn(() => Promise.resolve(capped));
     vi.doMock("@/lib/usageDb.js", () => ({
       saveRequestDetail,
       saveRequestUsage: vi.fn(() => Promise.resolve()),
@@ -28,23 +32,55 @@ describe("streaming saves share one request object", () => {
     const body = big("b");
     const translatedBody = { ...body, model: "claude-opus-5-5" };
     const ctx = { provider: "anthropic", model: "claude-opus-5-5", body, stream: true, translatedBody, requestStartTime: Date.now() };
-    const { onStreamComplete, streamDetailId, streamRequest } = buildOnStreamComplete(ctx);
+    const { onStreamComplete, streamDetail } = buildOnStreamComplete(ctx);
+    const streamDetailId = streamDetail.id;
     const controller = { signal: new AbortController().signal, isConnected: () => true, handleComplete: vi.fn(), handleError: vi.fn(), handleDisconnect: vi.fn() };
     await handleStreamingResponse({
       ...ctx, providerResponse: new Response("", { headers: { "content-type": "text/event-stream" } }),
-      sourceFormat: "claude", targetFormat: "claude", streamController: controller, onStreamComplete, streamDetailId, streamRequest,
+      sourceFormat: "claude", targetFormat: "claude", streamController: controller, onStreamComplete, streamDetail,
     });
     onStreamComplete({ content: "hi", thinking: "", toolCalls: [] }, { prompt_tokens: 1, completion_tokens: 1 }, Date.now());
 
-    expect(saveRequestDetail).toHaveBeenCalledTimes(2);
-    const [start, end] = saveRequestDetail.mock.calls.map(([detail]) => detail);
+    // The empty test stream also ends by itself: that is an end save too.
+    await vi.waitFor(() => expect(saveRequestDetail.mock.calls.some(([d]) => d.response?.content === "hi")).toBe(true));
+    const [start, ...ends] = saveRequestDetail.mock.calls.map(([detail]) => detail);
     expect(start.id).toBe(streamDetailId);
-    expect(end.id).toBe(streamDetailId);
-    expect(end.request).toBe(start.request);
     expect(start.request).toEqual(extractRequestConfig(body, true));
-    expect(end.providerRequest).toBe(start.providerRequest);
+    expect(start.providerRequest).toBe(translatedBody);
+    for (const end of ends) {
+      expect(end.id).toBe(streamDetailId);
+      expect(end.request).toBe(capped.request);
+      expect(end.providerRequest).toBe(capped.providerRequest);
+    }
+    expect(ends.map((end) => end.response.content)).toContain("hi");
     vi.doUnmock("@/lib/usageDb.js");
-  });
+  }, 30_000);
+
+  it("waits for a start save still being built", async () => {
+    vi.resetModules();
+    let resolveStart;
+    const capped = { request: { _truncated: true }, providerRequest: null };
+    const saveRequestDetail = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveStart = () => resolve(capped); }))
+      .mockImplementation(() => Promise.resolve(null));
+    vi.doMock("@/lib/usageDb.js", () => ({
+      saveRequestDetail,
+      saveRequestUsage: vi.fn(() => Promise.resolve()),
+      appendRequestLog: vi.fn(() => Promise.resolve()),
+      trackPendingRequest: vi.fn(),
+    }));
+    const { streamDetailRow } = await import("../../open-sse/handlers/chatCore/requestDetail.js");
+    const row = streamDetailRow("row-1");
+    row.start({ request: big("x"), providerRequest: big("y"), response: { content: "…" } });
+    const finished = row.finish({ response: { content: "done" } });
+    await Promise.resolve();
+    expect(saveRequestDetail).toHaveBeenCalledTimes(1);
+    resolveStart();
+    await finished;
+    expect(saveRequestDetail).toHaveBeenCalledTimes(2);
+    expect(saveRequestDetail.mock.calls[1][0]).toMatchObject({ id: "row-1", request: capped.request, providerRequest: null, response: { content: "done" } });
+    vi.doUnmock("@/lib/usageDb.js");
+  }, 30_000);
 });
 
 describe("request detail capping on a repeated save", () => {
@@ -101,24 +137,59 @@ describe("request detail capping on a repeated save", () => {
     expect(warm.data).toBe(cold.data.replace('"id":"cold"', '"id":"warm"'));
     expect(JSON.parse(warm.data).request._truncated).toBe(true);
     expect(JSON.parse(warm.data).response.content).toBe("all done");
-    expect(warm.fullData).toBe(cold.fullData);
+    expect(Buffer.from(warm.fullData).equals(Buffer.from(cold.fullData))).toBe(true);
     expect(await db.getRequestDetailFullData("warm")).toEqual({ request, providerRequest });
   });
 
-  it("does not serialize or compress the request bodies again on the second save", async () => {
+  it("does not cap the request bodies again on the second save, and packs them once at its write, serializing neither", async () => {
     const request = big("s");
     const providerRequest = big("t");
     await db.saveRequestDetail(detail("twice", request, providerRequest, progress));
     await repo.__test__.flush();
-    await db.saveRequestDetail(detail("twice", request, providerRequest, done));
+    // The start save was already written, so the end save's copy is packed again.
     const stringify = vi.spyOn(JSON, "stringify");
+    const bodies = () => stringify.mock.calls.filter(([value]) => value === request || value === providerRequest).length;
+    let atSave;
+    let atWrite;
+    try {
+      await db.saveRequestDetail(detail("twice", request, providerRequest, done));
+      atSave = bodies();
+      gzip.mockClear();
+      await repo.__test__.flush();
+      atWrite = bodies() - atSave;
+    } finally {
+      stringify.mockRestore();
+    }
+    expect(atSave).toBe(0);
+    // The copy's JSON is written into its buffer, not built as a string.
+    expect(atWrite).toBe(0);
+    expect(gzip).toHaveBeenCalledTimes(1);
+    expect(await db.getRequestDetailFullData("twice")).toEqual({ request, providerRequest });
+  });
+
+  it("packs the rows of one request's failed attempts and its reply once, when one write stores them all", async () => {
+    // An account fallback hands each attempt's row the same client request and
+    // sent body (chatCore's attemptCache).
+    const request = big("fallback-req");
+    const providerRequest = big("fallback-prov");
+    const ids = ["fallback-1", "fallback-2", "fallback-3"];
+    for (const id of ids) await db.saveRequestDetail({ ...detail(id, request, providerRequest, { error: "Rate limit reached", status: 429 }), status: "error" });
     gzip.mockClear();
     await repo.__test__.flush();
-    const again = stringify.mock.calls.filter(([value]) => value === request || value === providerRequest).length;
-    stringify.mockRestore();
-    expect(again).toBe(0);
-    expect(gzip).not.toHaveBeenCalled();
-    expect(await db.getRequestDetailFullData("twice")).toEqual({ request, providerRequest });
+    expect(gzip).toHaveBeenCalledTimes(1);
+    const stored = ids.map((id) => row(id).fullData);
+    for (const fullData of stored) expect(Buffer.from(fullData).equals(Buffer.from(stored[0]))).toBe(true);
+    for (const id of ids) expect(await db.getRequestDetailFullData(id)).toEqual({ request, providerRequest });
+  });
+
+  it("packs rows that carry different payloads each on its own", async () => {
+    const request = big("own-req");
+    await db.saveRequestDetail(detail("own-1", request, big("own-prov-1"), done));
+    await db.saveRequestDetail(detail("own-2", request, big("own-prov-2"), done));
+    gzip.mockClear();
+    await repo.__test__.flush();
+    expect(gzip).toHaveBeenCalledTimes(2);
+    expect((await db.getRequestDetailFullData("own-2")).providerRequest.messages[0].content[0].text).toMatch(/^own-prov-20:/);
   });
 
   it("packs the full copy again when the complete row cut one more field", async () => {
@@ -134,6 +205,83 @@ describe("request detail capping on a repeated save", () => {
     expect(await db.getRequestDetailFullData("long-reply")).toEqual({ request, providerRequest, providerResponse: reply, response: reply });
   });
 
+  // The end save as a stream makes it: with what its start save handed back
+  // for the request payloads (streamDetailRow).
+  const endSave = (id, start, response, timestamp) => db.saveRequestDetail({ ...detail(id, start.request, start.providerRequest, response), ...(timestamp && { timestamp }) });
+
+  // The trim keeps full copies on the newest 25 rows: a long stream's start
+  // copy is gone by its end, so the end save rebuilds it from the bodies.
+  it("with full details on, hands back the bodies, so a long stream's end row gets its full copy back", async () => {
+    const request = big("c");
+    const providerRequest = { ...big("d"), system: "be brief" };
+    const start = await db.saveRequestDetail({ ...detail("long-stream", request, providerRequest, progress), timestamp: "2026-01-01T00:00:00.000Z" });
+    expect(start.request).toBe(request);
+    expect(start.providerRequest).toBe(providerRequest);
+    await repo.__test__.flush();
+    for (let i = 0; i < 26; i++) await db.saveRequestDetail({ ...detail(`newer-${i}`, big(`n${i}`), null, done), timestamp: "2026-01-01T00:00:01.000Z" });
+    await repo.__test__.flush();
+    expect(row("long-stream").fullData).toBeNull();
+
+    await endSave("long-stream", start, done, "2026-01-01T00:00:02.000Z");
+    await repo.__test__.flush();
+    expect(await db.getRequestDetailFullData("long-stream")).toEqual({ request, providerRequest });
+  });
+
+  it("with full details on, hands back the capped records when the payloads are too big for a full copy", async () => {
+    const { limits } = repo.__test__;
+    const ringMax = limits.fullRingMaxBytes;
+    limits.fullRingMaxBytes = 1024;
+    let start;
+    try {
+      start = await db.saveRequestDetail(detail("too-big", big("i"), big("j"), progress));
+    } finally {
+      limits.fullRingMaxBytes = ringMax;
+    }
+    expect(start.request._truncated).toBe(true);
+    expect(start.providerRequest._truncated).toBe(true);
+  });
+
+  describe("with full details off", () => {
+    beforeAll(async () => {
+      await db.updateSettings({ showSensitiveRequestDetails: false });
+      await db.clearRequestDetailFullData();
+    });
+    afterAll(async () => {
+      await db.updateSettings({ showSensitiveRequestDetails: true });
+      await db.clearRequestDetailFullData();
+    });
+
+    it("hands back the capped records, and an end save of them stores what a cold save would", async () => {
+      const request = big("e");
+      const providerRequest = big("f");
+      const start = await db.saveRequestDetail(detail("carried", request, providerRequest, progress));
+      expect(start.request._truncated).toBe(true);
+      expect(start.providerRequest._truncated).toBe(true);
+      await endSave("carried", start, done);
+      await repo.__test__.flush();
+      await db.saveRequestDetail(detail("carried-cold", structuredClone(request), structuredClone(providerRequest), done));
+      await repo.__test__.flush();
+      expect(row("carried").data).toBe(row("carried-cold").data.replace('"id":"carried-cold"', '"id":"carried"'));
+      expect(row("carried").fullData).toBeNull();
+    });
+
+    it("stores a capped record as it is when the size limit shrank since", async () => {
+      const start = await db.saveRequestDetail(detail("shrunk", big("g"), big("h"), progress));
+      await db.updateSettings({ observabilityMaxJsonSize: 2 });
+      await db.clearRequestDetailFullData();
+      try {
+        await endSave("shrunk", start, done);
+        await repo.__test__.flush();
+      } finally {
+        await db.updateSettings({ observabilityMaxJsonSize: 0 });
+        await db.clearRequestDetailFullData();
+      }
+      const stored = JSON.parse(row("shrunk").data);
+      expect(stored.request).toEqual(start.request);
+      expect(stored.request._preview).toContain('"messages"');
+    });
+  });
+
   it("caps again when the size limit changed", () => {
     const { truncateField } = repo.__test__;
     const obj = big("u");
@@ -143,16 +291,5 @@ describe("request detail capping on a repeated save", () => {
 
     const capped = truncateField(obj, 10 * 1024);
     expect(truncateField(obj, 10 * 1024)).toBe(capped);
-  });
-
-  it("does not keep a body's JSON alive after capping it", () => {
-    const { truncateField } = repo.__test__;
-    const obj = big("x");
-    const first = {};
-    const capped = truncateField(obj, 10 * 1024, first, "request");
-    expect(first.request).toBe(JSON.stringify(obj));
-    const again = {};
-    expect(truncateField(obj, 10 * 1024, again, "request")).toBe(capped);
-    expect(again.request).toBeUndefined();
   });
 });

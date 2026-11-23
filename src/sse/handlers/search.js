@@ -1,3 +1,4 @@
+import { readJsonObject } from "../utils/requestBody.js";
 import {
   getProviderCredentials,
   markAccountUnavailable,
@@ -6,6 +7,7 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { allLockedError } from "open-sse/utils/limitHold.js";
+import { WEBSEARCH_LOCK_PREFIX } from "open-sse/services/accountFallback.js";
 import { getSettings, getCombos } from "@/lib/localDb";
 import { AI_PROVIDERS, resolveProviderId } from "@/shared/constants/providers.js";
 import { handleSearchCore } from "open-sse/handlers/search/index.js";
@@ -23,13 +25,8 @@ import { handleComboChat, getComboModelsFromData } from "open-sse/services/combo
  * @param {Request} request
  */
 export async function handleSearch(request) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    log.warn("SEARCH", "Invalid JSON body");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
-  }
+  const { body, error } = await readJsonObject(request, { logTag: "SEARCH" });
+  if (error) return error;
 
   const url = new URL(request.url);
   // Accept either `provider` or `model` (UI sends `model` since provider IS the model for webSearch)
@@ -163,7 +160,7 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
   // an account-wide `__all` lock, which on the credentialFallback path takes
   // the shared chat key (e.g. glm) offline for chat as well. Must be passed to
   // getProviderCredentials too, so the lock is read back under the same key.
-  const searchLockKey = `websearch:${providerId}`;
+  const searchLockKey = `${WEBSEARCH_LOCK_PREFIX}${providerId}`;
 
   while (true) {
     // Provider that actually owns the connection in use — differs from
@@ -207,12 +204,7 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
       credentials: refreshedCredentials,
       log,
       onCredentialsRefreshed: async (newCreds) => {
-        await updateProviderCredentials(credentials.connectionId, {
-          accessToken: newCreds.accessToken,
-          refreshToken: newCreds.refreshToken,
-          providerSpecificData: newCreds.providerSpecificData,
-          testStatus: "active"
-        });
+        await updateProviderCredentials(credentials.connectionId, newCreds);
       },
       onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, searchLockKey);

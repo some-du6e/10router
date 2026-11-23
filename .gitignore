@@ -55,6 +55,7 @@ docs/*
 !docs/FAST_FAIL.md
 !docs/API_KEY_BUDGETS.md
 !docs/MANAGEMENT_KEYS.md
+!docs/MEMORY_ADMISSION.md
 test/*
 open-sse/test/*
 RM.vn.md

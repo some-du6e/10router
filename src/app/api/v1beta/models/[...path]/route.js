@@ -12,6 +12,8 @@ import { allLockedError } from "open-sse/utils/limitHold.js";
 import { PROVIDER_MODELS } from "@/shared/constants/models";
 import { GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS } from "open-sse/config/runtimeConfig.js";
 import { initTranslators } from "open-sse/translator/index.js";
+import { modelIdProblem } from "open-sse/utils/modelPath.js";
+import { readJsonObject } from "@/sse/utils/requestBody.js";
 
 let initialized = false;
 const GEMINI_NATIVE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -85,7 +87,8 @@ export async function POST(request, { params }) {
         .replace(":generateContent", "");
     }
 
-    const body = await request.json();
+    const { body, error } = await readJsonObject(request, { logTag: "GEMINI" });
+    if (error) return error;
 
     if (isGeminiNativeTtsRequest(model, body)) {
       return await forwardGeminiNativeRequest(request, body, model, action);
@@ -237,7 +240,9 @@ async function forwardGeminiNativeRequest(request, body, model, action) {
   if (limitDenied) return limitDenied;
 
   const modelId = normalizeGeminiNativeModel(model);
-  if (!GEMINI_NATIVE_MODEL_PATTERN.test(modelId)) {
+  // The pattern keeps the URL path safe; modelIdProblem also refuses ids that
+  // would lock the router's own scopes (`__all` locks every model).
+  if (!GEMINI_NATIVE_MODEL_PATTERN.test(modelId) || modelIdProblem(modelId)) {
     return Response.json({ error: { message: "Invalid model" } }, { status: 400 });
   }
   const excludeConnectionIds = new Set();

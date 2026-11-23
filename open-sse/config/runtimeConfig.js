@@ -9,6 +9,7 @@ export const HTTP_STATUS = {
   REQUEST_TIMEOUT: 408,
   CONFLICT: 409,
   PAYLOAD_TOO_LARGE: 413,
+  MISDIRECTED_REQUEST: 421,
   UNPROCESSABLE_ENTITY: 422,
   RATE_LIMITED: 429,
   CLIENT_CLOSED_REQUEST: 499,
@@ -33,6 +34,11 @@ export const MEMORY_CONFIG = {
   sessionCleanupIntervalMs: 30 * 60 * 1000,
   proxyDispatchersMaxSize: 20,
   maxAffinitySessions: 5000,
+  // A text body at least this many characters long, or a byte body this many
+  // bytes, goes upstream as a one-shot stream of its bytes, so fetch keeps no
+  // copy while the reply streams (open-sse/utils/proxyFetch.js).
+  // Smaller ones cost nothing to keep and go out as fetch sends them.
+  streamedBodyMinChars: 64 * 1024,
 };
 
 // Largest delay setTimeout honours; above it the timer fires at once.
@@ -110,6 +116,38 @@ export const CACHE_AFFINITY = {
 export const SAME_REQUEST_ERROR_STOP_AFTER = envInt("SAME_REQUEST_ERROR_STOP_AFTER", 2);
 // The statuses it counts. 401/403/404/429, 5xx and header timeouts never count.
 export const SAME_REQUEST_ERROR_STATUSES = new Set([HTTP_STATUS.BAD_REQUEST, HTTP_STATUS.PAYLOAD_TOO_LARGE, HTTP_STATUS.UNPROCESSABLE_ENTITY]);
+
+// Memory admission for the chat routes (src/sse/services/memoryAdmission.js).
+// Every request in flight holds its prompt several times over (parsed, then
+// translated, then serialized for the upstream) until its reply starts streaming
+// (a non-streamed one: until it ends), so a burst of big prompts can take the
+// process past its memory limit. A request that would push the held total over
+// the budget, or that arrives while the process is above its high-water mark,
+// waits in a FIFO queue; if it still can't go after maxWaitMs it gets a 503 with
+// Retry-After, which agents retry. With nothing in flight a request is always
+// admitted, however big.
+const MB = 1024 * 1024;
+export const MEMORY_ADMISSION = {
+  // Bytes of request bodies (times bodyCopies) admitted requests may hold.
+  // Env: INFLIGHT_BODY_BUDGET_MB (0 turns the budget off).
+  budgetBytes: envInt("INFLIGHT_BODY_BUDGET_MB", 900) * MB,
+  // Copies of its body one request holds until its reply starts. The gate
+  // counts them until the reply ends, more than a stream holds by then.
+  bodyCopies: 3,
+  // Longest a request waits for room before it is refused.
+  // Env: INFLIGHT_QUEUE_WAIT_MS (0 refuses at once).
+  maxWaitMs: envInt("INFLIGHT_QUEUE_WAIT_MS", 15 * 1000, { max: MAX_TIMER_MS }),
+  // Seconds a refused client is told to wait. Env: INFLIGHT_RETRY_AFTER_S.
+  retryAfterSec: envInt("INFLIGHT_RETRY_AFTER_S", 10, { min: 1, max: 3600 }),
+  // Resident memory (MB) above which new requests wait. -1 (unset):
+  // highWaterFraction of the container's memory limit (cgroup memory.max), or
+  // off when there is none. Env: MEMORY_HIGH_WATER_MB (0 turns the check off).
+  highWaterMb: envInt("MEMORY_HIGH_WATER_MB", -1),
+  highWaterFraction: 0.8,
+  // How often waiting requests recheck resident memory, which drops without
+  // any request ending (garbage collection).
+  recheckMs: 250,
+};
 
 // Inter-chunk stall timeout (once tokens are flowing). Generous headroom so
 // slow reasoning models aren't aborted mid-stream. Env: STREAM_STALL_TIMEOUT_MS.
@@ -192,6 +230,11 @@ export const UNDICI_HEADERS_TIMEOUT_MS = 300 * 1000;
 
 // Gemini native TTS fetch timeout: abort if Google does not return response headers in time.
 export const GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS = envMs("GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS", 45 * 1000);
+
+// How many combos deep a request may nest (the requested combo counts as 1).
+// A deeper combo, like one already being expanded, fails as that member.
+// Routing (src/sse/handlers/chat.ts) and key allowlists (keyLimits.js) share it.
+export const MAX_COMBO_DEPTH = 4;
 
 // Default token limits
 export const DEFAULT_MAX_TOKENS = 64000;

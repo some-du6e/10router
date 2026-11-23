@@ -4,6 +4,7 @@
 
 import { FORMATS } from "../translator/formats.js";
 import { IMAGE_TOKEN_ESTIMATE } from "../config/mediaConfig.js";
+import { walkJson, quotedSizes, sized } from "@/shared/utils/jsonMeasure.js";
 
 // Legacy per-chunk usage console line; off by default (superseded by "📊 done")
 const DEBUG_USAGE = process.env.LOG_USAGE_VERBOSE === "1";
@@ -340,11 +341,9 @@ export function mergeUsage(prev, next) {
  * Calculate total body size for more accurate estimation
  */
 export function estimateInputTokens(body) {
-  if (!body || typeof body !== "object") return 0;
   // Total body size (messages, tools, system, thinking config, etc.) at ~4 chars
   // per token, with inline images and files counted by kind, not as base64 text.
-  const measured = measureInlineMedia(body);
-  return measured ? Math.ceil(measured.json.length / 4) + measured.inline : 0;
+  return promptTokenEstimates(body).inputTokens;
 }
 
 /**
@@ -390,32 +389,70 @@ export function formatUsage(inputTokens, outputTokens, targetFormat) {
 const NON_ASCII = /[^\x00-\x7f]/g;
 const DATA_URL = /^data:([^;,]+);base64,/;
 
-/** Tokens a base64 payload counts as: an image flat, any other file by its decoded size. */
-function inlinePayloadTokens(mime, base64) {
+/** Tokens a base64 payload of `length` characters counts as: an image flat, any other file by its decoded size. */
+function inlinePayloadTokens(mime, length) {
   if (/^image\//i.test(mime || "")) return IMAGE_TOKEN_ESTIMATE;
-  return Math.ceil((base64.length * 3) / 4 / 4);
+  return Math.ceil((length * 3) / 4 / 4);
+}
+
+const MEDIA_MIN_CHARS = 256;
+
+// The tokens of `value`, the string under `key` in `holder`, when it is an
+// inline file; null when it is text.
+function inlineMediaTokens(key, holder, value) {
+  if (value.length <= MEDIA_MIN_CHARS) return null;
+  const url = DATA_URL.exec(value);
+  if (url) return inlinePayloadTokens(url[1], value.length - url[0].length);
+  if (key === "data" && holder && typeof holder === "object") {
+    const mime = holder.media_type || holder.mimeType || holder.mime_type || (holder.format ? `audio/${holder.format}` : null);
+    if (holder.type === "base64" || mime) return inlinePayloadTokens(mime, value.length);
+  }
+  return null;
 }
 
 /**
- * The body as JSON with inline files blanked, and their tokens. Inline files: a
- * data: URL (OpenAI), a { type: "base64", media_type, data } source (Anthropic
+ * The length of the body's JSON with inline files blanked, how many of its
+ * characters are non-ASCII, and the inline files' tokens, without building the
+ * JSON: one walk the way JSON.stringify would write it. Inline files: a data:
+ * URL (OpenAI), a { type: "base64", media_type, data } source (Anthropic
  * image/document), { mimeType, data } (Gemini inlineData), { data, format }
  * (OpenAI input_audio). Null when the body can't be serialized.
  */
-function measureInlineMedia(body) {
+function measureForTokens(body) {
+  let length = 0;
+  let nonAscii = 0;
+  let inline = 0;
+  try {
+    walkJson(body, (token) => { length += token.length; }, (s, key, holder) => {
+      const tokens = holder ? inlineMediaTokens(key, holder, s) : null;
+      if (tokens !== null) {
+        inline += tokens;
+        length += 2;
+        return;
+      }
+      quotedSizes(s);
+      length += sized.length;
+      nonAscii += sized.nonAscii;
+    });
+    return { length, nonAscii, inline };
+  } catch {
+    return stringifyForTokens(body);
+  }
+}
+
+// What walkJson can't follow (a toJSON, a class instance): serialized.
+function stringifyForTokens(body) {
   let inline = 0;
   try {
     const json = JSON.stringify(body, function replacer(key, value) {
-      if (typeof value !== "string" || value.length <= 256) return value;
-      const url = DATA_URL.exec(value);
-      if (url) { inline += inlinePayloadTokens(url[1], value.slice(url[0].length)); return ""; }
-      if (key === "data" && this && typeof this === "object") {
-        const mime = this.media_type || this.mimeType || this.mime_type || (this.format ? `audio/${this.format}` : null);
-        if (this.type === "base64" || mime) { inline += inlinePayloadTokens(mime, value); return ""; }
-      }
-      return value;
+      if (typeof value !== "string") return value;
+      const tokens = inlineMediaTokens(key, this, value);
+      if (tokens === null) return value;
+      inline += tokens;
+      return "";
     });
-    return typeof json === "string" ? { json, inline } : null;
+    if (typeof json !== "string") return null;
+    return { length: json.length, nonAscii: (json.match(NON_ASCII) || []).length, inline };
   } catch {
     return null;
   }
@@ -427,15 +464,28 @@ function measureInlineMedia(body) {
  */
 export function weighChars(text) {
   if (typeof text !== "string" || !text) return 0;
-  const nonAscii = (text.match(NON_ASCII) || []).length;
-  return text.length + nonAscii * 3;
+  return weighedLength(text.length, (text.match(NON_ASCII) || []).length);
 }
+
+const weighedLength = (length, nonAscii) => length + nonAscii * 3;
 
 /** Input tokens a request body is billed at when the provider reports none. */
 export function estimateBillingInputTokens(body) {
-  if (!body || typeof body !== "object") return 0;
-  const measured = measureInlineMedia(body);
-  return measured ? Math.ceil(weighChars(measured.json) / 4) + measured.inline : 0;
+  return promptTokenEstimates(body).billingInputTokens;
+}
+
+/**
+ * Both input estimates in one walk: `inputTokens` as estimateInputTokens gives
+ * it (JSON length / 4), `billingInputTokens` as estimateBillingInputTokens does
+ * (non-ASCII weighed); inline files by kind in both. 0 when it can't be measured.
+ */
+export function promptTokenEstimates(body) {
+  const measured = body && typeof body === "object" ? measureForTokens(body) : null;
+  if (!measured) return { inputTokens: 0, billingInputTokens: 0 };
+  return {
+    inputTokens: Math.ceil(measured.length / 4) + measured.inline,
+    billingInputTokens: Math.ceil(weighedLength(measured.length, measured.nonAscii) / 4) + measured.inline,
+  };
 }
 
 /**
@@ -443,7 +493,11 @@ export function estimateBillingInputTokens(body) {
  * output from the weighted streamed length. Marked `estimated`, no buffer.
  */
 export function estimateBillingUsage(body, outputWeight, targetFormat = FORMATS.OPENAI) {
-  const input = estimateBillingInputTokens(body);
+  return billingUsage(estimateBillingInputTokens(body), outputWeight, targetFormat);
+}
+
+/** estimateBillingUsage for input tokens already estimated. */
+export function billingUsage(input, outputWeight, targetFormat = FORMATS.OPENAI) {
   const output = estimateOutputTokens(outputWeight);
   if (targetFormat === FORMATS.CLAUDE) return { input_tokens: input, output_tokens: output, estimated: true };
   return { prompt_tokens: input, completion_tokens: output, total_tokens: input + output, estimated: true };

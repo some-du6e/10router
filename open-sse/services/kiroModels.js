@@ -23,6 +23,7 @@ import { v4 as uuidv4 } from "uuid";
 import { createHash } from "crypto";
 import { refreshKiroToken } from "./tokenRefresh.js";
 import { awsRegionOrDefault } from "../utils/awsRegion.js";
+import { applyRefreshedCredentials } from "./oauthCredentialManager.js";
 
 const KIRO_RUNTIME_SDK_VERSION = "1.0.0";
 const KIRO_AGENT_OS = "windows";
@@ -257,7 +258,7 @@ export async function resolveKiroModels(credentials, options = {}) {
         options.log
       );
       if (refreshed?.accessToken) {
-        const next = { ...credentials, ...refreshed };
+        const next = applyRefreshedCredentials({ ...credentials }, refreshed);
         if (typeof options.onCredentialsRefreshed === "function") {
           try { await options.onCredentialsRefreshed(refreshed); } catch (e) {
             options.log?.warn?.("KIRO_MODELS", `onCredentialsRefreshed failed: ${e?.message || e}`);

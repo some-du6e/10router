@@ -76,6 +76,8 @@ export async function resolveGrokCliModels(credentials, options = {}) {
     log = console,
     proxyOptions = null,
     onCredentialsRefreshed,
+    // Ends the model fetch, e.g. when the caller's time for it runs out.
+    signal = undefined,
   } = options;
   let accessToken = credentials?.accessToken;
   if (!accessToken) return { models: [], warning: "Grok CLI access token is missing." };
@@ -85,6 +87,7 @@ export async function resolveGrokCliModels(credentials, options = {}) {
     {
       method: "GET",
       headers: buildHeaders(token, credentials?.providerSpecificData),
+      signal,
     },
     proxyOptions,
   );

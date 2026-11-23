@@ -143,7 +143,20 @@ describe("drain wiring in custom-server.js", () => {
     drain.setExit(exit);
     const quiet = vi.spyOn(console, "log").mockImplementation(() => {});
     onTestFinished(() => quiet.mockRestore());
+    // custom-server.js hands the drain logSync: its lines go straight to fd 2,
+    // not through console.log, which a full stdout pipe would hold back.
+    const fs = require("node:fs");
+    const realWriteSync = fs.writeSync;
+    const stderrLines = [];
+    const toStderr = vi.spyOn(fs, "writeSync").mockImplementation((fd, data, ...rest) => {
+      if (fd !== 2) return realWriteSync(fd, data, ...rest);
+      stderrLines.push(String(data));
+      return Buffer.byteLength(data);
+    });
+    onTestFinished(() => toStderr.mockRestore());
     drain.start("SIGTERM");
+    expect(stderrLines.some((line) => line.startsWith("[Shutdown] SIGTERM: draining"))).toBe(true);
+    expect(quiet.mock.calls.some(([line]) => String(line).startsWith("[Shutdown]"))).toBe(false);
     // The three slow requests, the bridge's loopback POST, and the WebSocket turn's own hold.
     expect(drain.inflight).toBe(5);
 

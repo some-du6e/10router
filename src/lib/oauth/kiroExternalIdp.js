@@ -148,7 +148,6 @@ export function buildExternalIdpRefreshParams(refreshToken, providerSpecificData
       scope,
     }),
     providerSpecificData: {
-      ...providerSpecificData,
       authMethod: "external_idp",
       clientId,
       tokenEndpoint,

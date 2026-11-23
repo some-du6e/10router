@@ -77,7 +77,15 @@ function makeBody(targetBytes) {
 }
 
 // Deterministic random JSON-ish values to cover shapes the fixed body misses.
-function rng(seed) { return () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648; }
+// mulberry32: 32-bit integer math, so the draws don't collapse to a few values.
+function rng(seed) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 function randomValue(r, depth = 0) {
   const pick = r();
   if (depth > 4 || pick < 0.3) {
@@ -156,7 +164,7 @@ describe("requestDetails truncateField", () => {
     }
   });
 
-  it("serializes a large body at full size only once", () => {
+  it("never serializes a large body at full size to cap it", () => {
     const body = makeBody(300e3);
     const max = 5 * 1024;
     const real = JSON.stringify;
@@ -171,8 +179,8 @@ describe("requestDetails truncateField", () => {
     const stored = truncateField(body, max);
     JSON.stringify.mockRestore();
     expect(stored._truncated).toBe(true);
-    expect(onBody).toBe(1);
-    expect(fullSize).toBe(1);
+    expect(onBody).toBe(0);
+    expect(fullSize).toBe(0);
   });
 
   it("measures strings exactly at each limit and one either side", () => {

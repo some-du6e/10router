@@ -20,8 +20,7 @@ const EXCLUDE_PATTERNS = [
   "sharp",          // Sharp core lib (not needed with unoptimized images)
   "detect-libc",    // Sharp dependency
   ".env",           // Environment files
-  ".env.local",
-  ".env.*.local",
+  ".env.*",
   "*.log",          // Log files
   "tmp",            // Temp files
   ".DS_Store",      // macOS files
@@ -340,6 +339,7 @@ module.exports = {
   assertRequiredApiArtifacts,
   copyStandaloneBuild,
   mergeServerArtifacts,
+  shouldExclude,
 };
 
 if (require.main === module) {

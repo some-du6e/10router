@@ -19,7 +19,7 @@ describe("the floor's start time reaches the stream", () => {
     }
   });
 
-  it("handleStreamingResponse copies upstreamStartedAt and the sent body onto the stream", async () => {
+  it("handleStreamingResponse copies upstreamStartedAt and the sent body's output cap onto the stream", async () => {
     vi.resetModules();
     let seen = null;
     vi.doMock("open-sse/utils/streamHandler.js", async (orig) => ({
@@ -31,16 +31,21 @@ describe("the floor's start time reaches the stream", () => {
       appendRequestLog: vi.fn(() => Promise.resolve()), trackPendingRequest: vi.fn(),
     }));
     const { handleStreamingResponse, buildOnStreamComplete } = await import("open-sse/handlers/chatCore/streamingHandler.js");
-    const body = { model: "claude-x", stream: true, messages: [{ role: "user", content: "hi" }], max_tokens: 1 };
-    const translatedBody = { ...body, max_tokens: 64000 };
+    // Non-ASCII, so its two estimates differ; the sent body is bigger than the client's.
+    const body = { model: "claude-x", stream: true, messages: [{ role: "user", content: "hi 日本語のテキスト".repeat(20) }], max_tokens: 1 };
+    const translatedBody = { ...body, max_tokens: 64000, system: "s".repeat(400) };
     const ctx = { provider: "anthropic", model: "claude-x", body, stream: true, translatedBody, requestStartTime: Date.now() };
-    const { onStreamComplete, streamDetailId, streamRequest } = buildOnStreamComplete(ctx);
+    const { onStreamComplete, streamDetail } = buildOnStreamComplete(ctx);
     const providerResponse = new Response("", { headers: { "content-type": "text/event-stream" } });
     providerResponse.upstreamStartedAt = 12345;
     const controller = { signal: new AbortController().signal, isConnected: () => true, handleComplete: vi.fn(), handleError: vi.fn(), handleDisconnect: vi.fn() };
-    await handleStreamingResponse({ ...ctx, providerResponse, sourceFormat: "claude", targetFormat: "claude", streamController: controller, onStreamComplete, streamDetailId, streamRequest });
+    await handleStreamingResponse({ ...ctx, providerResponse, sourceFormat: "claude", targetFormat: "claude", streamController: controller, onStreamComplete, streamDetail });
     expect(seen?.upstreamStartedAt).toBe(12345);
-    expect(seen?.upstreamBody?.max_tokens).toBe(64000);
+    // Estimated from the client's body, capped by what the provider got.
+    const { estimateInputTokens, estimateBillingInputTokens } = await import("open-sse/utils/usageTracking.js");
+    expect(seen?.prompt).toEqual({ inputTokens: estimateInputTokens(body), billingInputTokens: estimateBillingInputTokens(body), outputCap: 64000, includeUsage: false });
+    // Only what it reads: the stream keeps neither body.
+    expect(seen?.upstreamBody).toBeUndefined();
     vi.doUnmock("open-sse/utils/streamHandler.js");
     vi.doUnmock("@/lib/usageDb.js");
   });

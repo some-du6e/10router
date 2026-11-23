@@ -5,6 +5,9 @@ on:
     paths:
       - "src/app/api/v1/codex/models/**"
       - "src/app/api/v1/models/route.js"
+      - "open-sse/services/grokCliModels.js"
+      - "tests/unit/grok-cli-models.test.js"
+      - "tests/unit/models-live-catalog-timeout.test.js"
       - "src/app/api/cli-tools/codex-settings/**"
       - "open-sse/config/codex/**"
       - "scripts/vendor-codex-catalog.mjs"
@@ -55,6 +58,8 @@ jobs:
           unit/codex-model-catalog.test.js
           unit/codex-model-catalog-route.test.js
           unit/models-compatible-stall.test.js
+          unit/grok-cli-models.test.js
+          unit/models-live-catalog-timeout.test.js
           unit/codex-settings-route.test.js
           unit/codex-catalog-line.test.js
           unit/codex-catalog-decision.test.js

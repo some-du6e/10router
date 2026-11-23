@@ -2,14 +2,16 @@ const http = require("http");
 const crypto = require("crypto");
 const path = require("path");
 const fs = require("fs");
+const net = require("net");
 const { pathToFileURL } = require("url");
-const { createDrain, installShutdownDrain, parseDrainTimeout } = require("./server-drain.js");
+const { createDrain, installExitRecorder, installShutdownDrain, logSync, parseDrainTimeout } = require("./server-drain.js");
 
 const origCreate = http.createServer.bind(http);
 
 // Graceful drain on SIGTERM/SIGINT (see server-drain.js). It is wired to the
 // process's signals only when this file is the entry point, at the bottom.
-const drain = createDrain({ timeoutMs: parseDrainTimeout(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS) });
+// Its [Shutdown] lines go synchronously to stderr, like the [Exit] line.
+const drain = createDrain({ timeoutMs: parseDrainTimeout(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS), log: logSync });
 
 // ─── Codex WebSocket transport ────────────────────────────────────────────────
 //
@@ -172,8 +174,199 @@ function createWsDecoder(onMessage, onClose, onPing) {
   };
 }
 
-function isLoopbackSocketIp(ip) {
-  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+// ─── Who a request comes from ────────────────────────────────────────────────
+//
+// Two helpers decide it, and every caller goes through them:
+//   - isOnThisMachine: a client on this machine, which gets keyless /v1 and the
+//     local-only routes;
+//   - clientIpFor: the address the login limiter and logs key on.
+// Forwarding headers count only from a loopback peer (a reverse proxy on this
+// machine) or a peer TRUST_PROXY lists; any other remote peer, and a listed one
+// that sent no forwarding header, is its socket address.
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
+
+// Accepts a socket address, a Host header (with or without port, IPv6 in
+// brackets) or one X-Forwarded-For entry. isLoopbackHostname in
+// src/dashboardGuard.js is the same rule (this file ships standalone and can't
+// import src/); the parity table in tests/unit/dashboard-guard.test.js holds them together.
+function isLoopbackHost(value) {
+  if (!value) return false;
+  let name = String(value).trim().toLowerCase();
+  if (name.startsWith("[")) {
+    const end = name.indexOf("]");
+    if (end === -1) return false;
+    name = name.slice(1, end);
+  } else if (name.indexOf(":") !== -1 && name.indexOf(":") === name.lastIndexOf(":")) {
+    name = name.slice(0, name.indexOf(":"));
+  }
+  if (name.startsWith("::ffff:")) name = name.slice(7);
+  return LOOPBACK_HOSTS.has(name);
+}
+
+// Any of these from a loopback or TRUST_PROXY-listed peer means a proxy or
+// tunnel relayed someone else.
+const FORWARDING_HEADERS = [
+  "x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host", "x-forwarded-proto", "true-client-ip",
+  "cf-connecting-ip", "cf-ray", "tailscale-funnel-request",
+];
+function hasForwardingHeader(headers) {
+  return FORWARDING_HEADERS.some((name) => headers[name]);
+}
+
+// TRUST_PROXY has two forms:
+//   - "true": a forwarder on this machine adds no forwarding header (socat,
+//     ssh -R, a TCP tunnel). No loopback peer is local, and since its clients
+//     write every header, none of them picks a login bucket (all share "unknown").
+//   - a comma list of IPs and CIDRs (192.168.1.10,10.0.0.0/8): reverse proxies on
+//     other hosts or containers. Their forwarding headers are read as a loopback
+//     proxy's are, so each client behind them gets its own bucket.
+function isHeaderlessForwarderMode() {
+  return String(process.env.TRUST_PROXY || "").trim().toLowerCase() === "true";
+}
+
+let trustedProxyCache = { raw: null, list: null };
+function trustedProxyList() {
+  const raw = String(process.env.TRUST_PROXY || "").trim();
+  if (trustedProxyCache.raw === raw) return trustedProxyCache.list;
+  let list = null;
+  if (raw && !["true", "false"].includes(raw.toLowerCase())) {
+    list = new net.BlockList();
+    for (const entry of raw.split(",").map((part) => part.trim()).filter(Boolean)) {
+      const [address, bits] = entry.split("/");
+      const family = net.isIP(address);
+      if (!family) continue;
+      const type = family === 6 ? "ipv6" : "ipv4";
+      try {
+        if (bits === undefined) list.addAddress(address, type);
+        else list.addSubnet(address, Number(bits), type);
+      } catch {
+        // A malformed prefix length trusts nothing.
+      }
+    }
+  }
+  trustedProxyCache = { raw, list };
+  return list;
+}
+
+function isTrustedProxyPeer(socketIp) {
+  const list = trustedProxyList();
+  if (!list || !socketIp) return false;
+  const address = String(socketIp).toLowerCase().startsWith("::ffff:") ? String(socketIp).slice(7) : String(socketIp);
+  const family = net.isIP(address);
+  return !!family && list.check(address, family === 6 ? "ipv6" : "ipv4");
+}
+
+// A non-loopback peer TRUST_PROXY lists that sent a forwarding header: a proxy
+// whose headers are read and whose Host may be its own. One that sent none (a
+// browser through a Docker published port, from the listed bridge gateway)
+// relayed no one and is a direct peer.
+function isListedProxyHop(headers, socketIp) {
+  return !isLoopbackHost(socketIp) && isTrustedProxyPeer(socketIp) && hasForwardingHeader(headers);
+}
+
+/**
+ * A loopback peer is a client on this machine only when nothing says it relays
+ * someone else: no forwarding header, and TRUST_PROXY not "true". Host never
+ * proves a request local, since the client chooses it; a non-loopback Host (a
+ * Host-preserving proxy, a rebound DNS name) only proves it remote. A forwarder
+ * that adds no forwarding header (socat, ssh -R, a TCP tunnel, nginx with neither
+ * X-Forwarded-For nor X-Real-IP set, which sends its own loopback Host by
+ * default) can't be told apart from a local client: it needs TRUST_PROXY=true.
+ */
+function isOnThisMachine(headers, socketIp) {
+  if (!isLoopbackHost(socketIp)) return false;
+  if (isHeaderlessForwarderMode()) return false;
+  if (hasForwardingHeader(headers)) return false;
+  if (headers.host && !isLoopbackHost(headers.host)) return false;
+  return true;
+}
+
+// One address from a header, without brackets or port; "" unless it is an IP.
+function addressOf(value) {
+  let text = String(value || "").trim();
+  if (text.startsWith("[")) {
+    const end = text.indexOf("]");
+    text = end === -1 ? "" : text.slice(1, end);
+  } else if (text.indexOf(":") !== -1 && text.indexOf(":") === text.lastIndexOf(":")) {
+    text = text.slice(0, text.indexOf(":"));
+  }
+  return net.isIP(text) ? text : "";
+}
+
+// Addresses that are, or key in the limiter as, this machine, however they are
+// spelled (::ffff:7f00:1, 0:0:0:0:0:0:0:1): 127.0.0.0/8 and 0.0.0.0/8, also
+// IPv4-mapped (BlockList matches a mapped address against IPv4 rules), and ::/64
+// outside the mapped range, the /64 the limiter keys ::1 on.
+const OWN_HOST_V4 = new net.BlockList();
+OWN_HOST_V4.addSubnet("127.0.0.0", 8, "ipv4");
+OWN_HOST_V4.addSubnet("0.0.0.0", 8, "ipv4");
+const MAPPED_V6 = new net.BlockList();
+MAPPED_V6.addSubnet("::ffff:0:0", 96, "ipv6");
+const OWN_HOST_V6 = new net.BlockList();
+OWN_HOST_V6.addSubnet("::", 64, "ipv6");
+
+function isOwnHostAddress(address) {
+  const family = net.isIP(address);
+  if (family === 4) return OWN_HOST_V4.check(address, "ipv4");
+  if (family !== 6) return false;
+  if (MAPPED_V6.check(address, "ipv6")) return OWN_HOST_V4.check(address, "ipv6");
+  return OWN_HOST_V6.check(address, "ipv6");
+}
+
+// An address from a header the limiter may key on: an IP that isn't this
+// machine, which would put a remote client in the bucket of its own logins.
+function usableAddress(value) {
+  const address = addressOf(value);
+  return address && !isLoopbackHost(address) && !isOwnHostAddress(address) ? address : "";
+}
+
+/**
+ * The addresses to key a login on, the first one being the one logged. A direct
+ * peer is its socket, and so is a TRUST_PROXY-listed one that sent no forwarding
+ * header. Behind a proxy (on this machine, or a listed one that sent a forwarding
+ * header) the candidates are the rightmost X-Forwarded-For entry that is a usable
+ * address (the hop an appending proxy such as Caddy, Traefik, cloudflared or
+ * Tailscale added; everything left of it is the client's) and the X-Real-IP
+ * (what nginx with `X-Real-IP $remote_addr` sets). Whichever one the proxy
+ * wrote is fixed, the other is the client's to rotate, and this file can't tell
+ * which is which, so the limiter counts a failure against both and refuses while
+ * either is locked. CF-Connecting-IP counts only when neither is there. With nothing
+ * usable, or behind a header-less forwarder (TRUST_PROXY=true), the key is the
+ * shared "unknown".
+ */
+function clientKeysFor(headers, socketIp) {
+  const loopback = isLoopbackHost(socketIp);
+  if (!loopback && !isListedProxyHop(headers, socketIp)) return [socketIp || "unknown"];
+  if (isOnThisMachine(headers, socketIp)) return [socketIp];
+  if (loopback && isHeaderlessForwarderMode()) return ["unknown"];
+  let fromXff = "";
+  const hops = String(headers["x-forwarded-for"] || "").split(",");
+  for (let i = hops.length - 1; i >= 0 && !fromXff; i--) fromXff = usableAddress(hops[i]);
+  const fromRealIp = usableAddress(String(headers["x-real-ip"] || "").split(",").pop());
+  const keys = [...new Set([fromXff, fromRealIp].filter(Boolean))];
+  if (!keys.length) {
+    const fromCf = usableAddress(headers["cf-connecting-ip"]);
+    if (fromCf) keys.push(fromCf);
+  }
+  return keys.length ? keys : ["unknown"];
+}
+
+function clientIpFor(headers, socketIp) {
+  return clientKeysFor(headers, socketIp)[0];
+}
+
+// A loopback peer whose Host is a Cloudflare quick tunnel or a Tailscale name:
+// traffic that crossed a tunnel this install opens. The dashboard guard also
+// matches the stored tunnel URLs. A domain behind a Cloudflare-proxied
+// reverse proxy is not tunnel traffic.
+const TUNNEL_HOST_SUFFIXES = [".trycloudflare.com", ".ts.net"];
+function isTunnelTraffic(headers, socketIp) {
+  if (!isLoopbackHost(socketIp) || !headers.host) return false;
+  let name = String(headers.host).trim().toLowerCase();
+  if (!name.startsWith("[") && name.indexOf(":") !== -1) name = name.slice(0, name.indexOf(":"));
+  name = name.replace(/\.$/, "");
+  return TUNNEL_HOST_SUFFIXES.some((suffix) => name.endsWith(suffix));
 }
 
 /**
@@ -208,10 +401,7 @@ function bridgeForwardHeaders(handshakeHeaders, socketIp, payloadLength) {
   }
   forwarded.accept = "text/event-stream";
   forwarded["accept-encoding"] = "identity";
-  const xff = handshakeHeaders["x-forwarded-for"];
-  const xRealIp = handshakeHeaders["x-real-ip"];
-  const loopback = isLoopbackSocketIp(socketIp);
-  if (!loopback || xff || xRealIp) forwarded["x-forwarded-for"] = socketIp || "unknown";
+  if (!isOnThisMachine(handshakeHeaders, socketIp)) forwarded["x-forwarded-for"] = socketIp || "unknown";
   return forwarded;
 }
 
@@ -495,6 +685,14 @@ function handleCodexUpgrade(req, socket, head, port) {
 const PEER_TOKEN = crypto.randomBytes(24).toString("hex");
 process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
 
+// The CLI launcher's readiness nonce (src/lib/launchProof.js) stays inside
+// this process: it moves to a process-global and leaves the env, so the
+// children that inherit the env (cloudflared, tailscale, the updater) never
+// see it.
+const LAUNCH_NONCE_KEY = Symbol.for("10router.launchNonce");
+if (globalThis[LAUNCH_NONCE_KEY] === undefined) globalThis[LAUNCH_NONCE_KEY] = process.env.TENROUTER_LAUNCH_NONCE || null;
+delete process.env.TENROUTER_LAUNCH_NONCE;
+
 let backgroundRefreshStarted = false;
 
 function startBackgroundTokenRefreshFromCustomServer() {
@@ -528,9 +726,12 @@ function startBackgroundTokenRefreshFromCustomServer() {
     });
 }
 
-// Wrap Next standalone HTTP server: derive client IP from the TCP socket
-// (unspoofable) and strip client-supplied forwarding headers so downstream
-// rate-limiting keys on the real peer address instead of attacker-controlled XFF.
+// Wrap Next standalone HTTP server: decide who each request comes from (above)
+// and stamp the verdict as x-9r-real-ip / x-9r-alt-ips / x-9r-via-proxy / x-9r-proxy-hop / x-9r-via-tunnel
+// (plus the raw TCP peer as x-9r-socket-ip / x-9r-socket-port), with
+// the peer token proving the stamp. Client-sent x-9r-* headers are replaced, and
+// X-Forwarded-For is removed so nothing downstream keys on it. The other
+// forwarding headers pass through unchanged.
 http.createServer = (...args) => {
   const handler = args.find((a) => typeof a === "function");
   const rest = args.filter((a) => typeof a !== "function");
@@ -541,23 +742,42 @@ http.createServer = (...args) => {
     // before a shutdown signal, is still served and counted. One whose TCP
     // connect hadn't been accepted when server.close() ran is reset instead,
     // and the turn fails with a 502 frame.
-    const ownBridgeTurn = isLoopbackSocketIp(socketIp) && req.headers["x-9r-peer-token"] === PEER_TOKEN;
+    const ownBridgeTurn = isLoopbackHost(socketIp) && req.headers["x-9r-peer-token"] === PEER_TOKEN;
     if (!drain.track(req, res, { admit: ownBridgeTurn })) return;
-    const xff = req.headers["x-forwarded-for"];
-    const xRealIp = req.headers["x-real-ip"];
-    const viaProxy = !!(xff || xRealIp);
-    const isLoopbackProxy = isLoopbackSocketIp(socketIp);
-    // Trust forwarding headers only when the TCP peer is a local reverse proxy.
-    // Direct/public sockets remain keyed by the unspoofable peer address.
-    const proxyIp = xRealIp || (xff ? String(xff).split(",")[0].trim() : "");
-    const ip = isLoopbackProxy && proxyIp ? proxyIp : socketIp;
+    // x-9r-real-ip is the address logged and keyed on, x-9r-alt-ips the other
+    // login key candidates (see clientKeysFor); x-9r-via-proxy marks every
+    // request not from a client on this machine; x-9r-via-tunnel, one whose Host
+    // is a Cloudflare quick tunnel or Tailscale name; x-9r-proxy-hop, one not
+    // local whose peer is a proxy whose headers are read, so its Host may be one
+    // the proxy wrote, not the browser: "loopback" for a loopback peer that
+    // isn't local, "listed" for isListedProxyHop.
+    const local = isOnThisMachine(req.headers, socketIp);
+    const [ip, ...altIps] = clientKeysFor(req.headers, socketIp);
+    const viaTunnel = isTunnelTraffic(req.headers, socketIp);
+    let proxyHop = "";
+    if (!local && isLoopbackHost(socketIp)) proxyHop = "loopback";
+    else if (isListedProxyHop(req.headers, socketIp)) proxyHop = "listed";
+    delete req.headers["x-9r-proxy-hop"];
     delete req.headers["x-9r-real-ip"];
+    delete req.headers["x-9r-alt-ips"];
     delete req.headers["x-forwarded-for"];
     delete req.headers["x-9r-via-proxy"];
+    delete req.headers["x-9r-via-tunnel"];
     delete req.headers["x-9r-peer-token"];
+    delete req.headers["x-9r-real-port"];
+    delete req.headers["x-9r-socket-ip"];
+    delete req.headers["x-9r-socket-port"];
     req.headers["x-9r-real-ip"] = ip;
+    if (altIps.length) req.headers["x-9r-alt-ips"] = altIps.join(",");
+    // The TCP peer itself, whatever TRUST_PROXY says, for the CLI launcher's
+    // readiness proof only (src/lib/launchProof.js): a relay or proxy has its
+    // own connection, so it gets a proof for that one. Nothing keys or trusts on it.
+    req.headers["x-9r-socket-ip"] = socketIp;
+    req.headers["x-9r-socket-port"] = String(req.socket?.remotePort ?? "");
     req.headers["x-9r-peer-token"] = PEER_TOKEN;
-    if (viaProxy) req.headers["x-9r-via-proxy"] = "1";
+    if (!local) req.headers["x-9r-via-proxy"] = "1";
+    if (proxyHop) req.headers["x-9r-proxy-hop"] = proxyHop;
+    if (viaTunnel) req.headers["x-9r-via-tunnel"] = "1";
     return handler(req, res);
   };
   const server = origCreate(...rest, wrapped);
@@ -630,11 +850,12 @@ http.createServer = (...args) => {
   return server;
 };
 
-module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY, drain } };
+module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY, drain, isLoopbackHost, isOnThisMachine, clientIpFor, clientKeysFor, isTrustedProxyPeer, isTunnelTraffic } };
 
 if (require.main === module) {
   // Before the app loads: its own signal listeners must not see SIGTERM first.
   installShutdownDrain(process, drain);
+  installExitRecorder(process, { inflight: () => drain.inflight });
   const standalone = path.join(__dirname, "server.js");
   if (fs.existsSync(standalone)) {
     require(standalone);

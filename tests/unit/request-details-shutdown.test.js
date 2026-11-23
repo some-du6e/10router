@@ -148,21 +148,25 @@ describe("request details on shutdown", () => {
   it("stops packing full payloads in a running flush once shutdown starts", async () => {
     const first = gate();
     const second = gate();
-    state.adapterGates = [first.promise, second.promise];
+    // The first save reads the adapter once (its driver); then the flush's passes.
+    state.adapterGates = [null, first.promise, second.promise];
     await repo.saveRequestDetail(bigRow("big-a"));
+    expect(state.adapterGates).toEqual([first.promise, second.promise]);
+    expect(state.events).toEqual([]);
     await repo.saveRequestDetail(bigRow("big-b")); // starts a flush, held at the first gate
     await repo.saveRequestDetail(bigRow("big-c")); // left for that flush's next pass
     first.open();
     // The first pass, before any signal, keeps full payloads.
     await vi.waitFor(() => expect(state.events).toEqual(["insert big-a", "insert big-b"]));
-    expect(typeof state.fullData["big-a"]).toBe("string");
-    expect(typeof state.fullData["big-b"]).toBe("string");
+    expect(Buffer.isBuffer(state.fullData["big-a"])).toBe(true);
+    expect(Buffer.isBuffer(state.fullData["big-b"])).toBe(true);
 
     // The next pass is held at the second gate when the signal arrives.
     setTimeout(second.open, 20);
     await runSignalListeners("SIGTERM");
 
     expect(state.events).toEqual(["insert big-a", "insert big-b", "insert big-c", "close"]);
+    expect(state.adapterGates).toEqual([]);
     expect(state.fullData["big-c"]).toBeNull();
     expect(consoleError).not.toHaveBeenCalled();
   });
@@ -176,7 +180,7 @@ describe("request details on shutdown", () => {
     await signalled;
 
     expect(state.events).toEqual(["insert mid-a", "insert mid-b", "close"]);
-    expect(typeof state.fullData["mid-a"]).toBe("string");
+    expect(Buffer.isBuffer(state.fullData["mid-a"])).toBe(true);
     expect(state.fullData["mid-b"]).toBeNull();
     expect(consoleError).not.toHaveBeenCalled();
   });
@@ -193,8 +197,11 @@ describe("request details on shutdown", () => {
 
   it("waits for a flush already running before the database closes", async () => {
     const held = gate();
-    state.adapterGates = [held.promise];
+    // The first save reads the adapter once (its driver); then the flush.
+    state.adapterGates = [null, held.promise];
     await repo.saveRequestDetail({ id: "row-a", model: "m" });
+    expect(state.adapterGates).toEqual([held.promise]);
+    expect(state.events).toEqual([]);
     // The second row reaches the batch size and starts a flush, held at getAdapter.
     await repo.saveRequestDetail({ id: "row-b", model: "m" });
     setTimeout(held.open, 20);
@@ -202,6 +209,7 @@ describe("request details on shutdown", () => {
     await runSignalListeners("SIGTERM");
 
     expect(state.events).toEqual(["insert row-a", "insert row-b", "close"]);
+    expect(state.adapterGates).toEqual([]);
     expect(consoleError).not.toHaveBeenCalled();
   });
 

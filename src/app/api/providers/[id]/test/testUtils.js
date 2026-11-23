@@ -1,4 +1,5 @@
 import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
+import { updateProviderCredentials } from "@/sse/services/credentialSave.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { testProxyUrl } from "@/lib/network/proxyTest";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
@@ -6,9 +7,12 @@ import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { awsRegionOrDefault } from "open-sse/utils/awsRegion.js";
 import { resolveOllamaLocalHost, PROVIDERS } from "open-sse/config/providers.js";
 import {
-  refreshProviderCredentials,
+  mergeRefreshedCredentials,
   shouldRefreshCredentials,
+  withCredentialRefreshLock,
 } from "open-sse/services/oauthCredentialManager.js";
+import { refreshTokenByProvider } from "open-sse/services/tokenRefresh.js";
+import { isInvalidHeaderValueError, sanitizeSecrets } from "open-sse/utils/redact.js";
 import {
   GEMINI_CONFIG,
   ANTIGRAVITY_CONFIG,
@@ -216,10 +220,36 @@ async function probeCloudCodeAssistAccess(connection, accessToken, effectiveProx
   };
 }
 
-async function refreshOAuthToken(connection) {
+const ENGINE_REFRESH_PROVIDERS = new Set(["codex", "grok-cli", "xai"]);
+
+/**
+ * One refresh with `connection`'s refresh token, for a caller already holding
+ * withCredentialRefreshLock. Codex, Grok CLI and xAI use the engine's refresh;
+ * refreshProviderCredentials would take the lock again and wait on itself, so
+ * its body runs here.
+ */
+async function refreshUnlocked(connection) {
+  const provider = connection.provider;
+  if (!connection.refreshToken) return null;
+  if (!ENGINE_REFRESH_PROVIDERS.has(provider)) return requestTokenRefresh(connection);
+  try {
+    return mergeRefreshedCredentials(provider, connection, await refreshTokenByProvider(provider, connection, console));
+  } catch (err) {
+    console.log(`Error refreshing ${provider} token:`, err.message);
+    return null;
+  }
+}
+
+/** The token fields of a stored row, for a caller that shares this test's refresh. */
+function storedTokens(row) {
+  if (!row.accessToken) return null;
+  const fields = ["accessToken", "refreshToken", "idToken", "expiresAt", "lastRefreshAt", "providerSpecificData"];
+  return Object.fromEntries(fields.filter((f) => row[f] != null).map((f) => [f, row[f]]));
+}
+
+async function requestTokenRefresh(connection) {
   const provider = connection.provider;
   const refreshToken = connection.refreshToken;
-  if (!refreshToken) return null;
 
   try {
     if (provider === "gemini-cli" || provider === "antigravity") {
@@ -237,10 +267,6 @@ async function refreshOAuthToken(connection) {
       if (!response.ok) return null;
       const data = await response.json();
       return { accessToken: data.access_token, expiresIn: data.expires_in, refreshToken: data.refresh_token || refreshToken };
-    }
-
-    if (provider === "codex" || provider === "grok-cli" || provider === "xai") {
-      return await refreshProviderCredentials(provider, connection, console);
     }
 
     if (provider === "claude") {
@@ -318,131 +344,167 @@ function isTokenExpired(connection) {
   return shouldRefreshCredentials(connection.provider, connection);
 }
 
+/**
+ * The error text a thrown probe leaves in lastError. undici's refused-header
+ * error quotes the header value, token included, so it becomes a fixed text;
+ * any other message has bearer tokens and the given credentials redacted.
+ */
+export function probeErrorMessage(err, credentials = []) {
+  if (isInvalidHeaderValueError(err)) return "Malformed access token";
+  const message = String(err?.message || err || "Connection test failed");
+  return credentials.reduce((text, creds) => sanitizeSecrets(text, creds), message);
+}
+
 async function testOAuthConnection(connection, effectiveProxy = null) {
+  // The refresh token the row must still hold for this test's status to be
+  // written. A refresh moves it to the token it saved, or to the one another
+  // login stored first.
+  let rowRefreshToken = connection.refreshToken ?? null;
+  let refreshed = false;
+  let superseded = false;
+  // The tokens the test works with: the snapshot, then any stored tokens it adopts.
+  let current = connection;
+  const seen = [connection];
+  // Resolves to { accessToken, adopted } or null. `adopted` marks tokens another
+  // login stored, which the probe may still refresh once.
+  const refresh = async () => {
+    let gone = false;
+    let adoptedRow = null;
+    // Inside the lock the request path's proactive and background refresh take,
+    // so the re-read can't miss a rotation that one is about to save. A refresh
+    // already holding the lock hands this test its result instead.
+    const tokens = await withCredentialRefreshLock(current.provider, current, async () => {
+      // A request, another test or a new sign-in may have rotated the token
+      // since this read; spending the old one again is refused, or revokes the session.
+      const latest = await getProviderConnectionById(connection.id);
+      if (!latest) {
+        gone = true;
+        return null;
+      }
+      if ((latest.refreshToken ?? null) !== (current.refreshToken ?? null)) {
+        adoptedRow = latest;
+        return storedTokens(latest);
+      }
+      return refreshUnlocked(current);
+    });
+    if (gone) {
+      superseded = true;
+      return null;
+    }
+    if (adoptedRow) {
+      seen.push(adoptedRow);
+      if (!adoptedRow.accessToken) {
+        superseded = true;
+        return null;
+      }
+      current = adoptedRow;
+      rowRefreshToken = adoptedRow.refreshToken ?? null;
+      return { accessToken: adoptedRow.accessToken, adopted: true };
+    }
+    if (!tokens?.accessToken) return null;
+    seen.push(tokens);
+    // Rotation retires the old refresh token whatever the probe says, so save
+    // now. The row may hold the token this test used, or already the new one
+    // when a request shared this refresh (withCredentialRefreshLock).
+    const refreshToken = tokens.refreshToken || current.refreshToken;
+    const saved = await updateProviderCredentials(connection.id, {
+      ...tokens,
+      refreshToken,
+      // Stamped, so the request path's checkAndRefreshToken sees the row as newer
+      // than its own snapshot and adopts these tokens instead of refreshing again.
+      lastRefreshAt: tokens.lastRefreshAt || new Date().toISOString(),
+    }, { refreshTokenUsed: [...new Set([current.refreshToken, refreshToken])] });
+    if (saved) {
+      refreshed = true;
+      rowRefreshToken = refreshToken;
+    } else {
+      superseded = true;
+    }
+    return { accessToken: tokens.accessToken, adopted: false };
+  };
+  let result;
+  try {
+    result = await probeOAuthConnection(connection, effectiveProxy, refresh);
+  } catch (err) {
+    result = { valid: false, error: probeErrorMessage(err, seen) };
+  }
+  return { ...result, refreshed, superseded, rowRefreshToken };
+}
+
+async function probeOAuthConnection(connection, effectiveProxy, refresh) {
   const config = OAUTH_TEST_CONFIG[connection.provider];
-  if (!config) return { valid: false, error: "Provider test not supported", refreshed: false };
-  if (!connection.accessToken) return { valid: false, error: "No access token", refreshed: false };
+  if (!config) return { valid: false, error: "Provider test not supported" };
+  if (!connection.accessToken) return { valid: false, error: "No access token" };
 
   // Cursor uses protobuf API - can only verify token exists, not test endpoint
-  if (config.tokenExists) {
-    return { valid: true, error: null, refreshed: false, newTokens: null };
-  }
+  if (config.tokenExists) return { valid: true, error: null };
 
+  const canRefresh = config.refreshable && !!connection.refreshToken;
   let accessToken = connection.accessToken;
-  let refreshed = false;
-  let newTokens = null;
+  // Set by a real refresh, so the test never refreshes twice with a refresh
+  // token the first refresh used up. Adopting stored tokens doesn't set it.
+  let spentRefresh = false;
+  const tryRefresh = async () => {
+    const tokens = await refresh();
+    if (tokens && !tokens.adopted) spentRefresh = true;
+    return tokens;
+  };
 
   const tokenExpired = isTokenExpired(connection);
-  if (config.refreshable && tokenExpired && connection.refreshToken) {
-    const tokens = await refreshOAuthToken(connection);
-    if (tokens) {
-      accessToken = tokens.accessToken;
-      refreshed = true;
-      newTokens = tokens;
-    } else {
-      return { valid: false, error: "Token expired and refresh failed", refreshed: false };
-    }
+  let replaced = false;
+  if (canRefresh && tokenExpired) {
+    const tokens = await tryRefresh();
+    if (!tokens) return { valid: false, error: "Token expired and refresh failed" };
+    accessToken = tokens.accessToken;
+    replaced = true;
   }
 
   if (config.checkExpiry) {
-    if (refreshed) return { valid: true, error: null, refreshed, newTokens };
-    if (tokenExpired) return { valid: false, error: "Token expired", refreshed: false };
-    return { valid: true, error: null, refreshed: false, newTokens: null };
+    if (tokenExpired && !replaced) return { valid: false, error: "Token expired" };
+    return { valid: true, error: null };
   }
 
+  const probe = (token) => probeOAuthAccess(connection, config, token, effectiveProxy);
+  let result = await probe(accessToken);
+  // A rejected token gets one real refresh; adopted tokens a request stored
+  // don't use it up. Two rounds at most.
+  for (let round = 0; round < 2 && !result.valid && result.status === 401 && canRefresh && !spentRefresh; round++) {
+    const tokens = await tryRefresh();
+    if (!tokens) return { valid: false, error: "Token invalid or revoked" };
+    result = await probe(tokens.accessToken);
+  }
+  return withoutStatus(result);
+}
+
+function withoutStatus({ valid, error, warning }) {
+  return warning ? { valid, error, warning } : { valid, error };
+}
+
+/** One probe with `accessToken`: { valid, error, warning?, status }. */
+async function probeOAuthAccess(connection, config, accessToken, effectiveProxy) {
   if (connection.provider === "gemini-cli" || connection.provider === "antigravity") {
-    const initial = await probeCloudCodeAssistAccess(connection, accessToken, effectiveProxy);
-    if (initial.valid) return { valid: true, error: null, refreshed, newTokens };
-
-    if (initial.status === 401 && config.refreshable && !refreshed && connection.refreshToken) {
-      const tokens = await refreshOAuthToken(connection);
-      if (tokens?.accessToken) {
-        const retry = await probeCloudCodeAssistAccess(connection, tokens.accessToken, effectiveProxy);
-        if (retry.valid) return { valid: true, error: null, refreshed: true, newTokens: tokens };
-        return { valid: false, error: retry.error, refreshed: true, newTokens: tokens };
-      }
-      return { valid: false, error: "Token invalid or revoked", refreshed: false };
-    }
-
-    return { valid: false, error: initial.error, refreshed };
+    return probeCloudCodeAssistAccess(connection, accessToken, effectiveProxy);
   }
 
   if (connection.provider === "cline") {
-    const tryProbe = async (token) => {
-      const res = await probeClineAccessToken(token);
-      if (res.ok) return { valid: true, error: null, refreshed, newTokens };
-      if (res.status === 401) return { valid: false, error: "Token invalid or revoked", refreshed };
-      if (res.status === 403) return { valid: false, error: "Access denied", refreshed };
-      return { valid: false, error: `API returned ${res.status}`, refreshed };
-    };
-
-    const initial = await tryProbe(accessToken);
-    if (initial.valid || initial.error !== "Token invalid or revoked" || !connection.refreshToken) {
-      return initial;
-    }
-
-    const tokens = await refreshOAuthToken(connection);
-    if (!tokens?.accessToken) {
-      return { valid: false, error: "Token invalid or revoked", refreshed: false };
-    }
-
-    refreshed = true;
-    newTokens = tokens;
-    accessToken = tokens.accessToken;
-    return await tryProbe(accessToken);
+    const res = await probeClineAccessToken(accessToken);
+    return { ...classifyOAuthProbeResult(res, {}), status: res.status };
   }
 
-  try {
-    const testUrl = config.buildUrl ? config.buildUrl(accessToken) : config.url;
-    const headers = config.noAuth
-      ? { ...config.extraHeaders }
-      : { [config.authHeader]: `${config.authPrefix}${accessToken}`, ...config.extraHeaders };
-    const fetchOpts = { method: config.method, headers };
-    if (config.body) fetchOpts.body = config.body;
-    const res = await fetchWithConnectionProxy(testUrl, fetchOpts, effectiveProxy);
-    const bodyText = !res.ok ? await res.text().catch(() => "") : "";
-
-    const classified = classifyOAuthProbeResult(res, config, bodyText);
-    if (classified.valid) {
-      return {
-        valid: true,
-        // soft success surfaces warning text without marking connection error
-        error: classified.soft ? classified.error : null,
-        warning: classified.soft ? classified.error : null,
-        refreshed,
-        newTokens,
-      };
-    }
-
-    if (res.status === 401 && config.refreshable && !refreshed && connection.refreshToken) {
-      const tokens = await refreshOAuthToken(connection);
-      if (tokens) {
-        const retryUrl = config.buildUrl ? config.buildUrl(tokens.accessToken) : testUrl;
-        const retryHeaders = config.noAuth
-          ? { ...config.extraHeaders }
-          : { [config.authHeader]: `${config.authPrefix}${tokens.accessToken}`, ...config.extraHeaders };
-        const retryOpts = { method: config.method, headers: retryHeaders };
-        if (config.body) retryOpts.body = config.body;
-        const retryRes = await fetchWithConnectionProxy(retryUrl, retryOpts, effectiveProxy);
-        const retryBody = !retryRes.ok ? await retryRes.text().catch(() => "") : "";
-        const retryClassified = classifyOAuthProbeResult(retryRes, config, retryBody);
-        if (retryClassified.valid) {
-          return {
-            valid: true,
-            error: retryClassified.soft ? retryClassified.error : null,
-            warning: retryClassified.soft ? retryClassified.error : null,
-            refreshed: true,
-            newTokens: tokens,
-          };
-        }
-      }
-      return { valid: false, error: "Token invalid or revoked", refreshed: false };
-    }
-
-    return { valid: false, error: classified.error, refreshed };
-  } catch (err) {
-    return { valid: false, error: err.message, refreshed };
-  }
+  const testUrl = config.buildUrl ? config.buildUrl(accessToken) : config.url;
+  const headers = config.noAuth
+    ? { ...config.extraHeaders }
+    : { [config.authHeader]: `${config.authPrefix}${accessToken}`, ...config.extraHeaders };
+  const fetchOpts = { method: config.method, headers };
+  if (config.body) fetchOpts.body = config.body;
+  const res = await fetchWithConnectionProxy(testUrl, fetchOpts, effectiveProxy);
+  const bodyText = !res.ok ? await res.text().catch(() => "") : "";
+  const classified = classifyOAuthProbeResult(res, config, bodyText);
+  if (!classified.valid) return { valid: false, error: classified.error, status: res.status };
+  // Soft success surfaces warning text without marking the connection broken.
+  return classified.soft
+    ? { valid: true, error: classified.error, warning: classified.error, status: res.status }
+    : { valid: true, error: null, status: res.status };
 }
 
 async function fetchWithConnectionProxy(url, options = {}, effectiveProxy = null) {
@@ -832,16 +894,18 @@ export async function testSingleConnection(id) {
   if (!connection) return { valid: false, error: "Connection not found", latencyMs: 0, testedAt: new Date().toISOString() };
 
   const effectiveProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+  const isKeyAuth = connection.authType === "apikey" || connection.authType === "cookie";
 
   if (effectiveProxy.connectionProxyEnabled && effectiveProxy.connectionProxyUrl && !effectiveProxy.vercelRelayUrl) {
     const proxyResult = await testProxyUrl({ proxyUrl: effectiveProxy.connectionProxyUrl });
     if (!proxyResult.ok) {
       const proxyError = proxyResult.error || `Proxy test failed with status ${proxyResult.status}`;
+      // An OAuth row's status is written only while it holds the tokens this test read.
       await updateProviderConnection(id, {
         testStatus: "error",
         lastError: proxyError,
         lastErrorAt: new Date().toISOString(),
-      });
+      }, isKeyAuth ? undefined : { refreshTokenUsed: connection.refreshToken ?? null });
       return { valid: false, error: proxyError, latencyMs: 0, testedAt: new Date().toISOString() };
     }
   }
@@ -849,7 +913,7 @@ export async function testSingleConnection(id) {
   const start = Date.now();
   let result;
 
-  if (connection.authType === "apikey" || connection.authType === "cookie") {
+  if (isKeyAuth) {
     result = await testApiKeyConnection(connection, effectiveProxy);
   } else {
     result = await testOAuthConnection(connection, effectiveProxy);
@@ -871,26 +935,12 @@ export async function testSingleConnection(id) {
       : new Date().toISOString(),
   };
 
-  if (result.refreshed && result.newTokens) {
-    if (result.newTokens.accessToken) updateData.accessToken = result.newTokens.accessToken;
-    if (result.newTokens.refreshToken) updateData.refreshToken = result.newTokens.refreshToken;
-    if (result.newTokens.idToken) updateData.idToken = result.newTokens.idToken;
-    if (result.newTokens.lastRefreshAt) updateData.lastRefreshAt = result.newTokens.lastRefreshAt;
-    if (result.newTokens.expiresIn) updateData.expiresIn = result.newTokens.expiresIn;
-    if (result.newTokens.expiresIn) {
-      updateData.expiresAt = new Date(Date.now() + result.newTokens.expiresIn * 1000).toISOString();
-    } else if (result.newTokens.expiresAt) {
-      updateData.expiresAt = result.newTokens.expiresAt;
-    }
-    if (result.newTokens.providerSpecificData) {
-      updateData.providerSpecificData = {
-        ...(connection.providerSpecificData || {}),
-        ...result.newTokens.providerSpecificData,
-      };
-    }
+  // An OAuth result describes the tokens the test ended with, so it is recorded
+  // only while the row still holds them: a login that replaced them meanwhile
+  // keeps its own status. (A refresh during the test already saved its tokens.)
+  if (!result.superseded) {
+    await updateProviderConnection(id, updateData, { refreshTokenUsed: result.rowRefreshToken });
   }
-
-  await updateProviderConnection(id, updateData);
 
   return { valid: result.valid, error: result.error, refreshed: !!result.refreshed, latencyMs, testedAt: new Date().toISOString() };
 }

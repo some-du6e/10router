@@ -154,9 +154,15 @@ export function installEndpointOverrides(Cls: ExecutorClass): void {
     if (!result?.response?.ok || !(q.blockForeignTools || q.stripReasoning)) return result;
     const offered = offeredTools(result.transformedBody ?? a.body);
     const filter = makeReplyFilter({ blockForeignTools: !!q.blockForeignTools, stripReasoning: !!q.stripReasoning, offered });
-    const response = filterResponse(result.response, filter, (n) => a.log?.warn?.("GUARD", `${this.provider}: dropped ${n} tool call${n === 1 ? "" : "s"} for tools the client never offered`));
+    // The reply's filter keeps this callback until the stream ends: it takes
+    // the log and the name, not the args and the request they carry.
+    const response = filterResponse(result.response, filter, droppedToolsWarning(a.log, this.provider));
     return { ...result, response };
   };
+}
+
+function droppedToolsWarning(log: ExecuteArgs["log"], provider: string) {
+  return (n: number) => log?.warn?.("GUARD", `${provider}: dropped ${n} tool call${n === 1 ? "" : "s"} for tools the client never offered`);
 }
 
 // ---- Reply filters ----------------------------------------------------------

@@ -7,6 +7,7 @@ import {
   pollForToken
 } from "@/lib/oauth/providers";
 import { createProviderConnection } from "@/models";
+import { codexAccessTokenFields } from "@/lib/oauth/providerHelpers.js";
 import {
   startCodexProxy,
   stopCodexProxy,
@@ -303,33 +304,16 @@ export async function POST(request, { params }) {
         }
       }
 
-      // Detect if "code" is actually a raw JWT access token (starts with eyJ)
-      if (code && code.startsWith("eyJ") && code.includes(".")) {
-        const { extractCodexAccountInfo } = await import("@/lib/oauth/providers");
-        const info = extractCodexAccountInfo(code);
-
-        // Also decode JWT directly for ChatGPT website tokens which use
-        // top-level account_id/plan_type instead of nested openai auth claims
-        let directPayload = {};
-        try {
-          const b64 = code.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
-          const padded = b64 + "=".repeat((4 - b64.length % 4) % 4);
-          directPayload = JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
-        } catch {}
-
-        const accountId = info.chatgptAccountId || directPayload.account_id;
-        const planType = info.chatgptPlanType || directPayload.plan_type;
-        const email = info.email || directPayload.email;
-
-        const providerSpecificData = { authMethod: "access_token" };
-        if (accountId) providerSpecificData.chatgptAccountId = accountId;
-        if (planType) providerSpecificData.chatgptPlanType = planType;
+      // Codex: "code" may be a pasted raw JWT access token (starts with eyJ)
+      const rawToken = provider === "codex" && typeof code === "string" ? code.trim() : "";
+      if (rawToken.startsWith("eyJ") && rawToken.includes(".")) {
+        const { email, providerSpecificData } = codexAccessTokenFields(rawToken);
 
         const connection = await createProviderConnection({
           provider,
           authType: "access_token",
-          accessToken: code,
-          email: email || null,
+          accessToken: rawToken,
+          email,
           providerSpecificData,
           testStatus: "active",
         });

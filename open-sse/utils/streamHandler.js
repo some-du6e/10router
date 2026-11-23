@@ -215,15 +215,24 @@ export function createDisconnectAwareStream(transformStream, streamController, o
     while (i >= 0 && (bytes[i] === LF || bytes[i] === CR)) { if (bytes[i] === LF) nl++; i--; }
     trailingNewlines = i < 0 ? trailingNewlines + nl : nl;
   };
+  // The transform queued its own terminal ([DONE], or an error frame and [DONE]).
+  const transformEnded = () => { try { return !!transformStream.terminalSent?.(); } catch { return false; } };
+  // ...and that chunk reached the client. Only then is the fallback below
+  // redundant: an upstream error after the queueing discards the transform's queue.
+  let terminalForwarded = false;
   const write = (controller, value) => {
     controller.enqueue(value);
+    if (!terminalForwarded && value) {
+      try { terminalForwarded = value === transformStream.terminalChunk?.(); } catch { /* no terminal tracking */ }
+    }
     trackTail(value);
     armKeepalive(controller);
   };
 
-  // Emit a synthesized terminal payload (e.g. Responses response.failed + [DONE]) once
+  // Emit a synthesized terminal payload (e.g. Responses response.failed + [DONE])
+  // once, unless the transform's own terminal already reached the client.
   const emitTerminal = (controller) => {
-    if (terminalEmitted || !onAbortTerminal) return;
+    if (terminalEmitted || !onAbortTerminal || terminalForwarded) return;
     terminalEmitted = true;
     try {
       const bytes = onAbortTerminal();
@@ -240,7 +249,23 @@ export function createDisconnectAwareStream(transformStream, streamController, o
       if (!streamController.isConnected()) {
         clearKeepalive();
         if (drains()) startDrain();
-        else finalizeOnAbort();
+        else {
+          finalizeOnAbort();
+          // A stall abort the upstream closed cleanly on: the transform's
+          // flush() already queued its terminal, so pass the queue on. If the
+          // upstream errors first and the queue is lost, the fallback below
+          // still goes out.
+          if (transformEnded() && !terminalForwarded) {
+            try {
+              for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                write(controller, value);
+              }
+            } catch { /* the upstream errored before the queue was read */ }
+            clearKeepalive();
+          }
+        }
         emitTerminal(controller);
         controller.close();
         return;
@@ -410,6 +435,8 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
       finalUsageSeen: transformStream.finalUsageSeen,
       finalizeNow: transformStream.finalizeNow,
       markClientGone: transformStream.markClientGone,
+      terminalSent: transformStream.terminalSent,
+      terminalChunk: transformStream.terminalChunk,
     },
     wrappedController,
     onAbortTerminal ? () => onAbortTerminal(abortMessage) : null,

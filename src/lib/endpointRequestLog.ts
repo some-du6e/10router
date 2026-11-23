@@ -44,7 +44,6 @@ interface Pending {
   url: string;
   reqHeaders: [string, string][];
   reqBody: Buffer[];
-  reqBytes: number;
   status: number;
   resHeaders: [string, string][];
   resBody: Buffer[];
@@ -133,11 +132,17 @@ function headerPairs(raw: HeadersLike): [string, string][] {
   return Object.entries(raw).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]);
 }
 
+// The first MAX_CAPTURE_BYTES of a request body, in a buffer of its own: a view
+// into a copy of the whole body would keep all of it alive while the request runs.
 function bodyBytes(body: unknown): Buffer | null {
-  if (typeof body === "string") return Buffer.from(body);
-  if (body instanceof Uint8Array) return Buffer.from(body);
-  if (body instanceof ArrayBuffer) return Buffer.from(body);
-  if (body instanceof URLSearchParams) return Buffer.from(body.toString());
+  if (typeof body === "string") {
+    // A character is at least one UTF-8 byte, so this many cover the cap.
+    const bytes = Buffer.from(body.slice(0, MAX_CAPTURE_BYTES));
+    return bytes.length > MAX_CAPTURE_BYTES ? Buffer.from(bytes.subarray(0, MAX_CAPTURE_BYTES)) : bytes;
+  }
+  if (body instanceof Uint8Array) return Buffer.from(body.subarray(0, MAX_CAPTURE_BYTES));
+  if (body instanceof ArrayBuffer) return Buffer.from(new Uint8Array(body, 0, Math.min(body.byteLength, MAX_CAPTURE_BYTES)));
+  if (body instanceof URLSearchParams) return bodyBytes(body.toString());
   return null;
 }
 
@@ -167,7 +172,7 @@ function subscribe(s: Store) {
         const reqBody = bodyBytes(options.body);
         const p: Pending = {
           ctx, start: Date.now(), method: (options.method || "GET").toUpperCase(), url: u.href,
-          reqHeaders: headerPairs(options.headers), reqBody: reqBody ? [reqBody.subarray(0, MAX_CAPTURE_BYTES)] : [], reqBytes: reqBody?.length || 0,
+          reqHeaders: headerPairs(options.headers), reqBody: reqBody ? [reqBody] : [],
           status: 0, resHeaders: [], resBody: [], resBytes: 0, done: false,
         };
         return {
@@ -187,6 +192,9 @@ function subscribe(s: Store) {
 }
 
 const cut = (t: string) => (t.length > MAX_TEXT ? `${t.slice(0, MAX_TEXT)}\n… (${t.length - MAX_TEXT} more characters)` : t);
+// A copy of `text` with no tie to the capture it was cut from: V8 keeps a
+// slice's whole source string alive, so a kept entry held its 256 KB capture.
+const own = (text: string) => Buffer.from(text, "utf16le").toString("utf16le");
 const pretty = (t: string) => { try { return JSON.stringify(JSON.parse(t), null, 2); } catch { return t; } };
 
 // What the user said last, for the summary line.
@@ -272,10 +280,10 @@ function finish(s: Store, p: Pending, error: unknown) {
   const entry: EndpointRequestEntry = {
     id: `r${++s.seq}-${Date.now().toString(36)}`,
     at: new Date().toISOString(),
-    kind: "request", ok, status: p.status, ms, model, prompt: lastPrompt(body), error: errText, reply: ok ? replyText(resText) : "",
+    kind: "request", ok, status: p.status, ms, model: own(model), prompt: own(lastPrompt(body)), error: own(errText), reply: ok ? own(replyText(resText)) : "",
     note: error ? "no answer" : tokens != null ? `${p.status} · ${tokens} token${tokens === 1 ? "" : "s"}` : `${p.status} · ${ms}ms`,
-    request: `${p.method} ${redact(p.url)}\n${p.reqHeaders.map(showHeader).join("\n")}\n\n${cut(pretty(reqText))}`,
-    response: error ? `No response\n\n${errText}` : `HTTP ${p.status}\n${p.resHeaders.map(showHeader).join("\n")}\n\n${cut(pretty(resText))}`,
+    request: own(`${p.method} ${redact(p.url)}\n${p.reqHeaders.map(showHeader).join("\n")}\n\n${cut(pretty(reqText))}`),
+    response: own(error ? `No response\n\n${errText}` : `HTTP ${p.status}\n${p.resHeaders.map(showHeader).join("\n")}\n\n${cut(pretty(resText))}`),
   };
   pushEndpointRequest(ctx.provider, entry);
   // A gateway that named beta flags it rejects: the executor drops them and

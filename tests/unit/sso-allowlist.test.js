@@ -16,7 +16,7 @@ vi.mock("next/headers", () => ({
 vi.mock("@/lib/localDb", () => ({ getSettings: mocks.getSettings }));
 vi.mock("@/lib/auth/dashboardSession", () => ({ setDashboardAuthCookie: mocks.setDashboardAuthCookie }));
 vi.mock("@/lib/auth/loginLimiter", () => ({
-  checkLock: () => ({ locked: false }), recordFail: mocks.recordFail, recordSuccess: vi.fn(), getClientIp: () => "127.0.0.1",
+  checkLock: () => ({ locked: false }), recordFail: mocks.recordFail, recordSuccess: vi.fn(), getClientIp: () => "127.0.0.1", getClientKeys: () => ["127.0.0.1"],
 }));
 vi.mock("@/lib/auth/saml.js", () => ({
   getSamlBaseUrl: () => "https://dash.example.test",

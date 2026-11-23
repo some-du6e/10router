@@ -5,12 +5,13 @@ import { appendUrlPath, resolveOpenAICompatibleApiType, getTargetFormat } from "
 import { OAUTH_ENDPOINTS, buildKimiHeaders } from "../config/appConstants.js";
 import { buildClineHeaders } from "../shared/clineAuth.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { modelPathSegment } from "../utils/modelPath.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
 import { relaxForcedToolChoiceForThinking, relaxForcedChatToolChoiceForClaude } from "../translator/concerns/toolChoice.js";
 import { FORMATS } from "../translator/formats.js";
 import {
-  dropFirstPartyBetas, dropFirstPartyFieldsWithoutBeta, filterBetaHeaders, isAnthropicApiUrl, parseRejectedBetas, sentBetas, stripBetaBodyFields, splitBetas,
+  betaFlagsKey, dropFirstPartyBetas, dropFirstPartyFieldsWithoutBeta, filterBetaHeaders, isAnthropicApiUrl, parseRejectedBetas, sentBetas, stripBetaBodyFields, splitBetas,
   BETA_HEADER_KEYS,
 } from "../utils/anthropicBeta.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
@@ -18,6 +19,9 @@ import { installEndpointOverrides } from "../handlers/chatCore/endpointOverrides
 
 // Named-flag retries before the last-resort attempt with no anthropic-beta at all.
 const MAX_BETA_RETRIES = 1;
+
+// The methods transformRequest and finalizeBody call on `this`.
+const BODY_HELPERS = ["applyJsonSchemaFallback", "targetFormat", "onMessagesPath"];
 
 // Auth header descriptors — derived from registry transport.auth, fallback to hardcoded defaults.
 const BEARER = { combined: true, header: "Authorization", scheme: "bearer" };
@@ -149,6 +153,24 @@ export class DefaultExecutor extends BaseExecutor {
     return relaxForcedToolChoiceForThinking(dropFirstPartyFieldsWithoutBeta(out, headers), this.provider);
   }
 
+  // transformRequest (with its endpoint overrides) reads the connection's
+  // settings and the runtime route, never the token; finalizeBody reads the
+  // beta flags and the target format. A subclass that swaps a helper either
+  // one calls gets no reuse.
+  transformRequestInputs(model, stream, credentials) {
+    if (!this.runsOwnBodyHelpers()) return null;
+    return JSON.stringify([credentials?.providerSpecificData ?? null, credentials?.runtimeTransport ?? null]);
+  }
+
+  finalizeBodyInputs(headers, credentials) {
+    if (!this.runsOwnBodyHelpers()) return null;
+    return JSON.stringify([betaFlagsKey(headers), this.targetFormat(credentials)]);
+  }
+
+  runsOwnBodyHelpers() {
+    return BODY_HELPERS.every((name) => this[name] === DefaultExecutor.prototype[name]);
+  }
+
   // Fallback json_schema → json_object for openai-compatible providers without native Structured Output.
   applyJsonSchemaFallback(body) {
     if (!this.provider?.startsWith?.("openai-compatible-")) return body;
@@ -186,7 +208,7 @@ export class DefaultExecutor extends BaseExecutor {
     }
     // gemini-format: build :streamGenerateContent / :generateContent path
     if (this.config.format === "gemini") {
-      return `${this.config.baseUrl}/${model}:${stream ? "streamGenerateContent?alt=sse" : "generateContent"}`;
+      return `${this.config.baseUrl}/${modelPathSegment(model)}:${stream ? "streamGenerateContent?alt=sse" : "generateContent"}`;
     }
     // urlSuffix (e.g. ?beta=true) declared per-provider in registry
     if (this.config.urlSuffix) {

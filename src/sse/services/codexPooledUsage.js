@@ -57,10 +57,7 @@ async function usageForConnection(connection) {
     const refreshed = await refreshCodexToken(connection.refreshToken).catch(() => null);
     if (refreshed?.accessToken) {
       accessToken = refreshed.accessToken;
-      await updateProviderCredentials(connection.id, {
-        ...refreshed,
-        existingProviderSpecificData: connection.providerSpecificData || {},
-      }).catch(() => {});
+      await updateProviderCredentials(connection.id, refreshed).catch(() => {});
     }
   }
 

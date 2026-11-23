@@ -75,6 +75,12 @@ export function sentBetas(headers: Record<string, unknown> | null | undefined): 
   return flags;
 }
 
+// The beta flags in the headers, in a fixed order: all that the beta-gated
+// body edits read from the headers (an executor's finalizeBodyInputs).
+export function betaFlagsKey(headers: Record<string, unknown> | null | undefined): string {
+  return [...sentBetas(headers)].sort().join(",");
+}
+
 // For a third-party host: remove the first-party flags from the beta header(s)
 // in place. A header with none of them is left exactly as it was.
 export function dropFirstPartyBetas(headers: Record<string, unknown>): Record<string, unknown> {

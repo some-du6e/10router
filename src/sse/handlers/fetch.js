@@ -1,3 +1,4 @@
+import { readJsonObject } from "../utils/requestBody.js";
 import {
   getProviderCredentials,
   markAccountUnavailable,
@@ -6,6 +7,7 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { allLockedError } from "open-sse/utils/limitHold.js";
+import { WEBFETCH_LOCK_PREFIX } from "open-sse/services/accountFallback.js";
 import { getSettings, getCombos } from "@/lib/localDb";
 import { AI_PROVIDERS, resolveProviderId } from "@/shared/constants/providers.js";
 import { handleFetchCore } from "open-sse/handlers/fetch/index.js";
@@ -24,13 +26,8 @@ import { assertPublicUrlResolved } from "@/shared/utils/ssrfGuard.js";
  * @param {Request} request
  */
 export async function handleFetch(request) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    log.warn("FETCH", "Invalid JSON body");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
-  }
+  const { body, error } = await readJsonObject(request, { logTag: "FETCH" });
+  if (error) return error;
 
   const reqUrl = new URL(request.url);
   // Accept either `provider` or `model` (UI sends `model` since provider IS the model for webFetch)
@@ -167,7 +164,7 @@ async function handleSingleProviderFetch(body, providerInput, request, apiKey, s
   // Keep web-fetch failures scoped to this capability. Providers such as
   // Ollama use the same connection for chat and fetch, so an upstream fetch
   // failure must not take the account offline for LLM requests.
-  const fetchLockKey = `webfetch:${providerId}`;
+  const fetchLockKey = `${WEBFETCH_LOCK_PREFIX}${providerId}`;
 
   while (true) {
     const credentials = await getProviderCredentials(providerId, excludeConnectionIds, fetchLockKey);
@@ -200,12 +197,7 @@ async function handleSingleProviderFetch(body, providerInput, request, apiKey, s
       credentials: refreshedCredentials,
       log,
       onCredentialsRefreshed: async (newCreds) => {
-        await updateProviderCredentials(credentials.connectionId, {
-          accessToken: newCreds.accessToken,
-          refreshToken: newCreds.refreshToken,
-          providerSpecificData: newCreds.providerSpecificData,
-          testStatus: "active"
-        });
+        await updateProviderCredentials(credentials.connectionId, newCreds);
       }
     });
 

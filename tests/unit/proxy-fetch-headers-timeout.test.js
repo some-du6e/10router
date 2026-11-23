@@ -119,6 +119,28 @@ describe("undici's headers timeout through a proxy", () => {
     expect(error.cause).toBe(refused);
   });
 
+  // A client hang-up must still read as one (an AbortError), or the executor
+  // treats it as a network failure: it retries, logs a 502, and charges nothing.
+  it("passes a client abort through a strict proxy as an abort, not a proxy failure", async () => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const aborted = Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+    fetchMock.mockRejectedValueOnce(aborted);
+    const error = await proxyAwareFetch(URL, { method: "POST", signal: ctrl.signal }, { ...viaProxy, strictProxy: true }).catch((e) => e);
+
+    expect(error).toBe(aborted);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("doesn't retry a client abort direct through a non-strict proxy either", async () => {
+    const aborted = Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+    fetchMock.mockRejectedValueOnce(aborted);
+    const error = await proxyAwareFetch(URL, { method: "POST" }, viaProxy).catch((e) => e);
+
+    expect(error).toBe(aborted);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("is recognised on the error, its cause, or a wrapper's cause", () => {
     const own = Object.assign(new Error("Headers Timeout Error"), { code: "UND_ERR_HEADERS_TIMEOUT" });
     expect(isUndiciHeadersTimeout(own)).toBe(true);

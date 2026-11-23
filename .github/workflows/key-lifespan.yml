@@ -14,6 +14,8 @@ on:
       - "src/lib/db/migrations/**"
       - "src/lib/db/index.js"
       - "src/sse/services/autoCombo.ts"
+      - "src/app/api/v1/codex/responses/route.js"
+      - "tests/unit/codex-ingress-fallback.test.js"
       - "src/app/api/providers/lifespan/route.js"
       - "src/app/(dashboard)/dashboard/providers/*/ConnectionRow.js"
       - "src/app/(dashboard)/dashboard/providers/*/CustomEndpointPage.tsx"
@@ -53,6 +55,7 @@ jobs:
           unit/auto-disable-dead-keys.test.js
           unit/db-migration-chain.test.js
           unit/auto-combo.test.js
+          unit/codex-ingress-fallback.test.js
       # set-state-in-effect: the data-loading effects in ConnectionsCard.js and
       # page.js, which predate this check (they fail on master too).
       - name: Lint
@@ -66,6 +69,8 @@ jobs:
           src/lib/db/index.js
           src/lib/db/repos/connectionsRepo.js
           src/sse/services/autoCombo.ts
+          src/app/api/v1/codex/responses/route.js
+          tests/unit/auto-combo.test.js
           src/app/api/providers/lifespan/route.js
           "src/app/(dashboard)/dashboard/providers/[id]/ConnectionRow.js"
           "src/app/(dashboard)/dashboard/providers/[id]/CustomEndpointPage.tsx"

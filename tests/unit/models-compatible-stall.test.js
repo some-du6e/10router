@@ -12,7 +12,7 @@ delete global._dbAdapter;
 
 const db = await import("@/lib/db/index.js");
 const { getAdapter } = await import("@/lib/db/driver.js");
-const { buildModelsList } = await import("@/app/api/v1/models/route.js");
+const { buildModelsList, withLiveCatalogTimeout, LIVE_CATALOG_TIMEOUT_MS } = await import("@/app/api/v1/models/route.js");
 
 beforeAll(async () => {
   await getAdapter();
@@ -54,5 +54,29 @@ describe("model list with a compatible endpoint whose body stalls", () => {
     await vi.advanceTimersByTimeAsync(200);
     const models = await pending;
     expect(models.some((m) => m.id.startsWith("openai-compatible-stall/"))).toBe(false);
+  });
+});
+
+// A provider's live catalog (grok-cli, zed, ...) that never answers must not
+// hold the list either: the auto-combo catalog waits on this list after a restart.
+describe("a live provider catalog that hangs", () => {
+  it("is cut off after LIVE_CATALOG_TIMEOUT_MS and its fetches are aborted", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let seen;
+    const pending = withLiveCatalogTimeout("grok-cli", (signal) => {
+      seen = signal;
+      return new Promise(() => {});
+    });
+    const outcome = pending.then(() => "resolved", (error) => error.message);
+    await vi.advanceTimersByTimeAsync(LIVE_CATALOG_TIMEOUT_MS - 100);
+    expect(seen.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(200);
+    await expect(outcome).resolves.toBe(`grok-cli model list timed out after ${LIVE_CATALOG_TIMEOUT_MS} ms`);
+    expect(seen.aborted).toBe(true);
+  });
+
+  it("passes a catalog that answers in time straight through", async () => {
+    const live = { models: [{ id: "m-1" }] };
+    await expect(withLiveCatalogTimeout("zed", async () => live)).resolves.toBe(live);
   });
 });

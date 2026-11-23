@@ -12,7 +12,7 @@ import { getAuthBootstrapState, validateNewPassword, clearLegacyGrace } from "@/
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" };
 
 // Completes the forced password change for a legacy install. The caller holds a
-// restricted session (issued by the login route after a last default-password
+// restricted session (issued by the login route after a default-password
 // login), which is only good for this endpoint — so the old password is not
 // asked for again. On success a full session replaces the restricted one.
 export async function POST(request) {

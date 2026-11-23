@@ -1,5 +1,7 @@
 import { handleChat } from "@/sse/handlers/chat.js";
 import { initTranslators } from "open-sse/translator/index.js";
+import { withMemoryAdmission, carryAdmission } from "@/sse/services/memoryAdmission.js";
+import { readJsonObject } from "@/sse/utils/requestBody.js";
 
 let initialized = false;
 
@@ -26,13 +28,17 @@ export async function OPTIONS() {
  */
 export async function POST(request) {
   await ensureInitialized();
-  const body = await request.json();
-  body._compact = true;
-  const newRequest = new Request(request.url, {
-    method: "POST",
-    headers: request.headers,
-    body: JSON.stringify(body),
-    signal: request.signal,
+  // Admitted before the body is read; handleChat runs under the same admission.
+  return withMemoryAdmission(request, async (ticket) => {
+    const { body, error } = await readJsonObject(request, { ticket, logTag: "COMPACT" });
+    if (error) return error;
+    body._compact = true;
+    const newRequest = new Request(request.url, {
+      method: "POST",
+      headers: request.headers,
+      body: JSON.stringify(body),
+      signal: request.signal,
+    });
+    return handleChat(carryAdmission(request, newRequest));
   });
-  return await handleChat(newRequest);
 }
