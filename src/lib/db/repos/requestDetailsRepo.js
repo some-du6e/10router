@@ -4,6 +4,7 @@ import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { structuredPreview } from "../../../shared/utils/requestConversation.js";
 import { measureJson } from "../../../shared/utils/jsonMeasure.js";
+import { writeJson } from "../../../shared/utils/jsonBytes.js";
 import { readCgroupMemoryLimit } from "../../../shared/utils/cgroupMemory.js";
 import { dropSensitiveHeaders, isBinaryBody, binaryBodyMarker } from "../../../../open-sse/utils/redact.js";
 
@@ -205,8 +206,9 @@ function fullCopySource(item, record) {
 }
 
 // A full copy's JSON as UTF-8, written straight into one buffer of its exact
-// size (`utf8`, recorded when it was capped): no joined string, so nothing is
-// flattened, and only one payload's JSON is alive at a time. The same bytes
+// size (`utf8`, recorded when it was capped): each payload is walked into it
+// (writeJson), so no payload's JSON string is built. A payload that can't be
+// walked (one truncateField had to serialize) is serialized. The same bytes
 // Buffer.from(JSON.stringify(...)) of the joined object gives. Null when it
 // can't be serialized or is over FULL_DATA_MAX_BYTES.
 function fullCopyBuffer(parts, utf8) {
@@ -226,7 +228,17 @@ function fullCopyBuffer(parts, utf8) {
   };
   for (let i = 0; i < parts.length; i++) {
     put(partHead(parts[i][0], i));
-    put(serialize(parts[i][1]));
+    let end;
+    try {
+      end = writeJson(parts[i][1], buffer, at);
+    } catch (error) {
+      // Bigger than its recorded size: never store a cut copy.
+      if (error instanceof RangeError) throw error;
+      // Not walkable (capping serialized it too).
+      end = -1;
+    }
+    if (end < 0) put(serialize(parts[i][1]));
+    else at = end;
   }
   put(PARTS_TAIL);
   return at === utf8 ? buffer : null;
@@ -234,15 +246,31 @@ function fullCopyBuffer(parts, utf8) {
 
 // Serializes and gzips a full copy's source, or null: only for a row being
 // written. Compression runs on the libuv pool so a big payload doesn't stall
-// streams.
+// streams. Stored as the gzip bytes (a BLOB); rows written before are base64
+// text, which unpackFullData still reads.
 async function packSource(source) {
   try {
     const input = fullCopyBuffer(source.parts, source.utf8);
     if (!input) return null;
-    return (await gzipAsync(input)).toString("base64");
+    return await gzipAsync(input);
   } catch {
     return null;
   }
+}
+
+// One flush's packed copies, so rows carrying the same payloads (a request's
+// failed attempts and its stream reuse one client request and one sent body)
+// are packed once: first payload → [{ parts, fullData }].
+async function packOnce(source, packed) {
+  const first = source.parts[0][1];
+  let seen = packed.get(first);
+  const hit = seen?.find((entry) => entry.parts.length === source.parts.length
+    && entry.parts.every(([key, payload], i) => key === source.parts[i][0] && payload === source.parts[i][1]));
+  if (hit) return hit.fullData;
+  const fullData = await packSource(source);
+  if (!seen) packed.set(first, (seen = []));
+  seen.push({ parts: source.parts, fullData });
+  return fullData;
 }
 
 // Full copies waiting to be written, only while "Show full request details" is
@@ -283,7 +311,8 @@ function takeCopy(save) {
 // Throws on a corrupt value so callers can tell it apart from a missing one.
 async function unpackFullData(value) {
   if (!value) return null;
-  return JSON.parse((await gunzipAsync(Buffer.from(value, "base64"))).toString("utf8"));
+  const gzipped = typeof value === "string" ? Buffer.from(value, "base64") : value;
+  return JSON.parse((await gunzipAsync(gzipped)).toString("utf8"));
 }
 
 export const __test__ = { sanitizeHeaders, getMaxJsonSize, truncateField, prettyJsonPrefix, fullCopySource, packSource, unpackFullData, limits,
@@ -407,11 +436,12 @@ async function writeBufferedRows() {
       // A flush once shutdown starts packs nothing, checked per row: gzip eats
       // into the drain's listener budget, and the database closes when that runs out.
       const rows = [];
+      const packed = new Map();
       for (const save of saves) {
         // Only a row's newest save has a copy in fullRing, so a write packs
         // at most FULL_DATA_KEEP_ROWS.
         const source = takeCopy(save);
-        rows.push({ save, fullData: config.keepFullData && source && !shuttingDown ? await packSource(source) : null });
+        rows.push({ save, fullData: config.keepFullData && source && !shuttingDown ? await packOnce(source, packed) : null });
       }
       // The setting may have been turned off (and stored payloads cleared)
       // while compression was awaited. Nothing awaits between this check and

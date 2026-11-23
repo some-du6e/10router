@@ -6,6 +6,7 @@ import { dbg } from "../utils/debugLog.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from "../providers/shared.js";
 import { appendUrlPath, resolveOpenAICompatibleApiType } from "../services/provider.js";
 import { betaFlagsKey, inlineToolChangesWithoutBeta } from "../utils/anthropicBeta.js";
+import { serializesTo } from "@/shared/utils/jsonBytes.js";
 
 // What `describe` says `method` reads, called on `executor`. null when the
 // executor runs a `method` other than the one defined next to `describe`
@@ -17,16 +18,41 @@ function statedInputs(executor, describe, method, args) {
   return owner[describe].apply(executor, args);
 }
 
-// One built body: the object (for request logs) and, once serialized, the
-// exact string sent.
+// One built body: the object (for request logs) and, once encoded, the exact
+// UTF-8 bytes sent. The JSON string is dropped once it is encoded.
 function builtBody(value, key = null, source = null) {
   return {
-    key, source, value, text: null,
+    key, source, value, text: null, bytes: null,
     serialize() {
-      if (this.text === null) this.text = JSON.stringify(this.value);
+      if (this.text === null) this.text = this.bytes ? this.bytes.toString("utf8") : JSON.stringify(this.value);
       return this.text;
     },
+    encode() {
+      if (this.bytes === null) {
+        const text = this.serialize();
+        if (typeof text !== "string") throw new TypeError("request body has no JSON");
+        this.bytes = Buffer.from(text, "utf8");
+        this.text = null;
+      }
+      return this.bytes;
+    },
   };
+}
+
+// The body for a send: the cache's last one when `value` would go out as the
+// very bytes it sent (another account, or a resend whose inputs changed but
+// whose body didn't), so it is not encoded again and its object stays the
+// same for request logs; otherwise a new one, which becomes the cache's.
+function sendable(cache, value, key, source) {
+  const last = cache.last;
+  if (last?.bytes && serializesTo(value, last.bytes)) {
+    last.key = key;
+    last.source = source;
+    return last;
+  }
+  const built = builtBody(value, key, source);
+  cache.last = built;
+  return built;
 }
 
 /**
@@ -128,26 +154,26 @@ export class BaseExecutor {
     return betaFlagsKey(headers);
   }
 
-  // The headers and body for one send. `cache` (one per account's request)
-  // holds the last body built; it is handed back while its key and source body
-  // are the same. Executors with unknown inputs keep the old order, transform
-  // before headers (some set state there that buildHeaders reads), and a fresh
-  // body every send.
+  // The headers and body for one send. `cache` (one per request's pass over
+  // its accounts, see chatCore) holds the last body sent; it is handed back
+  // without a rebuild while its key and source body are the same. Otherwise
+  // the body is built, and still sent as the cached bytes when it serializes
+  // to them (sendable). Executors with unknown inputs keep the old order,
+  // transform before headers (some set state there that buildHeaders reads),
+  // and a build every send.
   prepareSend({ model, body, stream, credentials, url, cache }) {
     const transformInputs = statedInputs(this, "transformRequestInputs", "transformRequest", [model, stream, credentials]);
     if (transformInputs == null) {
       const transformed = this.transformRequest(model, body, stream, credentials);
       const headers = this.buildHeaders(credentials, stream, url, model);
-      return { headers, built: builtBody(this.finalizeBody(transformed, headers, credentials)) };
+      return { headers, built: sendable(cache, this.finalizeBody(transformed, headers, credentials), null, body) };
     }
     const headers = this.buildHeaders(credentials, stream, url, model);
     const finalizeInputs = statedInputs(this, "finalizeBodyInputs", "finalizeBody", [headers, credentials]);
     const key = finalizeInputs == null ? null : JSON.stringify([this.provider, model, stream, transformInputs, finalizeInputs]);
     const last = cache.last;
     if (key !== null && last?.key === key && last.source === body) return { headers, built: last };
-    const built = builtBody(this.finalizeBody(this.transformRequest(model, body, stream, credentials), headers, credentials), key, body);
-    if (key !== null) cache.last = built;
-    return { headers, built };
+    return { headers, built: sendable(cache, this.finalizeBody(this.transformRequest(model, body, stream, credentials), headers, credentials), key, body) };
   }
 
   shouldRetry(status, urlIndex) {
@@ -216,14 +242,14 @@ export class BaseExecutor {
       const headersTimeout = headersTimer(timeoutMs, signal, { stream, setBy });
 
       try {
-        const bodyStr = built.serialize();
+        const bodyBytes = built.encode();
         const fetchT0 = Date.now();
-        dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${bodyStr.length}B | headersTimeout=${timeoutMs}ms`);
+        dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${bodyBytes.length}B | headersTimeout=${timeoutMs}ms`);
         onUpstreamAttempt?.(signal?.aborted ? 0 : fetchT0);
         const response = await proxyAwareFetch(url, {
           method: "POST",
           headers,
-          body: bodyStr,
+          body: bodyBytes,
           signal: headersTimeout.signal
         }, proxyOptions, { headersTimeoutMs: timeoutMs });
         headersTimeout.clear();

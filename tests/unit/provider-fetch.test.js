@@ -51,6 +51,37 @@ describe("Provider fetch routing", () => {
     expect(Object.fromEntries(init.headers)).toEqual({ authorization: "Bearer t", "content-length": String(body.length), "content-type": "text/plain;charset=UTF-8" });
   });
 
+  it("sends a large byte body (an executor's encoded body) as a one-shot stream of those bytes, adding no content type", async () => {
+    const response = new Response("ok");
+    const fetchMock = vi.fn().mockResolvedValue(response);
+    globalThis.fetch = fetchMock;
+    const { proxyAwareFetch } = await import("../../open-sse/utils/proxyFetch.js");
+    const { MEMORY_CONFIG } = await import("../../open-sse/config/runtimeConfig.js");
+    const body = Buffer.from("é".repeat(MEMORY_CONFIG.streamedBodyMinChars / 2), "utf8");
+    const url = "https://api.individual.githubcopilot.com/chat";
+    expect(await proxyAwareFetch(url, { method: "POST", body, headers: { authorization: "Bearer t" } })).toBe(response);
+    const [, init] = fetchMock.mock.lastCall;
+    expect(init).toMatchObject({ method: "POST", duplex: "half", redirect: "error", window: null });
+    expect(init.body).toBeInstanceOf(ReadableStream);
+    expect(Object.fromEntries(init.headers)).toEqual({ authorization: "Bearer t", "content-length": String(body.length) });
+    const reader = init.body.getReader();
+    const first = await reader.read();
+    // The bytes themselves, not a copy, and nothing after them.
+    expect(first.value).toBe(body);
+    expect((await reader.read()).done).toBe(true);
+  });
+
+  it("sends a small byte body as it is", async () => {
+    const response = new Response("ok");
+    const fetchMock = vi.fn().mockResolvedValue(response);
+    globalThis.fetch = fetchMock;
+    const { proxyAwareFetch } = await import("../../open-sse/utils/proxyFetch.js");
+    const body = Buffer.from("{}");
+    const options = { method: "POST", body };
+    await proxyAwareFetch("https://api.individual.githubcopilot.com/chat", options);
+    expect(fetchMock).toHaveBeenLastCalledWith("https://api.individual.githubcopilot.com/chat", { ...options, redirect: "error", window: null });
+  });
+
   it("continues routing providers through a configured outbound proxy", async () => {
     const response = new Response("ok");
     const fetchMock = vi.fn().mockResolvedValue(response);

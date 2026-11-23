@@ -916,6 +916,10 @@ async function routeSingleModelChat(
   // Fresh per pass: a retry after the reset must reconsider every account, not
   // inherit exclusions from the pass that ran hours ago.
   const excludeConnectionIds = new Set<string>();
+  // What the last account's attempt sent and its client request, so the next
+  // one reuses them when they come out the same (chatCore). Emptied once a
+  // reply starts; a later pass starts without it.
+  const attemptCache = {};
   const accountFailures: { account?: string; status?: number; error?: string }[] = [];
   const accountErrors: AccountError[] = [];
   passAccountErrors = accountErrors;
@@ -1045,6 +1049,7 @@ async function routeSingleModelChat(
       sourceFormatOverride,
       clientSignal: signal,
       drainOnDisconnect,
+      attemptCache,
       onCredentialsRefreshed: async (newCreds: Record<string, unknown>) => {
         await updateProviderCredentials(credentials.connectionId, newCreds);
       },

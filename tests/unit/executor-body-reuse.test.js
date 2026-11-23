@@ -35,7 +35,9 @@ const res = (status) => ({ status, ok: status >= 200 && status < 300, headers: {
 const jsonRes = (status, payload) => new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
 const networkError = async () => { throw new Error("ECONNRESET"); };
 const sentUrls = () => fetchMock.mock.calls.map(([url]) => url);
-const sentBodies = () => fetchMock.mock.calls.map(([, init]) => init.body);
+// The sent bodies as text: executors send a body's UTF-8 bytes.
+const asText = (body) => (typeof body === "string" ? body : Buffer.from(body).toString("utf8"));
+const sentBodies = () => fetchMock.mock.calls.map(([, init]) => asText(init.body));
 const prompt = () => ({ model: MODEL, stream: true, messages: [{ role: "user", content: "x".repeat(64 * 1024) }] });
 
 // How many times JSON.stringify was called on this very object: each call is

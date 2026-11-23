@@ -152,7 +152,7 @@ describe("request details memory caps", () => {
     vi.resetModules();
   });
 
-  it("make no full copy the ring couldn't hold, and serialize one only when it is packed", async () => {
+  it("make no full copy the ring couldn't hold, and build none until it is packed, then no JSON string of it", async () => {
     const { limits, truncateField, fullCopySource, packSource, unpackFullData } = __test__;
     const cap = limits.fullRingMaxBytes;
     const request = { messages: [{ role: "user", content: "q".repeat(300_000) }] };
@@ -170,7 +170,8 @@ describe("request details memory caps", () => {
       expect(source.bytes).toBeLessThanOrEqual(limits.fullRingMaxBytes);
       expect(serialized()).toBe(0);
       const packed = await packSource(source);
-      expect(serialized()).toBe(1);
+      // Its JSON is written straight into the copy's buffer.
+      expect(serialized()).toBe(0);
       expect(await unpackFullData(packed)).toEqual({ request });
     } finally {
       stringify.mockRestore();
@@ -242,7 +243,7 @@ describe("request details memory caps", () => {
       const providerRequest = { messages: [{ role: "user", content: "x".repeat(50000) }] };
       const item = { request, providerRequest };
       const record = { request: truncateField(request, 1024), providerRequest: truncateField(providerRequest, 1024) };
-      expect(await packSource(fullCopySource(item, record))).toEqual(expect.any(String));
+      expect(Buffer.isBuffer(await packSource(fullCopySource(item, record)))).toBe(true);
       expect(inputs).toHaveLength(1);
       expect(Buffer.isBuffer(inputs[0])).toBe(true);
       expect(inputs[0].length).toBe(Buffer.byteLength(JSON.stringify(item), "utf8"));
@@ -252,33 +253,38 @@ describe("request details memory caps", () => {
     }
   });
 
-  it("pack without walking the payloads again, writing each one's JSON before serializing the next", async () => {
-    const { truncateField, fullCopySource, packSource } = __test__;
-    const first = { role: "user", content: "ü".repeat(30000) };
+  it("pack by writing each payload's JSON into the copy's buffer, building no JSON string of any", async () => {
+    const { truncateField, fullCopySource, packSource, unpackFullData } = __test__;
+    // Escapes, non-ASCII and plain text, so both of the writer's paths run.
+    const first = { role: "user", content: "ü\"\n".repeat(30000) };
     const second = { role: "user", content: "x".repeat(30000) };
     const item = { request: { messages: [first] }, providerRequest: { messages: [second] } };
     const record = { request: truncateField(item.request, 1024), providerRequest: truncateField(item.providerRequest, 1024) };
     const source = fullCopySource(item, record);
     expect(source.utf8).toBe(Buffer.byteLength(JSON.stringify(item), "utf8"));
-    const keys = vi.spyOn(Object, "keys");
-    const order = [];
     const real = JSON.stringify;
+    let large = 0;
     vi.spyOn(JSON, "stringify").mockImplementation(function (value, ...rest) {
-      if (value === item.request || value === item.providerRequest) order.push(value === item.request ? "serialize request" : "serialize providerRequest");
-      return real.call(JSON, value, ...rest);
-    });
-    const write = Buffer.prototype.write;
-    vi.spyOn(Buffer.prototype, "write").mockImplementation(function (text, ...rest) {
-      if (typeof text === "string" && text.length > 1000) order.push("write");
-      return write.call(this, text, ...rest);
+      const out = real.call(JSON, value, ...rest);
+      if (typeof out === "string" && out.length > 1000) large++;
+      return out;
     });
     // The recorded size alone sizes the buffer: a wrong one fails the pack.
     expect(await packSource({ ...source, utf8: source.utf8 + 1 })).toBeNull();
-    order.length = 0;
-    expect(await packSource(source)).toEqual(expect.any(String));
+    expect(await packSource({ ...source, utf8: source.utf8 - 1 })).toBeNull();
+    // Short inside a payload (one changed since it was capped): given up, not serialized.
+    expect(await packSource({ ...source, utf8: source.utf8 - 100 })).toBeNull();
+    const packed = await packSource(source);
     vi.restoreAllMocks();
-    expect(keys.mock.calls.filter(([value]) => value === first || value === second)).toHaveLength(0);
-    expect(order).toEqual(["serialize request", "write", "serialize providerRequest", "write"]);
+    expect(large).toBe(0);
+    expect(await unpackFullData(packed)).toEqual(item);
+  });
+
+  it("read a full copy stored as base64 text by an earlier version", async () => {
+    const { gzipSync } = await import("node:zlib");
+    const { unpackFullData } = __test__;
+    const item = { request: { messages: [{ role: "user", content: "earlier" }] } };
+    expect(await unpackFullData(gzipSync(Buffer.from(JSON.stringify(item))).toString("base64"))).toEqual(item);
   });
 
   it("count as cut only what truncateField cut, not a client's own _truncated fields", () => {

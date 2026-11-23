@@ -38,6 +38,7 @@ import { takeToolMetadata } from "../translator/concerns/toolNamespace.js";
 import { mapToolDefinitions } from "../translator/concerns/toolChanges.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { streamOverride } from "./chatCore/endpointOverrides.js";
+import { sameJson } from "@/shared/utils/jsonMeasure.js";
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -181,8 +182,13 @@ export async function handleChatCore(args) {
   }
 }
 
-async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onBetasRejected, onHeadersBudget, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, sourceFormatOverride, providerThinking, clientSignal = null, drainOnDisconnect = false }, hangUp) {
+async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onBetasRejected, onHeadersBudget, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, sourceFormatOverride, providerThinking, clientSignal = null, drainOnDisconnect = false, attemptCache = null }, hangUp) {
   const { provider, model } = modelInfo;
+  // What the previous attempt sent (executors/base.js prepareSend) and its
+  // client request, so this one reuses them when they come out the same: the
+  // account loop's, shared by one request's attempts until a reply starts
+  // (see below), or this call's own (the send after a token refresh).
+  const bodyCache = attemptCache || {};
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
   const sessionSeed = (() => {
@@ -282,7 +288,11 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   // A client that sends Accept: application/json (AI SDK) wants JSON.
   if (clientDemandsJson(body, clientRawRequest?.headers) && !providerRequiresStreaming) stream = false;
   if (streamMode === "never") stream = false;
-  const clientRequest = { ...clientRequestConfig, stream };
+  // An attempt whose client request serializes as the previous attempt's
+  // reuses that object, so request details cap it once per request.
+  let clientRequest = { ...clientRequestConfig, stream };
+  if (sameJson(bodyCache.clientRequest, clientRequest)) clientRequest = bodyCache.clientRequest;
+  else bodyCache.clientRequest = clientRequest;
 
   const reqLogger = await createRequestLogger(sourceFormat, targetFormat, model);
   if (clientRawRequest) reqLogger.logClientRawRequest(clientRawRequest.endpoint, clientRawRequest.body, clientRawRequest.headers);
@@ -509,9 +519,6 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   let upstreamRespondedAt = 0;
   // A 401/403 sent the request through a token refresh and a retry.
   let authRetried = false;
-  // The last body the executor built for this account, so the send after a
-  // token refresh reuses it (executors/base.js prepareSend).
-  const bodyCache = {};
   try {
     const result = await runAttempt({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected, onHeadersBudget, imageCacheKey, bodyCache });
     upstreamRespondedAt = Date.now();
@@ -600,9 +607,10 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
       log?.warn?.("TOKEN", `${provider.toUpperCase()} | refresh threw: ${e.message}`);
     }
   }
-  // chatCore sends nothing more, so the stream doesn't keep the body string
-  // alive. Emptied, not dropped: executor closures still hold the cache.
-  bodyCache.last = null;
+  // A reply is under way and nothing is sent again, so the stream doesn't keep
+  // the body's bytes alive. Emptied, not dropped: executor closures still hold
+  // the cache. A failed attempt leaves them for the account loop's next one.
+  if (providerResponse.ok) bodyCache.last = bodyCache.clientRequest = null;
 
   // Hung up with an error in hand: a disconnect, not a failure. Either during
   // the token refresh (a retry already sent with the new token is charged), or

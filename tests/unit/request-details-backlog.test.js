@@ -150,10 +150,11 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
     expect(idsWithFullData()).toContain("held-39");
   });
 
-  it("serializes no body when it saves, and none whose copy was pushed out", async () => {
+  it("serializes no body when it saves, and packs none whose copy was pushed out", async () => {
     const requests = Array.from({ length: 30 }, (_, i) => bigRequest(`lazy-${pad(i)}`, MB));
     const providerRequests = requests.map((r, i) => bigRequest(`lazy-${pad(i)}-upstream`, MB));
     const serialized = new Map();
+    const packed = new Map();
     const real = JSON.stringify;
     let longest = 0;
     const stringify = vi.spyOn(JSON, "stringify").mockImplementation(function (value, ...rest) {
@@ -170,36 +171,54 @@ describe("request detail backlog", { timeout: 120_000 }, () => {
       // here): the capped record, at most 128 KB a field, is the largest.
       expect(longest).toBeLessThan(512 * 1024);
       expect(serialized.size).toBe(0);
-      await repo.__test__.flush();
+      // A pack writes a payload's JSON into its copy by walking it (one
+      // Object.keys of the payload), never as a string.
+      const keys = vi.spyOn(Object, "keys");
+      try {
+        await repo.__test__.flush();
+      } finally {
+        for (const call of keys.mock.calls) if (requests.includes(call[0]) || providerRequests.includes(call[0])) packed.set(call[0], (packed.get(call[0]) || 0) + 1);
+        keys.mockRestore();
+      }
     } finally {
       stringify.mockRestore();
     }
+    expect(serialized.size).toBe(0);
     // The newest 25 rows' payloads, once each, when the write packed them.
     for (let i = 0; i < 30; i++) {
       const expected = i < 5 ? undefined : 1;
-      expect(serialized.get(requests[i])).toBe(expected);
-      expect(serialized.get(providerRequests[i])).toBe(expected);
+      expect(packed.get(requests[i])).toBe(expected);
+      expect(packed.get(providerRequests[i])).toBe(expected);
     }
     expect((await db.getRequestDetailFullData("lazy-29")).providerRequest).toEqual(providerRequests[29]);
   });
 
-  it("serializes a stream's body once when its end save lands before its start save is written", async () => {
+  it("packs a stream's body once when its end save lands before its start save is written", async () => {
     const request = bigRequest("reuse");
     const stringify = vi.spyOn(JSON, "stringify");
     let atSave;
+    let packs;
     let atWrite;
     try {
       // Newer than the rows above, so the trim keeps this row's full copy.
       await db.saveRequestDetail(detail("reuse", at(2, 300), request));
       await db.saveRequestDetail({ ...detail("reuse", at(2, 301), request), status: "ok", tokens: { prompt_tokens: 3, completion_tokens: 2 } });
       atSave = stringify.mock.calls.filter(([value]) => value === request).length;
-      await repo.__test__.flush();
+      // A pack walks the payload into its copy: one Object.keys of it.
+      const keys = vi.spyOn(Object, "keys");
+      try {
+        await repo.__test__.flush();
+      } finally {
+        packs = keys.mock.calls.filter(([value]) => value === request).length;
+        keys.mockRestore();
+      }
       atWrite = stringify.mock.calls.filter(([value]) => value === request).length - atSave;
     } finally {
       stringify.mockRestore();
     }
     expect(atSave).toBe(0);
-    expect(atWrite).toBe(1);
+    expect(atWrite).toBe(0);
+    expect(packs).toBe(1);
     expect((await db.getRequestDetailFullData("reuse")).request).toEqual(request);
   });
 

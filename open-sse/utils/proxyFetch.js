@@ -229,19 +229,24 @@ function needsTheClone(error) {
 // source it would send again), so a streamed reply kept its whole prompt for
 // minutes. The string goes out as a stream of its UTF-8 bytes instead, with the
 // same Content-Length and Content-Type fetch would send, and nothing of it is
-// left once it is written. Only a body of MEMORY_CONFIG.streamedBodyMinChars or
-// more, on a method that has one.
+// left once it is written. A byte body (an executor's encoded body, which it
+// keeps only until a reply starts, to resend it to another account) goes out
+// the same way, as it is, so fetch keeps no hold on it either. Only a body of
+// MEMORY_CONFIG.streamedBodyMinChars or more (characters or bytes), on a
+// method that has one.
 function streamedOnce(init) {
   const method = String(init.method || "GET").toUpperCase();
-  if (typeof init.body !== "string" || init.body.length < MEMORY_CONFIG.streamedBodyMinChars || method === "GET" || method === "HEAD") return null;
-  let text = init.body;
+  const text = typeof init.body === "string";
+  if (!(text || init.body instanceof Uint8Array) || init.body.length < MEMORY_CONFIG.streamedBodyMinChars || method === "GET" || method === "HEAD") return null;
+  let source = init.body;
   const headers = new Headers(init.headers);
-  headers.set("content-length", String(Buffer.byteLength(text, "utf8")));
-  if (!headers.has("content-type")) headers.set("content-type", "text/plain;charset=UTF-8");
+  headers.set("content-length", String(text ? Buffer.byteLength(source, "utf8") : source.byteLength));
+  // What fetch itself sends with a string body and none set; a byte body gets none.
+  if (text && !headers.has("content-type")) headers.set("content-type", "text/plain;charset=UTF-8");
   const body = new ReadableStream({
     pull(controller) {
-      controller.enqueue(Buffer.from(text, "utf8"));
-      text = null;
+      controller.enqueue(text ? Buffer.from(source, "utf8") : source);
+      source = null;
       controller.close();
     },
   });
