@@ -228,7 +228,8 @@ export const TABLES = {
       connectionId: "TEXT",
       status: "TEXT",
       data: "TEXT NOT NULL",
-      // Gzipped, base64 JSON of the untruncated payloads. Only set when a
+      // Gzipped JSON of the untruncated payloads: the gzip bytes (a BLOB), or
+      // base64 text in rows written by earlier versions. Only set when a
       // payload exceeded the preview limit, and only for recent rows.
       fullData: "TEXT",
     },

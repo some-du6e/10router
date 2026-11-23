@@ -137,11 +137,11 @@ describe("request detail capping on a repeated save", () => {
     expect(warm.data).toBe(cold.data.replace('"id":"cold"', '"id":"warm"'));
     expect(JSON.parse(warm.data).request._truncated).toBe(true);
     expect(JSON.parse(warm.data).response.content).toBe("all done");
-    expect(warm.fullData).toBe(cold.fullData);
+    expect(Buffer.from(warm.fullData).equals(Buffer.from(cold.fullData))).toBe(true);
     expect(await db.getRequestDetailFullData("warm")).toEqual({ request, providerRequest });
   });
 
-  it("does not cap the request bodies again on the second save, and packs them once at its write", async () => {
+  it("does not cap the request bodies again on the second save, and packs them once at its write, serializing neither", async () => {
     const request = big("s");
     const providerRequest = big("t");
     await db.saveRequestDetail(detail("twice", request, providerRequest, progress));
@@ -161,9 +161,35 @@ describe("request detail capping on a repeated save", () => {
       stringify.mockRestore();
     }
     expect(atSave).toBe(0);
-    expect(atWrite).toBe(2);
+    // The copy's JSON is written into its buffer, not built as a string.
+    expect(atWrite).toBe(0);
     expect(gzip).toHaveBeenCalledTimes(1);
     expect(await db.getRequestDetailFullData("twice")).toEqual({ request, providerRequest });
+  });
+
+  it("packs the rows of one request's failed attempts and its reply once, when one write stores them all", async () => {
+    // An account fallback hands each attempt's row the same client request and
+    // sent body (chatCore's attemptCache).
+    const request = big("fallback-req");
+    const providerRequest = big("fallback-prov");
+    const ids = ["fallback-1", "fallback-2", "fallback-3"];
+    for (const id of ids) await db.saveRequestDetail({ ...detail(id, request, providerRequest, { error: "Rate limit reached", status: 429 }), status: "error" });
+    gzip.mockClear();
+    await repo.__test__.flush();
+    expect(gzip).toHaveBeenCalledTimes(1);
+    const stored = ids.map((id) => row(id).fullData);
+    for (const fullData of stored) expect(Buffer.from(fullData).equals(Buffer.from(stored[0]))).toBe(true);
+    for (const id of ids) expect(await db.getRequestDetailFullData(id)).toEqual({ request, providerRequest });
+  });
+
+  it("packs rows that carry different payloads each on its own", async () => {
+    const request = big("own-req");
+    await db.saveRequestDetail(detail("own-1", request, big("own-prov-1"), done));
+    await db.saveRequestDetail(detail("own-2", request, big("own-prov-2"), done));
+    gzip.mockClear();
+    await repo.__test__.flush();
+    expect(gzip).toHaveBeenCalledTimes(2);
+    expect((await db.getRequestDetailFullData("own-2")).providerRequest.messages[0].content[0].text).toMatch(/^own-prov-20:/);
   });
 
   it("packs the full copy again when the complete row cut one more field", async () => {

@@ -10,6 +10,7 @@ on:
       - "src/lib/db/**"
       - "src/shared/utils/requestConversation.js"
       - "src/shared/utils/jsonMeasure.ts"
+      - "src/shared/utils/jsonBytes.ts"
       - "src/shared/utils/cgroupMemory.ts"
       - "open-sse/utils/redact.js"
       - "src/shared/constants/providers.js"
@@ -71,6 +72,7 @@ jobs:
           src/lib/requestDetailLabels.ts
           src/lib/db/repos/requestDetailsRepo.js
           src/shared/utils/jsonMeasure.ts
+          src/shared/utils/jsonBytes.ts
           src/shared/utils/cgroupMemory.ts
           tests/unit/request-details-tab.test.js
           tests/unit/request-details-backlog.test.js
@@ -86,7 +88,7 @@ jobs:
           set -e
           tail -5 tsc.log
           if [ "$code" -gt 2 ] || ! [ -x ./node_modules/.bin/tsc ]; then echo "tsc did not run (exit $code)"; exit 1; fi
-          if grep -E "requestDetailLabels\.ts|request-details/\[id\]/route\.ts|jsonMeasure\.ts|cgroupMemory\.ts" tsc.log; then exit 1; fi
+          if grep -E "requestDetailLabels\.ts|request-details/\[id\]/route\.ts|jsonMeasure\.ts|jsonBytes\.ts|cgroupMemory\.ts" tsc.log; then exit 1; fi
 
   # Informational, for the PR's "Before": this branch's test against the base
   # branch's code. Every source file under open-sse/ and src/ that this branch

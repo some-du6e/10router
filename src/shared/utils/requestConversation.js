@@ -1,3 +1,5 @@
+import { quotedLength } from "./jsonMeasure.js";
+
 function json(value) {
   return typeof value === "string"
     ? value
@@ -193,27 +195,34 @@ function isOmitted(value) {
   return value === undefined || typeof value === "function" || typeof value === "symbol";
 }
 
+// What TRUNCATED_SUFFIX adds inside a JSON string (its escapes, no quotes).
+const TRUNCATED_SUFFIX_LENGTH = quotedLength(TRUNCATED_SUFFIX) - 2;
+
 // Serialized length of shortenPreview(value, limit) for every limit in one walk,
-// without building the copies. Returns null (fully over budget), the sizes
-// array, or undefined when the value holds something only the slow path handles.
+// without building the copies or any JSON: string lengths are counted
+// (quotedLength). Returns null (fully over budget), the sizes array, or
+// undefined when the value holds something only the slow path handles.
 function measurePreviewSizes(value, limits, maxSize) {
   const sizes = new Array(limits.length).fill(0);
   let unsupported = false;
   const addAll = (n) => { for (let k = 0; k < sizes.length; k++) sizes[k] += n; };
-  const overBudget = () => sizes.every((size) => size > maxSize);
+  const overBudget = () => {
+    for (let k = 0; k < sizes.length; k++) if (sizes[k] <= maxSize) return false;
+    return true;
+  };
   const walk = (item, key) => {
     if (unsupported) return;
     const over = overBudget();
     if (typeof item === "string") {
       if (over) return;
-      if (PREVIEW_PRESERVE_KEYS.has(key)) return addAll(JSON.stringify(item).length);
+      if (PREVIEW_PRESERVE_KEYS.has(key)) return addAll(quotedLength(item));
       let full = -1;
       for (let k = 0; k < limits.length; k++) {
         if (item.length <= limits[k]) {
-          if (full < 0) full = JSON.stringify(item).length;
+          if (full < 0) full = quotedLength(item);
           sizes[k] += full;
         } else {
-          sizes[k] += JSON.stringify(`${item.slice(0, limits[k])}${TRUNCATED_SUFFIX}`).length;
+          sizes[k] += quotedLength(item, limits[k]) + TRUNCATED_SUFFIX_LENGTH;
         }
       }
       return;
@@ -231,10 +240,15 @@ function measurePreviewSizes(value, limits, maxSize) {
     const proto = item && typeof item === "object" ? Object.getPrototypeOf(item) : undefined;
     // An own toJSON (even a method, which isOmitted would drop) changes what gets serialized.
     if ((proto !== Object.prototype && proto !== null) || Object.hasOwn(item, "toJSON")) { unsupported = true; return; }
-    const entries = Object.entries(item).filter(([, child]) => !isOmitted(child));
-    addAll(2 + Math.max(0, entries.length - 1));
-    for (const [k, child] of entries) {
-      addAll(JSON.stringify(k).length + 1);
+    // for...in with hasOwn: Object.keys' keys, in its order, without an array per object.
+    let kept = 0;
+    for (const k in item) if (Object.hasOwn(item, k) && !isOmitted(item[k])) kept++;
+    addAll(2 + Math.max(0, kept - 1));
+    for (const k in item) {
+      if (!Object.hasOwn(item, k)) continue;
+      const child = item[k];
+      if (isOmitted(child)) continue;
+      addAll(quotedLength(k) + 1);
       walk(child, k);
     }
   };
@@ -264,4 +278,4 @@ export function structuredPreview(value, maxSize) {
   return null;
 }
 
-export const __test__ = { measurePreviewSizes };
+export const __test__ = { measurePreviewSizes, shortenPreview };

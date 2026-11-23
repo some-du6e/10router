@@ -158,8 +158,8 @@ describe("request details on shutdown", () => {
     first.open();
     // The first pass, before any signal, keeps full payloads.
     await vi.waitFor(() => expect(state.events).toEqual(["insert big-a", "insert big-b"]));
-    expect(typeof state.fullData["big-a"]).toBe("string");
-    expect(typeof state.fullData["big-b"]).toBe("string");
+    expect(Buffer.isBuffer(state.fullData["big-a"])).toBe(true);
+    expect(Buffer.isBuffer(state.fullData["big-b"])).toBe(true);
 
     // The next pass is held at the second gate when the signal arrives.
     setTimeout(second.open, 20);
@@ -180,7 +180,7 @@ describe("request details on shutdown", () => {
     await signalled;
 
     expect(state.events).toEqual(["insert mid-a", "insert mid-b", "close"]);
-    expect(typeof state.fullData["mid-a"]).toBe("string");
+    expect(Buffer.isBuffer(state.fullData["mid-a"])).toBe(true);
     expect(state.fullData["mid-b"]).toBeNull();
     expect(consoleError).not.toHaveBeenCalled();
   });

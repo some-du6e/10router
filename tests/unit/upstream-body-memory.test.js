@@ -4,12 +4,14 @@
 // multi-MB prompts streaming at once held one extra copy each
 // (open-sse/utils/proxyFetch.js sends without the clone). Redirects still behave
 // as before.
+import { createHash } from "node:crypto";
 import http from "node:http";
 import v8 from "node:v8";
 import vm from "node:vm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { proxyAwareFetch } from "../../open-sse/utils/proxyFetch.js";
 import { BaseExecutor } from "../../open-sse/executors/base.js";
+import { MEMORY_CONFIG } from "../../open-sse/config/runtimeConfig.js";
 
 v8.setFlagsFromString("--expose-gc");
 const gc = vm.runInNewContext("gc");
@@ -28,11 +30,12 @@ beforeAll(async () => {
     const path = new URL(req.url, "http://upstream.test").pathname;
     hits.set(path, (hits.get(path) || 0) + 1);
     let bytes = 0;
-    req.on("data", (chunk) => { bytes += chunk.length; });
+    const hash = createHash("sha1");
+    req.on("data", (chunk) => { bytes += chunk.length; hash.update(chunk); });
     req.on("end", () => {
-      const moved = /^\/moved-(\d{3})$/.exec(path);
+      const moved = /^\/moved-(wire-)?(\d{3})$/.exec(path);
       if (moved) {
-        res.writeHead(Number(moved[1]), { location: "/echo" });
+        res.writeHead(Number(moved[2]), { location: moved[1] ? "/wire" : "/echo" });
         return res.end();
       }
       // 421 on the first request (or every one, for /misdirected-always).
@@ -42,7 +45,7 @@ beforeAll(async () => {
       }
       if (path === "/wire") {
         res.writeHead(200, { "content-type": "application/json" });
-        return res.end(JSON.stringify({ bytes, length: req.headers["content-length"], chunked: "transfer-encoding" in req.headers, type: req.headers["content-type"] }));
+        return res.end(JSON.stringify({ bytes, length: req.headers["content-length"], chunked: "transfer-encoding" in req.headers, type: req.headers["content-type"], sha: hash.digest("hex") }));
       }
       if (path === "/echo" || path === "/misdirected-once") {
         res.writeHead(200, { "content-type": "application/json" });
@@ -146,6 +149,8 @@ describe("upstream request body memory", () => {
   }, 60_000);
 });
 
+const sha1 = (body) => createHash("sha1").update(body).digest("hex");
+
 describe("upstream redirects", () => {
   const post = (path, init = {}) => proxyAwareFetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: '{"x":1}', ...init });
 
@@ -193,12 +198,34 @@ describe("upstream redirects", () => {
     expect(await plain.text()).toBe("misdirected");
   });
 
-  // An explicit redirect "follow" is fetch's own behavior, untouched. Node 22's
-  // undici can't re-send a byte body on a 307 (it fails), Node 24's can.
-  it("redirects a byte body as fetch does", async () => {
-    const outcome = (init) => post("/moved-307", { body: new TextEncoder().encode('{"x":1}'), ...init })
-      .then((res) => res.json(), (error) => `${error.name}: ${error.cause?.message}`);
-    expect(await outcome()).toEqual(await outcome({ redirect: "follow" }));
+  // Executors send their body's bytes. Node 22's fetch can't send a byte body
+  // again on a 307 or 308 (Node 24's can), so the follow gets a Blob of them.
+  it.each([307, 308])("follows a %i with a byte body, small or streamed, keeping its Content-Type", async (status) => {
+    const big = Buffer.alloc(MEMORY_CONFIG.streamedBodyMinChars + 64, 120);
+    const bodies = [
+      // Small: from Buffer's shared pool, a view into a larger allocation.
+      Buffer.from('{"x":1}', "utf8"),
+      // A view at an offset into a larger buffer, past the stream threshold.
+      big.subarray(32, big.length - 22),
+    ];
+    for (const body of bodies) {
+      hits.clear();
+      const copy = Buffer.from(body);
+      const res = await post(`/moved-wire-${status}`, { body });
+      expect(res.status).toBe(200);
+      expect(res.redirected).toBe(true);
+      expect(await res.json()).toEqual({ bytes: body.length, length: String(body.length), chunked: false, type: "application/json", sha: sha1(copy) });
+      expect(hits.get(`/moved-wire-${status}`)).toBe(2);
+      // The caller's bytes are left as they were.
+      expect(body.equals(copy)).toBe(true);
+    }
+  });
+
+  it("adds no Content-Type to a byte body that has none when it follows a redirect", async () => {
+    const body = Buffer.from('{"x":1}', "utf8");
+    const res = await post("/moved-wire-307", { body, headers: {} });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ bytes: 7, length: "7", chunked: false, sha: sha1(body) });
   });
 
   it("leaves a caller's own redirect mode alone", async () => {
@@ -225,7 +252,7 @@ describe("upstream redirects", () => {
     ["large, a Map of headers", large('{"z":3}'), new Map([["Content-Type", "application/json"]]), "application/json"],
   ])("sends a %s string body whole, with its length", async (_, body, headers, type) => {
     const res = await proxyAwareFetch(`${base}/wire`, { method: "POST", headers, body });
-    expect(await res.json()).toEqual({ bytes: Buffer.byteLength(body), length: String(Buffer.byteLength(body)), chunked: false, type });
+    expect(await res.json()).toEqual({ bytes: Buffer.byteLength(body), length: String(Buffer.byteLength(body)), chunked: false, type, sha: sha1(body) });
   });
 
   it("sends a request without a redirect once", async () => {

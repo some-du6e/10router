@@ -209,9 +209,9 @@ async function getDirectDispatcher() {
 // in Node). A body that can be sent again goes out that way, and the request is
 // sent again as the caller asked when the upstream answers with a redirect
 // (which that follows) or a 421 (which fetch retries by re-sending a byte body
-// it has already sent, so it fails with a length mismatch; a string body is
-// sent as a stream, below, which fetch doesn't retry). Neither reply means the
-// upstream acted on the request. Bun's fetch fails these differently, so this is
+// it has already sent, so it fails with a length mismatch; a large string or
+// byte body is sent as a stream, below, which fetch doesn't retry). Neither
+// reply means the upstream acted on the request. Bun's fetch fails these differently, so this is
 // Node only.
 const SEND_WITHOUT_CLONE = Boolean(process.versions?.undici) && !process.versions?.bun;
 const UNDICI_REDIRECT_ERROR = "unexpected redirect";
@@ -229,19 +229,25 @@ function needsTheClone(error) {
 // source it would send again), so a streamed reply kept its whole prompt for
 // minutes. The string goes out as a stream of its UTF-8 bytes instead, with the
 // same Content-Length and Content-Type fetch would send, and nothing of it is
-// left once it is written. Only a body of MEMORY_CONFIG.streamedBodyMinChars or
-// more, on a method that has one.
+// left once it is written. A byte body (any Uint8Array: an executor's encoded
+// body, which it keeps only until a reply starts to resend it to another
+// account, or the binary bodies Windsurf, Qoder and a proxied Cursor send) goes
+// out the same way, as it is, so fetch keeps no hold on it either. Only a body of
+// MEMORY_CONFIG.streamedBodyMinChars or more (characters or bytes), on a
+// method that has one.
 function streamedOnce(init) {
   const method = String(init.method || "GET").toUpperCase();
-  if (typeof init.body !== "string" || init.body.length < MEMORY_CONFIG.streamedBodyMinChars || method === "GET" || method === "HEAD") return null;
-  let text = init.body;
+  const text = typeof init.body === "string";
+  if (!(text || init.body instanceof Uint8Array) || init.body.length < MEMORY_CONFIG.streamedBodyMinChars || method === "GET" || method === "HEAD") return null;
+  let source = init.body;
   const headers = new Headers(init.headers);
-  headers.set("content-length", String(Buffer.byteLength(text, "utf8")));
-  if (!headers.has("content-type")) headers.set("content-type", "text/plain;charset=UTF-8");
+  headers.set("content-length", String(text ? Buffer.byteLength(source, "utf8") : source.byteLength));
+  // What fetch itself sends with a string body and none set; a byte body gets none.
+  if (text && !headers.has("content-type")) headers.set("content-type", "text/plain;charset=UTF-8");
   const body = new ReadableStream({
     pull(controller) {
-      controller.enqueue(Buffer.from(text, "utf8"));
-      text = null;
+      controller.enqueue(text ? Buffer.from(source, "utf8") : source);
+      source = null;
       controller.close();
     },
   });
@@ -259,13 +265,22 @@ async function send(target, init) {
     // request goes again as the caller asked, which fetch handles as before.
     if (streamed && response.status === HTTP_STATUS.MISDIRECTED_REQUEST) {
       response.body?.cancel().catch(() => { });
-      return originalFetch(target, init);
+      return originalFetch(target, sendableAgain(init));
     }
     return response;
   } catch (error) {
     if (!needsTheClone(error)) throw error;
-    return originalFetch(target, init);
+    return originalFetch(target, sendableAgain(init));
   }
+}
+
+// The request as fetch sends it when it may follow a redirect itself. Node 22's
+// fetch can't send a byte body again on a 307 or 308 (the copy it made is
+// detached by then), but it can a Blob of it; an untyped Blob adds no
+// Content-Type, and its size is the Content-Length.
+function sendableAgain(init) {
+  const body = init.body;
+  return body instanceof ArrayBuffer || ArrayBuffer.isView(body) ? { ...init, body: new Blob([body]) } : init;
 }
 
 // An optional observer the app installs on globalThis (the custom-endpoint

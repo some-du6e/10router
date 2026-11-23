@@ -35,7 +35,9 @@ const res = (status) => ({ status, ok: status >= 200 && status < 300, headers: {
 const jsonRes = (status, payload) => new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
 const networkError = async () => { throw new Error("ECONNRESET"); };
 const sentUrls = () => fetchMock.mock.calls.map(([url]) => url);
-const sentBodies = () => fetchMock.mock.calls.map(([, init]) => init.body);
+// The sent bodies as text: executors send a body's UTF-8 bytes.
+const asText = (body) => (typeof body === "string" ? body : Buffer.from(body).toString("utf8"));
+const sentBodies = () => fetchMock.mock.calls.map(([, init]) => asText(init.body));
 const prompt = () => ({ model: MODEL, stream: true, messages: [{ role: "user", content: "x".repeat(64 * 1024) }] });
 
 // How many times JSON.stringify was called on this very object: each call is
@@ -143,7 +145,32 @@ describe("an executor whose body depends on the URL or on per-send state", () =>
     expect(order).toEqual(["transform", "headers", "transform", "headers", "transform", "headers"]);
   });
 
-  it("gets no reuse from DefaultExecutor once a subclass or instance overrides transformRequest", async () => {
+  it("still sends the last send's bytes when a per-send build comes out the same, building it each send", async () => {
+    let builds = 0;
+    class Unstated extends BaseExecutor {
+      // Overridden without restating its inputs: built for every send.
+      transformRequest(model, body) {
+        builds++;
+        return { ...body };
+      }
+    }
+    const ex = new Unstated("test", { baseUrls: [A, B], retry: { 503: { attempts: 1, delayMs: 0 } } });
+    fetchMock.mockResolvedValueOnce(res(503)).mockResolvedValueOnce(res(429)).mockResolvedValueOnce(res(200));
+    const stringified = stringifyCounter();
+    const body = prompt();
+
+    const out = await ex.execute({ model: MODEL, body, stream: true, credentials: { apiKey: "k" } });
+
+    expect(builds).toBe(3);
+    const raw = fetchMock.mock.calls.map(([, init]) => init.body);
+    expect(raw[1]).toBe(raw[0]);
+    expect(raw[2]).toBe(raw[0]);
+    expect(sentBodies()[0]).toBe(JSON.stringify(body));
+    // One serialization, of the first build, which every send reports.
+    expect(stringified(out.transformedBody)).toBe(1);
+  });
+
+  it("builds every send for DefaultExecutor once a subclass or instance overrides transformRequest", async () => {
     let subclassCalls = 0;
     class Sub extends DefaultExecutor {
       transformRequest(...args) {
