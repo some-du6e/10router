@@ -10,6 +10,7 @@ import vm from "node:vm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { proxyAwareFetch } from "../../open-sse/utils/proxyFetch.js";
 import { BaseExecutor } from "../../open-sse/executors/base.js";
+import { MEMORY_CONFIG } from "../../open-sse/config/runtimeConfig.js";
 
 v8.setFlagsFromString("--expose-gc");
 const gc = vm.runInNewContext("gc");
@@ -30,9 +31,9 @@ beforeAll(async () => {
     let bytes = 0;
     req.on("data", (chunk) => { bytes += chunk.length; });
     req.on("end", () => {
-      const moved = /^\/moved-(\d{3})$/.exec(path);
+      const moved = /^\/moved-(wire-)?(\d{3})$/.exec(path);
       if (moved) {
-        res.writeHead(Number(moved[1]), { location: "/echo" });
+        res.writeHead(Number(moved[2]), { location: moved[1] ? "/wire" : "/echo" });
         return res.end();
       }
       // 421 on the first request (or every one, for /misdirected-always).
@@ -193,12 +194,20 @@ describe("upstream redirects", () => {
     expect(await plain.text()).toBe("misdirected");
   });
 
-  // An explicit redirect "follow" is fetch's own behavior, untouched. Node 22's
-  // undici can't re-send a byte body on a 307 (it fails), Node 24's can.
-  it("redirects a byte body as fetch does", async () => {
-    const outcome = (init) => post("/moved-307", { body: new TextEncoder().encode('{"x":1}'), ...init })
-      .then((res) => res.json(), (error) => `${error.name}: ${error.cause?.message}`);
-    expect(await outcome()).toEqual(await outcome({ redirect: "follow" }));
+  // Executors send their body's bytes. Node 22's fetch can't send a byte body
+  // again on a 307 or 308 (Node 24's can), so the follow gets a Blob of them.
+  it.each([307, 308])("follows a %i with a byte body, small or streamed, keeping its Content-Type", async (status) => {
+    for (const n of [7, MEMORY_CONFIG.streamedBodyMinChars + 10]) {
+      hits.clear();
+      const body = Buffer.alloc(n, 120);
+      const res = await post(`/moved-wire-${status}`, { body });
+      expect(res.status).toBe(200);
+      expect(res.redirected).toBe(true);
+      expect(await res.json()).toEqual({ bytes: n, length: String(n), chunked: false, type: "application/json" });
+      expect(hits.get(`/moved-wire-${status}`)).toBe(2);
+      // The caller's bytes are left as they were.
+      expect(body.every((b) => b === 120)).toBe(true);
+    }
   });
 
   it("leaves a caller's own redirect mode alone", async () => {

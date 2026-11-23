@@ -210,8 +210,8 @@ async function getDirectDispatcher() {
 // sent again as the caller asked when the upstream answers with a redirect
 // (which that follows) or a 421 (which fetch retries by re-sending a byte body
 // it has already sent, so it fails with a length mismatch; a large string or
-// byte body is sent as a stream, below, which fetch doesn't retry). Neither reply means the
-// upstream acted on the request. Bun's fetch fails these differently, so this is
+// byte body is sent as a stream, below, which fetch doesn't retry). Neither
+// reply means the upstream acted on the request. Bun's fetch fails these differently, so this is
 // Node only.
 const SEND_WITHOUT_CLONE = Boolean(process.versions?.undici) && !process.versions?.bun;
 const UNDICI_REDIRECT_ERROR = "unexpected redirect";
@@ -265,13 +265,22 @@ async function send(target, init) {
     // request goes again as the caller asked, which fetch handles as before.
     if (streamed && response.status === HTTP_STATUS.MISDIRECTED_REQUEST) {
       response.body?.cancel().catch(() => { });
-      return originalFetch(target, init);
+      return originalFetch(target, sendableAgain(init));
     }
     return response;
   } catch (error) {
     if (!needsTheClone(error)) throw error;
-    return originalFetch(target, init);
+    return originalFetch(target, sendableAgain(init));
   }
+}
+
+// The request as fetch sends it when it may follow a redirect itself. Node 22's
+// fetch can't send a byte body again on a 307 or 308 (the copy it made is
+// detached by then), but it can a Blob of it; an untyped Blob adds no
+// Content-Type, and its size is the Content-Length.
+function sendableAgain(init) {
+  const body = init.body;
+  return body instanceof ArrayBuffer || ArrayBuffer.isView(body) ? { ...init, body: new Blob([body]) } : init;
 }
 
 // An optional observer the app installs on globalThis (the custom-endpoint
