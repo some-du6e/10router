@@ -188,7 +188,7 @@ Usage DB:
   Spend is a running total per key, updated with each usage row
   (`docs/API_KEY_BUDGETS.md`)
 - Provider secrets persisted in `providerConnections` entries
-- Upstream proxies (`src/lib/network/proxyRouting.ts`, `connectionProxy.ts`, applied in `open-sse/utils/proxyFetch.js`): each request resolves Account (`providerSpecificData.proxyPoolId`) → Provider (`settings.providerStrategies[provider].proxyPoolId`) → Global (`settings.globalProxyPoolId`) → env proxy variables. Each layer is unset (inherit), `__direct__` or a proxy pool id; the most specific set layer wins. A layer naming a pool that is off or gone blocks the request rather than falling through. Direct skips the env proxy. Embeddings, image, TTS/STT and search handlers don't read account proxies yet and only get the env proxy.
+- Upstream proxies (`src/lib/network/proxyRouting.ts`, `connectionProxy.ts`, applied in `open-sse/utils/proxyFetch.js`): each request resolves Account (`providerSpecificData.proxyPoolId`) → Provider (`settings.providerStrategies[provider].proxyPoolId`) → Global (`settings.globalProxyPoolId`) → env proxy variables. Each layer is unset (inherit), `__direct__` or a proxy pool id; the most specific set layer wins. A layer naming a pool that is off or gone blocks the request rather than falling through. Direct skips the env proxy. Embeddings, image, video, TTS/STT, search and web fetch handlers, Devin CLI's subprocess and Cursor's HTTP/2 AgentService text path don't use account proxies yet (only the env proxy, or none); chatCore still refuses a blocked account before any executor runs.
 
 ## 5) Cloud Sync
 

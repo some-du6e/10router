@@ -168,7 +168,9 @@ export default function ProxyPoolsPage() {
 
           const data = await res.json();
           if (res.status === 409) {
-            notify.warning(`Cannot delete: ${data.boundConnectionCount || 0} connection(s) are still using this pool.`);
+            notify.warning(data.boundLayers
+              ? `Cannot delete: ${data.error}. Change that layer in Proxy routing first.`
+              : `Cannot delete: ${data.boundConnectionCount || 0} connection(s) are still using this pool.`);
           } else {
             notify.error(data.error || "Failed to delete proxy pool");
           }
