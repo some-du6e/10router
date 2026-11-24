@@ -342,11 +342,20 @@ func TestSignalsPassedOnToNode(t *testing.T) {
 			t.Errorf("PassOnSignals(%q, %v) = %v, want SIGUSR2 too", c.opts, c.cmd, got)
 		}
 	}
-	// A handler on another signal leaves SIGUSR2 without one.
-	for _, opts := range []string{"--heapsnapshot-signal=SIGHUP", "--report-on-signal --report-signal=SIGQUIT"} {
-		if got := PassOnSignals(opts, nil); len(got) != 1 {
-			t.Errorf("PassOnSignals(%q) = %v, want SIGUSR1 only", opts, got)
+	// The handler's own signal goes on, and SIGUSR2 without one doesn't.
+	for opts, want := range map[string]os.Signal{
+		"--heapsnapshot-signal=SIGHUP":               syscall.SIGHUP,
+		"--report-on-signal --report-signal=SIGQUIT": syscall.SIGQUIT,
+		// --report-signal alone turns reports on, as in Node.
+		"--report-signal=SIGUSR2": syscall.SIGUSR2,
+	} {
+		if got := PassOnSignals(opts, nil); len(got) != 2 || got[1] != want {
+			t.Errorf("PassOnSignals(%q) = %v, want SIGUSR1 and %v", opts, got, want)
 		}
+	}
+	// Reports switched back off on the command line: no handler left.
+	if got := PassOnSignals("--report-on-signal", []string{"node", "--no-report-on-signal", "custom-server.js"}); len(got) != 1 {
+		t.Errorf("--no-report-on-signal: %v", got)
 	}
 	// A script argument is not a Node flag.
 	if got := PassOnSignals("", []string{"node", "custom-server.js", "--report-on-signal"}); len(got) != 1 {

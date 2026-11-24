@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 
 	"github.com/some-du6e/10router/gateway/internal/config"
@@ -62,9 +63,12 @@ func main() {
 	// to a namespace's init); Go's runtime would exit on them with no drain.
 	// A broken log pipe (SIGPIPE) must not end the gateway either. Node runs
 	// in its own process group, so a terminal's signals reach only the gateway.
-	ignored := []os.Signal{syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGABRT, syscall.SIGPIPE}
-	if len(pass) == 1 {
-		ignored = append(ignored, syscall.SIGUSR2)
+	// Any of them Node has a diagnostic handler on is passed on instead.
+	var ignored []os.Signal
+	for _, sig := range []os.Signal{syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGABRT, syscall.SIGPIPE, syscall.SIGUSR2} {
+		if !slices.Contains(pass, sig) {
+			ignored = append(ignored, sig)
+		}
 	}
 	signal.Ignore(ignored...)
 	os.Exit(gateway.Run(gateway.Options{

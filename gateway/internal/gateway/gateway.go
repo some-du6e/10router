@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -89,7 +90,7 @@ var nodeValueFlags = map[string]bool{
 	"--inspect-port": true, "--heapsnapshot-signal": true, "--report-signal": true, "-C": true, "--conditions": true,
 	"--disable-warning": true, "--dns-result-order": true, "--unhandled-rejections": true, "--input-type": true,
 	"--redirect-warnings": true, "--report-dir": true, "--report-directory": true, "--diagnostic-dir": true,
-	"--openssl-config": true, "--icu-data-dir": true, "--secure-heap": true, "--stack-trace-limit": true,
+	"--openssl-config": true, "--icu-data-dir": true, "--secure-heap": true,
 }
 
 // nodeFlags is args up to the script: every leading "-" argument, and the
@@ -260,11 +261,16 @@ func randomToken() string {
 
 func seconds(d time.Duration) int { return int((d + 500*time.Millisecond) / time.Second) }
 
+// diagnosticSignals are the signals Node's --heapsnapshot-signal or
+// --report-signal may be set to that the gateway would otherwise ignore.
+var diagnosticSignals = map[string]os.Signal{"SIGUSR2": syscall.SIGUSR2, "SIGHUP": syscall.SIGHUP, "SIGQUIT": syscall.SIGQUIT}
+
 // PassOnSignals are the signals the gateway hands to the app server instead
-// of acting on them: SIGUSR1 (Node's inspector), and SIGUSR2 only when Node
-// was started with a handler on it (--heapsnapshot-signal=SIGUSR2, or
-// --report-on-signal with --report-signal unset or SIGUSR2); otherwise its
-// default action would kill Node, which as PID 1 used to ignore it.
+// of acting on them: SIGUSR1 (Node's inspector), and the signal a heap
+// snapshot or diagnostic report handler is on (--heapsnapshot-signal, or
+// --report-on-signal / --report-signal, default SIGUSR2) when it is SIGUSR2,
+// SIGHUP or SIGQUIT. Any of those with no handler stays ignored: as PID 1,
+// Node ignored them, and now its default action would kill it.
 func PassOnSignals(nodeOptions string, command []string) []os.Signal {
 	signals := []os.Signal{syscall.SIGUSR1}
 	args := strings.Fields(nodeOptions)
@@ -284,12 +290,21 @@ func PassOnSignals(nodeOptions string, command []string) []os.Signal {
 			heapSignal = value
 		case "--report-on-signal":
 			reportOn = true
+		case "--no-report-on-signal":
+			reportOn = false
 		case "--report-signal":
-			reportSignal = value
+			// Implies --report-on-signal, as in Node.
+			reportSignal, reportOn = value, true
 		}
 	}
-	if heapSignal == "SIGUSR2" || (reportOn && reportSignal == "SIGUSR2") {
-		signals = append(signals, syscall.SIGUSR2)
+	handlers := []string{heapSignal}
+	if reportOn {
+		handlers = append(handlers, reportSignal)
+	}
+	for _, name := range handlers {
+		if sig, ok := diagnosticSignals[name]; ok && !slices.Contains(signals, sig) {
+			signals = append(signals, sig)
+		}
 	}
 	return signals
 }
@@ -403,7 +418,10 @@ func Run(o Options) int {
 		ReadHeaderTimeout: cfg.HeadersTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
 		MaxHeaderBytes:    maxHeaderBytes(envValue(o.Env, "NODE_OPTIONS"), o.Command),
-		ErrorLog:          log.New(logger.Writer(), "[Gateway] http: ", 0),
+		// OPTIONS * goes to Node as it did without the gateway, instead of
+		// net/http's own empty 200.
+		DisableGeneralOptionsHandler: true,
+		ErrorLog:                     log.New(logger.Writer(), "[Gateway] http: ", 0),
 	}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
