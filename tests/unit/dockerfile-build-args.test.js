@@ -8,7 +8,8 @@ const read = (rel) => readFileSync(path.join(repoRoot, rel), "utf8");
 
 describe("Dockerfile builder stage", () => {
   const dockerfile = read("Dockerfile");
-  const builder = dockerfile.slice(dockerfile.indexOf("AS builder"), dockerfile.indexOf("AS runner"));
+  // From `base` on: builder is FROM base, and a stage inherits its parent's ARGs.
+  const builder = dockerfile.slice(dockerfile.indexOf("AS base"), dockerfile.indexOf("AS runner"));
   // Instruction lines only: the comments mention both.
   const install = builder.search(/^\s+npm install$/m);
   const build = builder.search(/^RUN npm run build$/m);

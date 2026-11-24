@@ -103,7 +103,7 @@ Auth rules and the tests that hold them (all run in the default suite, and on PR
 
 Conventional Commits (`fix(translator): …`). Log user-facing changes in `CHANGELOG.md`; bump root and `cli/` versions independently.
 
-Deploys: a master merge reaches the `deploy` branch only through `.github/workflows/deploy-image.yml` (DOCKER.md, "Master builds"). A merge that touches only docs, tests, Markdown or other workflows starts no deploy (the next one carries it), a red run deploys nothing, and `deploy` only moves forward, so a rollback is a revert on master.
+Deploys: a master merge reaches the `deploy` branch only through `.github/workflows/deploy-image.yml`, which builds master's head (DOCKER.md, "Master builds"). A merge that touches only `docs/`, `gitbook/`, `tests/`, Markdown other than `THIRD_PARTY_NOTICES.md`, or `.github/` other than that workflow starts no run; a later run carries it. A run still waiting when a newer merge queues is cancelled, and the newer run deploys both. A red run deploys nothing, and `deploy` only moves forward, so a rollback is a revert on master.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

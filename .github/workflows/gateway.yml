@@ -18,6 +18,7 @@ on:
       - ".dockerignore"
       - "scripts/docker-entrypoint.sh"
       - "scripts/resolve-src-alias.mjs"
+      - "tests/unit/dockerfile-build-args.test.js"
       - "tests/unit/gateway-peer-handoff.test.js"
       - "tests/unit/gateway-clientip-parity.test.js"
       - "tests/unit/custom-server-peer-headers.test.js"
