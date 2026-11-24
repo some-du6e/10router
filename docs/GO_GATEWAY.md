@@ -186,6 +186,14 @@ Nothing turns native until it matches Node byte for byte on recorded traffic.
 
    Fixtures come from the e2e mock upstream and from synthetic bodies shaped like production: 50 to 1,000 messages, 12 to 48 tools, thinking blocks with signatures, `cache_control` in every position, images, `tool_result` with `is_error`. Every value is synthetic, with no real keys, hosts or prompts.
 2. **Transform tests.** The Go request preparation runs on every fixture's client body and must produce the same upstream body bytes as Node. JSON key order and number formatting count, because the upstream's prompt cache keys on bytes. This is where most of phase 2's risk sits.
+
+   In place for `internal/claudeprep` (phase 2a):
+   - **Corpus.** `tests/helpers/claudeprepCorpus.js` generates the cases. Its JSON writer can emit what `JSON.stringify` never does: `1.0`, `1e3`, big integers, duplicate and integer-like keys, escapes, CRLF and tab whitespace, and invalid UTF-8 bytes.
+   - **Recorder.** `tests/unit/gateway-claudeprep-parity.test.js` runs each case through chat.ts's body steps and the real `handleChatCore`. It captures the upstream request under the executor, at its fetch, with keys redacted as `{{apiKey}}`.
+   - **Fixtures.** The repo keeps 115 fixtures in `gateway/internal/claudeprep/testdata/fixtures`, prose cut short, histories of 50 to 120 messages and 12 to 48 tools. The vitest run fails if Node no longer makes them, so a Node change that would break parity fails in Node's own suite.
+   - **Recording.** `CLAUDEPREP_RECORD=1` rewrites the fixtures. With `CLAUDEPREP_LARGE=1` and `CLAUDEPREP_OUT` it writes the large corpus instead, 472 cases including histories of 1,000 to 1,400 messages.
+   - **Go side.** `TestParityWithNode` requires exact URL, header and body bytes for every fixture Node prepared. It requires a decline for each case the generator marks `expectDecline` and for each one Node threw on, and fails on any other decline.
+   - **CI.** The `Gateway claudeprep parity` workflow records the large corpus with the PR's own Node, then runs the Go test on both sets.
 3. **Byte-level SSE comparison.** Mock upstream response in, client bytes out. Event framing, `[DONE]`, keepalive comments, early headers at 30 s, error events after early headers, and usage extraction must all match. Generated ids and timestamps are normalized first. Phase 1's e2e already does this for `/v1/messages` with the gateway off and in proxy mode.
 4. **Shadow compare in CI.** One process mode, `GATEWAY_SHADOW=1`, CI only. Node serves the client. The gateway computes its upstream request for the same input and logs a diff against what Node sent, and it never sends. This runs on the fixture corpus and on the full e2e suites.
 5. **Canary in production.** `native` mode with the route allowlisted for one provider node whose keys are few. Compare usage rows, error rates and cache-hit rates against the other nodes for a day, then widen.
@@ -213,12 +221,55 @@ The log line reads `FMT: claude→claude`, but this is not a pass-through. That 
 
 Phase 2 leaves out the `fusion` and `round-robin` combo strategies, other client formats, Codex session affinity, side-search hooks and every other provider. A request that needs any of them goes to Node.
 
+### Phase 2a: `internal/claudeprep` (done)
+
+The request rewrite is ported and held byte-identical to Node. Nothing calls it yet, so production is unchanged.
+
+`claudeprep.Prepare(body []byte, in Inputs) (*Request, error)` takes the client's body bytes and returns the upstream request Node would send: the URL, the headers object in Node's key order and spelling, the body bytes, and whether the upstream is asked for SSE. It runs the same steps in the same order as Node:
+
+1. chat.ts: the `[1m]` marker, `speed`/`service_tier` for a budgeted key, `model` set to `<node>/<model>`.
+2. chatCore: the limit-hold notice, the model's Messages route (`modelRoutes`), the provider-level thinking override, the upstream `stream` flag, client detection, and unsupported media replaced with placeholders.
+3. translateRequest, Claude to Claude: `normalizeThinkingConfig`, tool-call id repair, stubs for missing tool results, `applyThinking` from the model's capabilities, the Claude Code prompt for OAuth tokens, then `prepareClaudeRequest` (max-tokens clamp, blank system and message drops, `cache_control` reset and re-placement, tool ordering and same-role merges, the prefill repair, tool filtering, folding and schema typing, the tool-choice relax).
+4. chatCore again: translator-only fields, the upstream model id, `dedupeTools` for Claude Code, `type: "custom"`.
+5. DefaultExecutor and the endpoint overrides: headers (auth, the client's `anthropic-beta`, learned and first-party flag drops, identity presets, header lines), the URL query override, the `temperature` strip, beta-gated body fields, the reasoning placeholder some models need, the body overrides, then `finalizeBody`.
+
+The body is edited as a `Value` tree with JavaScript's semantics, never `map[string]any`. Objects keep JavaScript's key order: array-index keys first, ascending, then insertion order, and a repeated key keeps its first slot. Strings are UTF-16 code units held as WTF-8, so a lone surrogate survives. Numbers are float64 and are written back the way `Number#toString` writes them. `JSON.stringify` doesn't keep a client's spelling, and the port matches Node's bytes, not the client's: `1.0` goes out as `1`, `1e3` as `1000`, `é` as `é`, and a big integer loses the same digits it loses in Node. A client that already sends `JSON.stringify` output, which Claude Code does, gets its own bytes back. The body is decoded the way `request.text()` decodes it: a BOM is dropped and each ill-formed UTF-8 sequence becomes one U+FFFD.
+
+The capability tables (capabilities.js, thinkingLevels.js, the vision name patterns, the identity presets) aren't restated in Go. `gateway/internal/claudeprep/tables.json` is exported from Node and embedded, and the Node parity test fails when the export is stale.
+
+Whatever the port doesn't model it hands back with a `*DeclineError` (`claudeprep.IsDecline`), and the gateway proxies that request. That covers:
+
+- any input on which Node would throw, such as a null content block or a non-string `text`;
+- the web search tool, which needs Node's built-in search hooks;
+- mid-conversation `tool_addition`/`tool_removal` blocks;
+- a top-level `allOf`/`anyOf`/`oneOf` or `$ref` in a tool's `input_schema`, which Node flattens;
+- a `json_schema` `response_format`;
+- non-ASCII model ids and client-identity headers;
+- base URLs the WHATWG URL rules would rewrite beyond plain `http(s)://host[:port]/path?query`;
+- providers other than `openai-compatible-*`, and models not routed to the Messages API.
+
+### Interfaces for 2b and 2c
+
+`claudeprep.Inputs` is what phase 2b loads:
+
+| Field | Source |
+|---|---|
+| `Provider`, `Model` | the combo member as `internal/combo` resolved it (`modelInfo`), with its `(level)` suffix |
+| `ClientHeaders` | the request's headers, lowercase names |
+| `KeyHasBudget` | `apiKeys` policy (`internal/clientauth`) |
+| `ProviderThinking` | `settings.providerThinking[provider].mode` |
+| `Connection.APIKey`, `.AccessToken` | the picked `providerConnections` row |
+| `Connection.Node` | that row's `providerSpecificData`, decoded with `claudeprep.ParseNodeSettings`, which refuses types Node's sanitizer never writes (a null `droppedBetas` makes Node throw) |
+| `Models` | `claudeprep.NewModels(catalog)`. `catalog` implements `claudeprep.Catalog` (`Modalities(model)`, `Limits(provider, model)`) over the models.dev catalog Node syncs. `nil` means none, as in a Node with no catalog installed |
+
+Phase 2c's `internal/upstream` sends `Request` as given. For the beta retries it calls `Prepare` again with the learned flags in `Connection.Node.DroppedBetas`, or with `StripBeta`, the way DefaultExecutor re-runs `execute`. `Overrides.Timeout`, `.Retries` and `.Proxy` are also left to it. A `DeclineError` from any call means Node serves the request, as long as no byte has gone to the client yet.
+
 ### Risks
 
 - **Byte-exact request preparation.** A one-byte difference in the upstream body can silently halve prompt-cache hits and double cost. The transform tests run over a large corpus and the shadow compare runs before any canary. The Go JSON handling must keep key order and number text from the client, so it edits a raw-preserving representation and never round-trips through `map[string]any`.
 - **SQLite lock contention freezing Node.** Covered by the short-transaction, batched-writer and no-open-reader rules above. A CI stress job will hammer both processes and assert Node's event-loop lag stays under 50 ms.
 - **Split memory state.** If a provider is half native and half proxied, for example during a rollout or when a request falls back to Node, the two processes keep separate affinity and evidence maps. Cache affinity then gets worse for those requests, and dead-key evidence builds more slowly. Locks are unaffected because they live in the database. Rollouts flip a provider whole.
-- **Drift as Node changes.** Every PR that touches a file in the map above must update the Go port or mark the route proxy-only. A CI job will fail a PR that changes a mapped file without touching `gateway/` or a `GATEWAY_PROXY_ONLY` list.
+- **Drift as Node changes.** Every PR that touches a file in the map above must update the Go port or mark the route proxy-only. `gateway/node-map.json` lists the Node files each package ports, `claudeprep`'s in full (more than the table's row: every helper the port mirrors). The `Gateway drift` workflow runs on every PR and fails one that changes a listed file without touching `gateway/`, which covers updating the port or adding the package to `gateway/GATEWAY_PROXY_ONLY`. It also fails if a listed file no longer exists. The parity fixtures catch what that misses: a behavior change in a file the map doesn't list breaks `tests/unit/gateway-claudeprep-parity.test.js`, which runs in every vitest run.
 - **Two memory budgets under one container limit.** Admission budgets for both processes have to add up under the cgroup's `memory.max`, with Go's counted at its real single-copy weight.
 - **Driver performance.** `modernc.org/sqlite` is pure Go. The hot-path queries need benchmarking against `better-sqlite3` in CI before the canary.
 
