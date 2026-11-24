@@ -69,6 +69,8 @@ docker run -d \
   some-du6e/10router:latest
 ```
 
+`-e GATEWAY_MODE=proxy` runs the Go gateway in front of the Node server: the gateway takes `PORT`, and Node moves to the loopback port `GATEWAY_APP_PORT` (default 20129) inside the container. Unset or `off`, the default, runs Node alone as before. See `docs/GO_GATEWAY.md`.
+
 ## Update to latest
 
 ```bash
