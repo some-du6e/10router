@@ -7,7 +7,7 @@ name: Admission herd
 # water of a 2 GiB container (1638 MB).
 #
 # Branch legs must answer every request with a reply or a 503 (or, in the
-# fallback leg, the upstream's own 429, as a status or as an error frame after
+# fallback legs, the upstream's own 429, as a status or as an error frame after
 # early headers), keep the live heap under 85% of its limit and resident
 # memory under 90% of 2 GiB. The heap-only legs turn the byte budget and the
 # resident-memory check off, so they pass only if the heap check holds on its

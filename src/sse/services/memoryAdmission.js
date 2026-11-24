@@ -107,9 +107,11 @@ export function createMemoryGate({
   // flight: it goes in, so an oversized prompt isn't starved and a resident
   // size that hasn't come down since the last requests ended can't wedge the gate.
   // A request `resuming` from a sleep is in flight already: its bytes are in
-  // the budget, and nothing else in flight lets it go on.
+  // the budget, and with nothing else about to allocate it goes on (the
+  // heap and resident memory won't come down for it otherwise), so requests
+  // that wake together go one at a time.
   function blocker(length, resuming = false) {
-    if (inflight === (resuming ? 1 : 0)) return null;
+    if (resuming ? pendingBytes === 0 : inflight === 0) return null;
     if (!resuming && budgetBytes > 0 && heldBytes + length * bodyCopies > budgetBytes) return "budget";
     const coming = pendingBytes + length;
     if (highWaterBytes > 0 && rss() + coming * pendingRssCopies > highWaterBytes) return "memory";
@@ -145,23 +147,25 @@ export function createMemoryGate({
   }
 
   // A request waking from a sleep waits for room as a new one would, ahead of
-  // the new ones (it is in flight already), for at most maxWaitMs: it isn't
-  // turned away, but it doesn't take room the gate gave others while it slept.
+  // the new ones and behind earlier wakers. It isn't turned away (it was
+  // admitted), but it doesn't take room the gate gave others while it slept.
+  // It always gets in eventually: once nothing else is about to allocate.
   // `wake()` counts it again, synchronously, when it goes on; `hook.cancel`
-  // ends the wait (the request is done).
+  // ends the wait (the request is done), as does `signal`.
   function waitToResume(length, signal, hook, wake) {
-    if (!blocker(length, true) || !(maxWaitMs > 0) || signal?.aborted) {
+    if (signal?.aborted || (!queue.some((w) => w.resuming) && !blocker(length, true))) {
       wake();
       return Promise.resolve();
     }
     totals.resumeWaits++;
     return new Promise((resolve) => {
       const waiter = { length, resuming: true, admit: () => done() };
-      const timer = setTimeout(() => done(), maxWaitMs);
+      let finished = false;
       hook.cancel = done;
       function done() {
+        if (finished) return;
+        finished = true;
         hook.cancel = null;
-        clearTimeout(timer);
         signal?.removeEventListener?.("abort", done);
         const at = queue.indexOf(waiter);
         if (at >= 0) queue.splice(at, 1);

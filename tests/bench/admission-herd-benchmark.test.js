@@ -222,7 +222,10 @@ describe("restart herd", () => {
       // A reply that went out early (early headers) ends in an error frame when
       // routing then fails: with HERD_429, both keys locked, the upstream's own
       // 429 message. Any other frame (a 500, a 502) is a failure.
-      if (res.status === 200 && !text.includes("Done")) return LIMIT_FIRST > 0 && text.includes(LIMIT_MESSAGE) ? "200 with the 429 as an error frame" : "200 without an answer";
+      if (res.status === 200 && !text.includes("Done")) {
+        const only429 = text.includes(LIMIT_MESSAGE) && !/HTTP 5\d\d|fetch failed|failed after early headers/.test(text);
+        return LIMIT_FIRST > 0 && only429 ? "200 with the 429 as an error frame" : "200 without an answer";
+      }
       return res.status;
     }));
     clearInterval(sampler);
@@ -242,7 +245,7 @@ describe("restart herd", () => {
       `rss: base ${mb(baseRss)}, peak ${mb(m.rss)}`,
       `per request in flight (most of the herd in): up to ${(m.perInflight / MB).toFixed(1)} MB of live heap (${(m.perInflight / body).toFixed(1)}× its body) and ${(m.rssPerInflight / MB).toFixed(1)} MB of rss (${(m.rssPerInflight / body).toFixed(1)}×) over base; up to ${m.inflight} in flight at once`,
       `replies: ${Object.entries(counts).map(([s, n]) => `${n}× ${s}`).join(", ")} in ${((performance.now() - t0) / 1000).toFixed(1)} s`,
-      `gate: admitted ${gate.admitted}, queued ${gate.queued}, refused ${gate.refused}; upstream saw ${upstream.state.requests} (${upstream.state.limited} answered 429)`,
+      `gate: admitted ${gate.admitted}, queued ${gate.queued}, refused ${gate.refused}, waited for room after a sleep ${gate.resumeWaits ?? "-"}; upstream saw ${upstream.state.requests} (${upstream.state.limited} answered 429)`,
       "",
     ].join("\n"));
 

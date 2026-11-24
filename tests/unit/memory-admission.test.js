@@ -327,78 +327,101 @@ describe("heap backstop", () => {
     const g = heapGate({ used: 100 * MB }, { maxWaitMs: 5000 });
     let wake;
     let during;
-    let newcomer;
+    let early;
     const res = await withMemoryAdmission(request("/v1/messages", { bytes: 300 * MB }), async () => {
       // Deep in routing, with no ticket at hand: found through the request's async context.
       const sleeping = idleWhile(new Promise((resolve) => { wake = resolve; }));
       during = g.stats().pendingBytes;
       // Another request fits in the room it gave back: 100 + 500 ≤ 850.
       const other = await g.acquire({ bodyLength: 500 * MB });
+      // A new one doesn't (100 + 500 + 600 > 850): it waits.
+      early = g.acquire({ bodyLength: 600 * MB });
+      await tick();
       wake("ok");
       await tick();
-      // Awake, it doesn't take the room back: 100 + 500 + 300 > 850.
-      expect(g.stats()).toMatchObject({ waiting: 1, resumeWaits: 1, pendingBytes: 500 * MB });
-      // A new request arriving now queues behind it.
-      newcomer = g.acquire({ bodyLength: 500 * MB });
-      await tick();
-      expect(g.stats().waiting).toBe(2);
+      // Awake, it doesn't take the room back (100 + 500 + 300 > 850), and it
+      // waits ahead of the new one that was there first.
+      expect(g.stats()).toMatchObject({ waiting: 2, resumeWaits: 1, pendingBytes: 500 * MB });
       other.ticket.release();
-      // It goes first, and is counted at once, so the new one (100 + 300 + 500 > 850) still waits.
+      // It goes first, counted at once, so the new one (100 + 300 + 600 > 850) still waits.
       expect(g.stats()).toMatchObject({ waiting: 1, pendingBytes: 300 * MB });
       expect(await sleeping).toBe("ok");
       return new Response("done");
     }, { gate: g });
     await res.text();
     // Its reply started: the new one fits now.
-    expect((await newcomer).ticket).toBeTruthy();
+    expect((await early).ticket).toBeTruthy();
     expect(during).toBe(0);
     // Outside any admitted request it does nothing.
     await expect(idleWhile(Promise.resolve(1))).resolves.toBe(1);
   });
 
-  it("an awake request goes on with nothing else in flight, after the wait at most, or when released", async () => {
-    // Alone: in at once, whatever the heap says.
-    const heap = { used: 900 * MB };
-    const alone = heapGate(heap, { maxWaitMs: 5000 });
-    await withMemoryAdmission(request("/v1/messages", { bytes: 10 * MB }), async () => {
-      await idleWhile(Promise.resolve());
-      expect(alone.stats()).toMatchObject({ resumeWaits: 0, pendingBytes: 10 * MB });
-      return new Response(null, { status: 204 });
-    }, { gate: alone });
+  it("an awake request goes on once nothing else is about to allocate, so requests waking together go one at a time", async () => {
+    // Others in flight have replied: in at once, whatever the heap says.
+    const heap = { used: 100 * MB };
+    const g = heapGate(heap, { maxWaitMs: 5000 });
+    const streaming = await g.acquire({ bodyLength: 1 * MB });
+    streaming.ticket.replied();
+    const lone = (await g.acquire({ bodyLength: 10 * MB })).ticket;
+    heap.used = 900 * MB;
+    // A failed sleep is passed on.
+    await expect(lone.idleWhile(Promise.reject(new Error("aborted")))).rejects.toThrow("aborted");
+    expect(g.stats()).toMatchObject({ resumeWaits: 0, pendingBytes: 10 * MB });
+    lone.release();
+    heap.used = 100 * MB;
+    const tickets = [];
+    for (let i = 0; i < 3; i++) tickets.push((await g.acquire({ bodyLength: 10 * MB })).ticket);
+    heap.used = 900 * MB;
 
-    // Not alone and no room: it waits maxWaitMs, then goes on anyway (it was admitted).
-    const rising = { used: 100 * MB };
-    const busy = heapGate(rising, { maxWaitMs: 30 });
-    const other = await busy.acquire({ bodyLength: 1 * MB });
-    await withMemoryAdmission(request("/v1/messages", { bytes: 10 * MB }), async () => {
-      rising.used = 900 * MB;
-      const t0 = Date.now();
-      // A failed sleep is passed on, after the wait for room.
-      await expect(idleWhile(Promise.reject(new Error("aborted")))).rejects.toThrow("aborted");
-      expect(Date.now() - t0).toBeGreaterThanOrEqual(25);
-      expect(busy.stats()).toMatchObject({ resumeWaits: 1, waiting: 0, pendingBytes: 11 * MB });
-      return new Response(null, { status: 204 });
-    }, { gate: busy });
-    other.ticket.release();
-
-    // Released while it waits for room: it leaves the queue, and the queue moves.
-    const later = { used: 100 * MB };
-    const g = heapGate(later, { maxWaitMs: 5000 });
-    const held = await g.acquire({ bodyLength: 1 * MB });
-    let ticket;
-    const resuming = withMemoryAdmission(request("/v1/messages", { bytes: 10 * MB }), async (t) => {
-      ticket = t;
-      later.used = 900 * MB;
-      await idleWhile(Promise.resolve());
-      return new Response(null, { status: 204 });
-    }, { gate: g });
+    // All three asleep on the same key, woken together.
+    let wake;
+    const sleep = new Promise((resolve) => { wake = resolve; });
+    const woke = [];
+    tickets.forEach((t, i) => t.idleWhile(sleep).then(() => woke.push(i)));
     await tick();
+    expect(g.stats().pendingBytes).toBe(0);
+    wake();
+    await tick();
+    // Nothing else about to allocate: the first goes; the others wait for it.
+    expect(woke).toEqual([0]);
+    expect(g.stats()).toMatchObject({ waiting: 2, pendingBytes: 10 * MB });
+    tickets[0].replied();
+    await tick();
+    expect(woke).toEqual([0, 1]);
+    tickets[1].release();
+    await tick();
+    expect(woke).toEqual([0, 1, 2]);
+    expect(g.stats()).toMatchObject({ waiting: 0, pendingBytes: 10 * MB });
+  });
+
+  it("an awake request waiting for room leaves the queue when it is released or its client hangs up", async () => {
+    const heap = { used: 100 * MB };
+    const g = heapGate(heap, { maxWaitMs: 5000 });
+    // Two others still building their bodies: no room for it.
+    const others = [await g.acquire({ bodyLength: 1 * MB }), await g.acquire({ bodyLength: 1 * MB })];
+    const released = (await g.acquire({ bodyLength: 10 * MB })).ticket;
+    const hungUp = (await g.acquire({ bodyLength: 10 * MB })).ticket;
+    heap.used = 900 * MB;
+    const abort = new AbortController();
+    const a = released.idleWhile(Promise.resolve("a"));
+    const b = hungUp.idleWhile(Promise.resolve("b"), abort.signal);
+    await tick();
+    expect(g.stats().waiting).toBe(2);
+    released.release();
     expect(g.stats().waiting).toBe(1);
-    ticket.release();
-    expect(g.stats()).toMatchObject({ waiting: 0, pendingBytes: 1 * MB });
-    await resuming;
-    held.ticket.release();
-    expect(g.stats()).toMatchObject({ inflight: 0, pendingBytes: 0, heldBytes: 0 });
+    expect(await a).toBe("a");
+    abort.abort();
+    expect(await b).toBe("b");
+    expect(g.stats()).toMatchObject({ waiting: 0, pendingBytes: 12 * MB });
+    for (const o of others) o.ticket.release();
+  });
+
+  it("an awake request doesn't count its own bytes against the budget again", async () => {
+    const g = gate({ budgetBytes: 100 * MB });
+    await g.acquire({ bodyLength: 60 * MB });
+    const { ticket } = await g.acquire({ bodyLength: 30 * MB });
+    await ticket.idleWhile(Promise.resolve());
+    expect(g.stats()).toMatchObject({ resumeWaits: 0, pendingBytes: 90 * MB, heldBytes: 90 * MB });
   });
 
   it("checks nothing when MEMORY_HEAP_HIGH_WATER_PCT is 0", async () => {

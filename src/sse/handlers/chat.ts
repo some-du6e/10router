@@ -972,12 +972,14 @@ async function routeSingleModelChat(
     if (credentials?.warmRetryAtMs) {
       const waitMs = Math.max(0, credentials.warmRetryAtMs - Date.now());
       log.info("CACHE", `waiting ${waitMs}ms for a key holding this conversation's prompt cache`);
-      cacheWaitedMs += waitMs;
       // The wait takes seconds, many requests wait at once, and an attempt is
       // rebuilt in one serialize: while it waits, a request keeps its client
       // body only, not the last attempt's bytes and translated body.
       attemptCache.last = null;
+      // Awake, it may wait for memory room too; that counts toward the budget.
+      const sleptAt = Date.now();
       await idleWhile(abortableSleep(waitMs, signal), signal);
+      cacheWaitedMs += Math.max(waitMs, Date.now() - sleptAt);
       continue;
     }
 

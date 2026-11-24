@@ -31,8 +31,10 @@ is read.
   routing settles. While it sleeps (a warm-key wait, a JSON client's limit
   hold) it doesn't count, since it builds nothing then, and the gate can let
   others into the room. When it wakes it waits for room to count again,
-  ahead of new requests, for at most `INFLIGHT_QUEUE_WAIT_MS` (it was
-  admitted, so it then goes on regardless), and its next attempt counts. A
+  ahead of new requests and behind earlier wakers. It isn't turned away (it
+  was admitted): it goes on at the latest once nothing else is about to
+  allocate, so requests waking together go one at a time. Its next attempt
+  counts. A
   streamed limit hold's reply has started, so it isn't counted at all: its
   re-attempts, when the limit clears, are the one thing the gate doesn't see.
 - A new request is admitted when, with it counted too:
