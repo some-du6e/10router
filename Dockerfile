@@ -1,5 +1,17 @@
 # syntax=docker/dockerfile:1.7
 ARG NODE_IMAGE=node:22-alpine
+ARG GO_IMAGE=golang:1.24-alpine
+
+# The Go gateway (gateway/, docs/GO_GATEWAY.md). A static binary: the runner is
+# Alpine with no cgo. It only runs when GATEWAY_MODE=proxy or native.
+FROM ${GO_IMAGE} AS gateway
+WORKDIR /src
+COPY gateway/ ./
+ARG SOURCE_COMMIT
+RUN --mount=type=cache,target=/root/.cache/go-build \
+  CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${SOURCE_COMMIT:-dev}" \
+  -o /out/10router-gateway ./cmd/10router-gateway
+
 FROM ${NODE_IMAGE} AS base
 WORKDIR /app
 
@@ -65,10 +77,13 @@ RUN mkdir -p /app/data && chown -R node:node /app && \
   mkdir -p /app/data-home && chown node:node /app/data-home && \
   ln -sf /app/data-home /root/.9router 2>/dev/null || true
 
-# Fix permissions at runtime (handles mounted volumes)
-RUN apk --no-cache upgrade && apk --no-cache add su-exec && \
-  printf '#!/bin/sh\nchown -R node:node /app/data /app/data-home 2>/dev/null\nexec su-exec node "$@"\n' > /entrypoint.sh && \
-  chmod +x /entrypoint.sh
+# Root-owned, so the node user can't replace it.
+COPY --from=gateway /out/10router-gateway /app/gateway/10router-gateway
+
+# Fix permissions at runtime (handles mounted volumes), then run the command as
+# node: alone (GATEWAY_MODE unset or off, the default) or behind the gateway.
+RUN apk --no-cache upgrade && apk --no-cache add su-exec
+COPY --chmod=755 scripts/docker-entrypoint.sh /entrypoint.sh
 
 EXPOSE 20128
 

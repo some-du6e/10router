@@ -9,6 +9,8 @@
 //   outage*  - the outage seen in prod: first request per model id hangs
 //              OUTAGE_MS, then 500 {"message":""}; later ones answer after OUTAGE_NEXT_MS
 //   allfail* - every request waits ALLFAIL_MS, then 500
+//   drip<N>  - a stream of N chunks (DRIP_COUNT when no N), DRIP_MS apart,
+//              for checking each one reaches the client as it is sent
 //   *        - answers at once
 // Every request and how it ended is logged as one JSON line.
 import http from "node:http";
@@ -19,7 +21,9 @@ const FLAKY_MS = Number(process.env.FLAKY_MS || 45_000);
 const OUTAGE_MS = Number(process.env.OUTAGE_MS || 92_000);
 const OUTAGE_NEXT_MS = Number(process.env.OUTAGE_NEXT_MS || 40_000);
 const ALLFAIL_MS = Number(process.env.ALLFAIL_MS || 40_000);
-const MODELS = ["slow", "flaky", "flaky-codex", "hollow", "outage", "allfail", "fast"];
+const DRIP_MS = Number(process.env.DRIP_MS || 400);
+const DRIP_COUNT = Number(process.env.DRIP_COUNT || 5);
+const MODELS = ["slow", "flaky", "flaky-codex", "hollow", "outage", "allfail", "fast", "drip"];
 const t0 = Date.now();
 let seq = 0;
 const firstCalls = new Map();
@@ -43,6 +47,30 @@ function streamReply(res, model) {
   res.write(chunk({}, "stop"));
   res.write(`data: ${JSON.stringify({ id: "chatcmpl-mock", object: "chat.completion.chunk", model, choices: [], usage: USAGE })}\n\n`);
   res.end("data: [DONE]\n\n");
+}
+
+function streamDrip(res, model, count) {
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+  const chunk = (delta, finish = null) => `data: ${JSON.stringify({
+    id: "chatcmpl-mock", object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model,
+    choices: [{ index: 0, delta, finish_reason: finish }],
+  })}\n\n`;
+  let sent = 0;
+  let timer = null;
+  const tick = () => {
+    if (res.destroyed) return;
+    if (sent < count) {
+      res.write(chunk(sent === 0 ? { role: "assistant", content: `drip${sent} ` } : { content: `drip${sent} ` }));
+      sent++;
+      timer = setTimeout(tick, DRIP_MS);
+      return;
+    }
+    res.write(chunk({}, "stop"));
+    res.write(`data: ${JSON.stringify({ id: "chatcmpl-mock", object: "chat.completion.chunk", model, choices: [], usage: USAGE })}\n\n`);
+    res.end("data: [DONE]\n\n");
+  };
+  res.on("close", () => clearTimeout(timer));
+  tick();
 }
 
 function jsonReply(res, model) {
@@ -99,6 +127,7 @@ http.createServer((req, res) => {
       return isFirstCall(model) ? after(OUTAGE_MS, () => fail500(res, { message: "" })) : after(OUTAGE_NEXT_MS, reply);
     }
     if (model.startsWith("allfail")) return after(ALLFAIL_MS, () => fail500(res));
+    if (model.startsWith("drip") && stream) return answer(() => streamDrip(res, model, Number(model.slice(4)) || DRIP_COUNT));
     if (model.startsWith("flaky") && isFirstCall(model)) return after(FLAKY_MS, () => fail500(res));
     answer(reply);
   });

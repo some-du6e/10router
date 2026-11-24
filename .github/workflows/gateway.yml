@@ -1,0 +1,232 @@
+name: Go gateway
+
+# The Go gateway in front of the Node app server (docs/GO_GATEWAY.md):
+#   go          gofmt, go vet, go test -race, and no-cgo builds for both arches
+#   bench       proxy overhead, straight to a Node server vs through the gateway
+#   unit        custom-server.js's side of the peer handoff, and the client-IP
+#               rule held to the same table as the Go port
+#   no-new-failures  the whole vitest suite, base vs this branch
+#   e2e         the built image as shipped (GATEWAY_MODE unset) and with
+#               GATEWAY_MODE=proxy, the same checks on both
+on:
+  pull_request:
+    paths:
+      - "gateway/**"
+      - "custom-server.js"
+      - "server-drain.js"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "scripts/docker-entrypoint.sh"
+      - "tests/unit/gateway-*.test.js"
+      - ".github/e2e/gateway/**"
+      - ".github/e2e/early-headers/mock-upstream.mjs"
+      - ".github/e2e/early-headers/seed.mjs"
+      - ".github/workflows/gateway.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: gateway
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: gateway/go.mod
+          cache: false
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          [ -z "$unformatted" ] || { echo "$unformatted"; exit 1; }
+      - name: go vet
+        run: go vet ./...
+      - name: go test -race
+        run: go test -race -count=1 ./...
+      - name: Build without cgo (amd64, arm64)
+        run: |
+          CGO_ENABLED=0 GOARCH=amd64 go build ./...
+          CGO_ENABLED=0 GOARCH=arm64 go build ./...
+
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: gateway/go.mod
+          cache: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Build
+        working-directory: gateway
+        run: |
+          CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/10router-gateway" ./cmd/10router-gateway
+          go build -o "$RUNNER_TEMP/gateway-bench" ./cmd/gateway-bench
+      - name: Benchmark
+        env:
+          GATEWAY_BIN: ${{ runner.temp }}/10router-gateway
+          BENCH_BIN: ${{ runner.temp }}/gateway-bench
+          OUT_DIR: ${{ github.workspace }}/bench-out
+        run: bash .github/e2e/gateway/bench.sh | tee bench.md
+      - name: Summary
+        if: always()
+        run: cat bench.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gateway-bench
+          path: |
+            bench.md
+            bench-out/*.log
+
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Unit tests
+        working-directory: tests
+        run: >
+          ./node_modules/.bin/vitest run
+          unit/gateway-peer-handoff.test.js
+          unit/gateway-clientip-parity.test.js
+          unit/custom-server-peer-headers.test.js
+          unit/custom-server-h2c.test.js
+          unit/codex-ws-bridge-peer.test.js
+          unit/server-drain.test.js
+          unit/server-drain-wiring.test.js
+          unit/server-drain-entry.test.js
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint
+          custom-server.js
+          tests/unit/gateway-peer-handoff.test.js
+          tests/unit/gateway-clientip-parity.test.js
+          gateway/bench/upstream.mjs
+          .github/e2e/gateway/stream-probe.mjs
+          .github/e2e/gateway/ws-probe.mjs
+          .github/e2e/early-headers/mock-upstream.mjs
+
+  # The suite is not all-green on master (see AGENTS.md), so this runs it on
+  # both the base and this branch and fails only on tests that pass on the base
+  # and fail here (same job as api-key-budgets.yml).
+  no-new-failures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Check out the base branch next to this one
+        run: git worktree add ../base "origin/${{ github.base_ref || 'master' }}"
+      - name: Install dependencies (branch and base)
+        run: |
+          for dir in . ../base; do
+            (cd "$dir" && bun install --ignore-scripts && cd tests && bun install --ignore-scripts)
+          done
+      - name: Run the suite on the base
+        working-directory: ../base/tests
+        # Each run gets its own HOME: tests without a DATA_DIR use ~/.9router,
+        # and one run's database must not leak into the other.
+        run: |
+          mkdir -p "$RUNNER_TEMP/home-base"
+          HOME="$RUNNER_TEMP/home-base" ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/base.json" > /dev/null 2>&1 || true
+      - name: Run the suite on this branch
+        working-directory: tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/home-head"
+          HOME="$RUNNER_TEMP/home-head" ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/head.json" > /dev/null 2>&1 || true
+      - name: Compare
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const load = (file) => {
+              const r = JSON.parse(readFileSync(file, "utf8"));
+              const status = new Map();
+              for (const f of r.testResults) {
+                const rel = f.name.slice(f.name.indexOf("/tests/") + 1);
+                for (const a of f.assertionResults) status.set(`${rel} :: ${a.fullName}`, a.status);
+                // A file that failed to load has no assertions; count it as one failure.
+                if (!f.assertionResults.length && f.status === "failed") status.set(`${rel} :: (file failed to load)`, "failed");
+              }
+              return { status, total: r.numTotalTests, failed: r.numFailedTests };
+            };
+            const base = load(process.env.RUNNER_TEMP + "/base.json");
+            const head = load(process.env.RUNNER_TEMP + "/head.json");
+            console.log(`base: ${base.failed}/${base.total} failed, head: ${head.failed}/${head.total} failed`);
+            const regressions = [...head.status].filter(([k, s]) => s === "failed" && base.status.get(k) === "passed").map(([k]) => k);
+            const fixed = [...base.status].filter(([k, s]) => s === "failed" && head.status.get(k) === "passed").map(([k]) => k);
+            const newFailing = [...head.status].filter(([k, s]) => s === "failed" && !base.status.has(k)).map(([k]) => k);
+            if (fixed.length) console.log("Now passing:\n  " + fixed.join("\n  "));
+            if (newFailing.length) console.log("New tests failing:\n  " + newFailing.join("\n  "));
+            if (regressions.length) console.log("Passed on the base, fail here:\n  " + regressions.join("\n  "));
+            if (regressions.length || newFailing.length) process.exit(1);
+          '
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies (for the seed)
+        run: bun install --ignore-scripts
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: 10router:e2e
+          cache-from: type=gha,scope=gateway-e2e
+          cache-to: type=gha,mode=max,scope=gateway-e2e
+      - name: E2E (GATEWAY_MODE unset, then proxy)
+        env:
+          IMAGE: 10router:e2e
+          OUT_DIR: ${{ github.workspace }}/e2e-out
+        run: |
+          set -o pipefail
+          bash .github/e2e/gateway/run.sh 2>&1 | tee e2e.txt
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '```'
+            grep -vE '^::(end)?group::' e2e.txt | grep -E '^(PASS|FAIL)' | head -100
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gateway-e2e
+          path: |
+            e2e.txt
+            e2e-out/*.json
+            e2e-out/*.log
+            e2e-out/*.ps
+            e2e-out/*.norm
+            e2e-out/*.raw
+            e2e-out/*.dashboard

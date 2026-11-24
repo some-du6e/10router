@@ -501,7 +501,7 @@ function bridgeCodexTurn(request, port, headers, peerIp, send, done, { errorFram
   return req;
 }
 
-function handleCodexUpgrade(req, socket, head, port) {
+function handleCodexUpgrade(req, socket, head, port, peerIp = socket.remoteAddress || "") {
   const key = req.headers["sec-websocket-key"];
   if (!key || String(req.headers["sec-websocket-version"] || "") !== "13") {
     socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
@@ -533,7 +533,6 @@ function handleCodexUpgrade(req, socket, head, port) {
   );
   socket.setNoDelay(true);
 
-  const peerIp = socket.remoteAddress || "";
   // Codex tags the connection's purpose here; a malformed value just means we
   // treat the connection as a normal turn.
   let isPrewarm = false;
@@ -693,6 +692,48 @@ const LAUNCH_NONCE_KEY = Symbol.for("10router.launchNonce");
 if (globalThis[LAUNCH_NONCE_KEY] === undefined) globalThis[LAUNCH_NONCE_KEY] = process.env.TENROUTER_LAUNCH_NONCE || null;
 delete process.env.TENROUTER_LAUNCH_NONCE;
 
+// ─── Behind the Go gateway ───────────────────────────────────────────────────
+//
+// With GATEWAY_MODE=proxy the gateway (gateway/, docs/GO_GATEWAY.md) holds the
+// public port and relays every request here over loopback, so this process's
+// TCP peer is always the gateway. The gateway sends the peer it accepted as
+// x-9r-gw-peer-ip / x-9r-gw-peer-port, with the token it started this process
+// with (GATEWAY_PEER_TOKEN). With that token on a loopback socket, the handed
+// peer stands in for the socket in every rule above, so they run on the
+// client's own connection as they would with no gateway in front. Without the
+// env var (GATEWAY_MODE=off) none of this runs. The token leaves the env, like
+// the launch nonce, so children don't inherit it.
+const GATEWAY_TOKEN_TEXT = String(process.env.GATEWAY_PEER_TOKEN || "");
+delete process.env.GATEWAY_PEER_TOKEN;
+const GATEWAY_ON = GATEWAY_TOKEN_TEXT !== "";
+const GATEWAY_TOKEN = GATEWAY_TOKEN_TEXT.length >= 32 ? Buffer.from(GATEWAY_TOKEN_TEXT) : null;
+if (GATEWAY_ON && !GATEWAY_TOKEN) {
+  console.warn("[Gateway] GATEWAY_PEER_TOKEN is shorter than 32 characters; the gateway's peer headers are ignored");
+}
+const GATEWAY_HEADERS = ["x-9r-gw-token", "x-9r-gw-peer-ip", "x-9r-gw-peer-port"];
+
+// The peer the gateway handed over for this request, or null to use the
+// socket. Removes the gateway's headers either way.
+function gatewayPeer(headers, socketIp) {
+  if (!GATEWAY_ON) return null;
+  const token = headers["x-9r-gw-token"];
+  const ip = String(headers["x-9r-gw-peer-ip"] || "");
+  const port = String(headers["x-9r-gw-peer-port"] || "");
+  for (const name of GATEWAY_HEADERS) delete headers[name];
+  if (!GATEWAY_TOKEN || !isLoopbackHost(socketIp) || typeof token !== "string") return null;
+  const sent = Buffer.from(token);
+  if (sent.length !== GATEWAY_TOKEN.length || !crypto.timingSafeEqual(sent, GATEWAY_TOKEN)) return null;
+  if (!net.isIP(ip)) return null;
+  return { ip, port };
+}
+
+// The peer of an upgrade (the Codex WebSocket), the same way.
+function upgradePeerIp(req, socket) {
+  const socketIp = socket.remoteAddress || "";
+  const handed = gatewayPeer(req.headers, socketIp);
+  return handed ? handed.ip : socketIp;
+}
+
 let backgroundRefreshStarted = false;
 
 function startBackgroundTokenRefreshFromCustomServer() {
@@ -737,7 +778,9 @@ http.createServer = (...args) => {
   const rest = args.filter((a) => typeof a !== "function");
   if (!handler) return origCreate(...args);
   const wrapped = (req, res) => {
-    const socketIp = req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : "";
+    const tcpPeerIp = req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : "";
+    const handed = gatewayPeer(req.headers, tcpPeerIp);
+    const socketIp = handed ? handed.ip : tcpPeerIp;
     // A Codex WebSocket turn's loopback POST from this process, sent just
     // before a shutdown signal, is still served and counted. One whose TCP
     // connect hadn't been accepted when server.close() ran is reset instead,
@@ -773,7 +816,7 @@ http.createServer = (...args) => {
     // readiness proof only (src/lib/launchProof.js): a relay or proxy has its
     // own connection, so it gets a proof for that one. Nothing keys or trusts on it.
     req.headers["x-9r-socket-ip"] = socketIp;
-    req.headers["x-9r-socket-port"] = String(req.socket?.remotePort ?? "");
+    req.headers["x-9r-socket-port"] = handed ? handed.port : String(req.socket?.remotePort ?? "");
     req.headers["x-9r-peer-token"] = PEER_TOKEN;
     if (!local) req.headers["x-9r-via-proxy"] = "1";
     if (proxyHop) req.headers["x-9r-proxy-hop"] = proxyHop;
@@ -800,7 +843,7 @@ http.createServer = (...args) => {
       if (requestPath === CODEX_WS_PATH || requestPath === "/backend-api/codex/v1/responses") {
         const port = this.address() && this.address().port;
         if (port) {
-          handleCodexUpgrade(req, socket, head, port);
+          handleCodexUpgrade(req, socket, head, port, upgradePeerIp(req, socket));
           return true;
         }
       }
