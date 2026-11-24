@@ -16,6 +16,7 @@ vi.mock("@/lib/localDb", () => ({ getProviderConnectionById }));
 import { getSettings } from "@/lib/db/index.js";
 import { resolveConnectionProxyConfig } from "../../src/lib/network/connectionProxy.ts";
 import { checkAndRefreshToken } from "../../src/sse/services/tokenRefresh.js";
+import { toProxyOptions } from "../../src/lib/network/proxyRouting.ts";
 
 const eu = { id: "eu", name: "Residential EU", proxyUrl: "http://eu.proxy.test:3128", isActive: true, strictProxy: true };
 const off = { id: "off", name: "Old office VPN", proxyUrl: "http://office.proxy.test:8888", isActive: false };
@@ -43,6 +44,26 @@ describe("resolveConnectionProxyConfig", () => {
     const r = await resolveConnectionProxyConfig({ proxyPoolId: "eu" }, "claude");
     expect(r).toMatchObject({ source: "error", strictProxy: true, connectionProxyEnabled: false });
     expect(r.blockedReason).toBeTruthy();
+  });
+});
+
+describe("resolving request credentials again", () => {
+  // auth.js spreads the resolved route into providerSpecificData; a handler that
+  // passes that on (chat's Antigravity quota refresh) must not turn an inherited
+  // strict pool into a non-strict legacy account URL.
+  it("keeps an inherited pool's route and strictness", async () => {
+    settings.current = { providerStrategies: { antigravity: { proxyPoolId: "eu" } } };
+    const route = await resolveConnectionProxyConfig({}, "antigravity");
+    expect(route).toMatchObject({ layer: "provider", strictProxy: true });
+    const psd = { projectId: "p1", ...toProxyOptions(route), connectionProxyPoolId: route.proxyPoolId };
+    expect(await resolveConnectionProxyConfig(psd, "antigravity")).toMatchObject({
+      connectionProxyEnabled: true, connectionProxyUrl: eu.proxyUrl, strictProxy: true, direct: false, blockedReason: "",
+    });
+  });
+
+  it("keeps a block", async () => {
+    const route = await resolveConnectionProxyConfig({}, "codex");
+    expect((await resolveConnectionProxyConfig({ ...toProxyOptions(route) }, "codex")).blockedReason).toContain("Old office VPN");
   });
 });
 

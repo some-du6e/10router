@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Badge, Button, Card, CardSkeleton, Input, Modal, Toggle, ConfirmModal } from "@/shared/components";
 import { useNotificationStore } from "@/store/notificationStore";
 import ProxyRoutingCard from "./ProxyRoutingCard";
+import { RELAY_TYPES } from "@/lib/network/proxyRouting.js";
 
 function getStatusVariant(status) {
   if (status === "active") return "success";
@@ -749,7 +750,7 @@ export default function ProxyPoolsPage() {
                       {pool.boundConnectionCount || 0} bound
                     </Badge>
                     {/* Relays have no direct fallback, so only proxies can leak. */}
-                    {pool.strictProxy !== true && !["vercel", "cloudflare", "deno"].includes(pool.type) && (
+                    {pool.strictProxy !== true && !RELAY_TYPES.has(pool.type) && (
                       <Badge variant="warning" size="sm">falls back to direct</Badge>
                     )}
                   </div>
@@ -1064,7 +1065,7 @@ export default function ProxyPoolsPage() {
           <div className="flex flex-col gap-3 rounded-lg border border-border/50 p-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="font-medium text-sm">Strict Proxy</p>
-              <p className="text-xs text-text-muted">Fail request if proxy is unreachable instead of falling back to direct.</p>
+              <p className="text-xs text-text-muted">Fail the request if the proxy is unreachable instead of falling back to direct. Relays always fail closed.</p>
             </div>
             <Toggle
               checked={formData.strictProxy === true}

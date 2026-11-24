@@ -1,5 +1,5 @@
 import { getProxyPoolById, getSettings } from "@/lib/db/index.js";
-import { chainPoolIds, resolveProxyChain, type AccountProxyFields, type ProxyPoolLike, type ResolvedProxy } from "./proxyRouting.js";
+import { alreadyResolved, chainPoolIds, resolveProxyChain, type AccountProxyFields, type ProxyPoolLike, type ResolvedProxy } from "./proxyRouting.js";
 
 // ─── Proxy pool rotation state (in-memory) ─────────────────────────
 const rotateState = new Map<string, { index: number }>(); // providerId → { index }
@@ -38,6 +38,8 @@ export async function resolveConnectionProxyConfig(
   providerSpecificData: AccountProxyFields | null | undefined = {},
   provider?: string,
 ): Promise<ResolvedProxy> {
+  const resolved = alreadyResolved(providerSpecificData as Record<string, unknown> | null);
+  if (resolved) return resolved;
   try {
     const settings = await getSettings();
     const strategies = (settings.providerStrategies || {}) as Record<string, { proxyPoolId?: unknown } | undefined>;

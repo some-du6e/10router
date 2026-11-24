@@ -39,7 +39,8 @@ export interface AccountProxyFields {
   connectionNoProxy?: unknown;
 }
 
-const RELAY_TYPES = new Set(["vercel", "cloudflare", "deno"]);
+/** Pool types that rewrite the request to the relay's URL; they have no direct fallback. */
+export const RELAY_TYPES = new Set(["vercel", "cloudflare", "deno"]);
 
 const str = (v: unknown): string => (v === undefined || v === null ? "" : String(v).trim());
 
@@ -93,6 +94,31 @@ export interface ProxyChainInput {
 export function chainPoolIds({ account, provider, global }: Omit<ProxyChainInput, "pools">): string[] {
   return [normalizeLayerSetting(account?.proxyPoolId), normalizeLayerSetting(provider), normalizeLayerSetting(global)]
     .filter((v): v is string => !!v && v !== PROXY_DIRECT);
+}
+
+/**
+ * Request credentials already carry their resolved route (auth.js spreads
+ * toProxyOptions() into providerSpecificData). Resolving that again would read
+ * an inherited pool's URL as the account's own legacy URL and drop its
+ * strictness, so a resolved route is returned as it is.
+ */
+export function alreadyResolved(account: Record<string, unknown> | null | undefined): ResolvedProxy | null {
+  if (!account || typeof account.direct !== "boolean" || typeof account.blockedReason !== "string") return null;
+  const blockedReason = str(account.blockedReason);
+  const direct = account.direct === true;
+  const vercelRelayUrl = str(account.vercelRelayUrl);
+  const connectionProxyEnabled = account.connectionProxyEnabled === true;
+  return {
+    ...base("account", normalizeLayerSetting(account.connectionProxyPoolId)),
+    source: blockedReason ? "blocked" : direct ? "direct" : vercelRelayUrl || connectionProxyEnabled ? "resolved" : "none",
+    connectionProxyEnabled,
+    connectionProxyUrl: str(account.connectionProxyUrl),
+    connectionNoProxy: str(account.connectionNoProxy),
+    strictProxy: account.strictProxy === true,
+    vercelRelayUrl,
+    direct,
+    blockedReason,
+  };
 }
 
 export function resolveProxyChain({ account, provider, global, pools }: ProxyChainInput): ResolvedProxy {

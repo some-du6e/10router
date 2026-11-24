@@ -952,7 +952,8 @@ export default function ProviderDetailPage() {
           const res = await fetch(`/api/providers/${connectionId}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ proxyPoolId }),
+            // Like the row menu: any bulk pick replaces a legacy per-account URL.
+            body: JSON.stringify({ proxyPoolId, connectionProxyEnabled: false, connectionProxyUrl: "" }),
           });
           if (!res.ok) failed += 1;
         } catch (e) {
