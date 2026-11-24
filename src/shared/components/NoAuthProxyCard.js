@@ -6,6 +6,7 @@ import Card from "./Card";
 import Select from "./Select";
 import Badge from "./Badge";
 import api from "@/shared/utils/api";
+import { PROXY_DIRECT } from "@/lib/network/proxyRouting.js";
 
 const NONE_PROXY_POOL_VALUE = "__none__";
 const STRATEGIES = [
@@ -70,6 +71,8 @@ export default function NoAuthProxyCard({ providerId }) {
     }
   };
 
+  const isMissingPool = loaded && proxyPoolId !== NONE_PROXY_POOL_VALUE && proxyPoolId !== PROXY_DIRECT
+    && !proxyPools.some((pool) => pool.id === proxyPoolId);
   const canRotate = proxyPools.length >= 2;
   const isRotation = rotateStrategy !== "none";
 
@@ -92,8 +95,11 @@ export default function NoAuthProxyCard({ providerId }) {
         onChange={(e) => save(e.target.value, rotateStrategy)}
         disabled={!loaded || saving || isRotation}
         options={[
-          { value: NONE_PROXY_POOL_VALUE, label: "None (direct)" },
+          { value: NONE_PROXY_POOL_VALUE, label: "Inherit (Global)" },
+          { value: PROXY_DIRECT, label: "Direct (no proxy)" },
           ...proxyPools.map((pool) => ({ value: pool.id, label: pool.name })),
+          // Only active pools are listed; a bound pool that's off or gone blocks requests.
+          ...(isMissingPool ? [{ value: proxyPoolId, label: "Pool off or missing: requests blocked" }] : []),
         ]}
         hint={isRotation ? "Pool selector is ignored when rotation is active — all active pools are used." : undefined}
       />

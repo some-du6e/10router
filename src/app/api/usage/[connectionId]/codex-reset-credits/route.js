@@ -6,6 +6,7 @@ import { updateProviderConnection } from "@/lib/db/index.js";
 import { invalidatePooledCodexUsage } from "@/sse/services/codexPooledUsage.js";
 import { consumeCodexRateLimitResetCredit, getCodexRateLimitResetCredits } from "open-sse/services/usage.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
+import { toProxyOptions } from "@/lib/network/proxyRouting.js";
 import { refreshAndUpdateCredentials } from "../route.js";
 
 const AUTH_EXPIRED_PATTERNS = ["expired", "authentication", "unauthorized", "401", "re-authorize"];
@@ -66,14 +67,8 @@ async function getCodexConnection(connectionId) {
     return { response: Response.json({ error: "Codex reset credits require an OAuth or access-token connection." }, { status: 400 }) };
   }
 
-  const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData);
-  const proxyOptions = {
-    connectionProxyEnabled: proxyConfig.connectionProxyEnabled === true,
-    connectionProxyUrl: proxyConfig.connectionProxyUrl || "",
-    connectionNoProxy: proxyConfig.connectionNoProxy || "",
-    vercelRelayUrl: proxyConfig.vercelRelayUrl || "",
-    strictProxy: false,
-  };
+  const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData, connection.provider);
+  const proxyOptions = toProxyOptions(proxyConfig);
 
   return { connection, isOAuth, proxyOptions };
 }

@@ -15,6 +15,7 @@ on:
       - "src/shared/components/OAuthModal.js"
       - "src/shared/components/PricingModal.js"
       - "src/app/(dashboard)/dashboard/combos/page.js"
+      - "src/app/(dashboard)/dashboard/proxy-pools/**"
       - "src/app/(dashboard)/dashboard/providers/*/page.js"
       - "src/app/(dashboard)/dashboard/cli-tools/components/CoworkToolCard.js"
       - "src/app/dashboard/settings/pricing/page.js"
@@ -56,6 +57,7 @@ jobs:
           unit/dashboard-pricing.test.js
           unit/dashboard-combo-form.test.js
           unit/dashboard-save-and-reauth.test.js
+          unit/dashboard-proxy-routing-card.test.js
 
   # The suite is not all-green on master (see AGENTS.md), so this runs it on
   # both the base and this branch and fails only on tests that pass on the base

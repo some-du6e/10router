@@ -2,6 +2,8 @@ import { getProviderConnections } from "@/lib/localDb.js";
 import { getExecutor } from "open-sse/index.js";
 import { applyRefreshedCredentials } from "open-sse/services/oauthCredentialManager.js";
 import { saveRefreshedCredentials } from "@/sse/services/tokenRefresh.js";
+import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy.js";
+import { toProxyOptions } from "@/lib/network/proxyRouting.js";
 
 export async function POST(request) {
   try {
@@ -17,6 +19,12 @@ export async function POST(request) {
       return Response.json({ success: false, error: `No active connection for provider: ${provider}` }, { status: 400 });
     }
 
+    // The account's own route, as a real request takes it.
+    const proxyOptions = toProxyOptions(await resolveConnectionProxyConfig(connection.providerSpecificData, connection.provider));
+    if (proxyOptions.blockedReason) {
+      return Response.json({ success: false, error: `Request blocked: ${proxyOptions.blockedReason}` }, { status: 502 });
+    }
+
     const credentials = {
       apiKey: connection.apiKey,
       accessToken: connection.accessToken,
@@ -27,21 +35,21 @@ export async function POST(request) {
       copilotToken: connection.providerSpecificData?.copilotToken,
       copilotTokenExpiresAt: connection.providerSpecificData?.copilotTokenExpiresAt,
       projectId: connection.projectId,
-      providerSpecificData: connection.providerSpecificData
+      providerSpecificData: { ...connection.providerSpecificData, ...proxyOptions }
     };
 
     const executor = getExecutor(provider);
     const stream = body.stream !== false;
 
-    let { response } = await executor.execute({ model, body, stream, credentials });
+    let { response } = await executor.execute({ model, body, stream, credentials, proxyOptions });
 
     // Auto-refresh token on 401/403 and retry (same as chatCore.js)
     if (response.status === 401 || response.status === 403) {
-      const newCredentials = await executor.refreshCredentials(credentials, console);
+      const newCredentials = await executor.refreshCredentials(credentials, console, proxyOptions);
       if (newCredentials?.accessToken || newCredentials?.copilotToken) {
         applyRefreshedCredentials(credentials, newCredentials);
         await saveRefreshedCredentials(connection.id, newCredentials);
-        ({ response } = await executor.execute({ model, body, stream, credentials }));
+        ({ response } = await executor.execute({ model, body, stream, credentials, proxyOptions }));
       }
     }
 

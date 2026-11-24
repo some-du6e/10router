@@ -710,3 +710,30 @@ button:disabled,
   .ep-blocks { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ep-blocks > .ep-wide { grid-column: span 2 / span 2; }
 }
+
+/* Proxy routing pyramid (mockups/proxy-pyramid/src/demo.css): arrows drip down
+   to the deciding layer, the decider pops, a test request hops along the route. */
+@keyframes px-drip { from { opacity: 0; transform: translateY(-8px); } 60% { opacity: 1; transform: translateY(2px); } }
+.px-drip { display: inline-block; animation: px-drip 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+@keyframes px-pop {
+  0% { transform: scale(0.985); box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-brand-500) 45%, transparent); }
+  55% { transform: scale(1.012); box-shadow: 0 0 0 7px color-mix(in srgb, var(--color-brand-500) 0%, transparent); }
+  100% { transform: none; box-shadow: 0 0 0 0 transparent; }
+}
+.px-pop { animation: px-pop 520ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+@keyframes px-dim { from { opacity: 1; } }
+.px-dim { animation: px-dim 360ms ease-out both; }
+@keyframes px-chip { from { opacity: 0; transform: translateX(-6px); } }
+.px-chip { animation: px-chip 260ms ease-out both; }
+@keyframes px-hop {
+  0%, 60%, 100% { transform: none; box-shadow: 0 0 0 0 transparent; }
+  25% { transform: translateY(-2px); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand-500) 35%, transparent); }
+}
+.px-hop { animation: px-hop 750ms ease-in-out infinite; }
+@keyframes px-land { 50% { transform: scale(1.07); } }
+.px-land { animation: px-land 380ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+@keyframes px-shake { 20%, 60% { transform: translateX(-3px); } 40%, 80% { transform: translateX(3px); } }
+.px-shake { animation: px-shake 420ms ease-in-out; }
+@media (prefers-reduced-motion: reduce) {
+  .px-drip, .px-pop, .px-dim, .px-chip, .px-hop, .px-land, .px-shake { animation: none !important; }
+}

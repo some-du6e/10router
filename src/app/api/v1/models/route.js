@@ -17,6 +17,7 @@ import { resolveCursorModels } from "open-sse/services/cursorModels.js";
 import { resolveZedModels } from "open-sse/shared/zedAuth.js";
 import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
+import { toProxyOptions } from "@/lib/network/proxyRouting.js";
 import { capabilitiesFromServiceKind, getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import { filterModelsForRequest } from "@/sse/services/keyLimits.js";
 
@@ -87,20 +88,14 @@ const LIVE_MODEL_RESOLVERS = {
     return result?.models?.length ? { models: result.models } : null;
   },
   "grok-cli": async (conn, signal) => {
-    const proxy = await resolveConnectionProxyConfig(conn.providerSpecificData || {});
+    const proxy = await resolveConnectionProxyConfig(conn.providerSpecificData || {}, conn.provider);
     const result = await resolveGrokCliModels({
       ...conn,
       connectionId: conn.id,
     }, {
       log: console,
       signal,
-      proxyOptions: {
-        connectionProxyEnabled: proxy.connectionProxyEnabled === true,
-        connectionProxyUrl: proxy.connectionProxyUrl || "",
-        connectionNoProxy: proxy.connectionNoProxy || "",
-        vercelRelayUrl: proxy.vercelRelayUrl || "",
-        strictProxy: proxy.strictProxy === true,
-      },
+      proxyOptions: toProxyOptions(proxy),
       onCredentialsRefreshed: async (refreshed) => {
         await updateProviderCredentials(conn.id, refreshed);
       },

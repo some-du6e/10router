@@ -44,8 +44,8 @@ export const refreshClaudeOAuthToken = (refreshToken) =>
 export const refreshGoogleToken = (refreshToken, clientId, clientSecret) =>
   _refreshGoogleToken(refreshToken, clientId, clientSecret, log);
 
-export const refreshCodexToken = (refreshToken) =>
-  _refreshCodexToken(refreshToken, log);
+export const refreshCodexToken = (refreshToken, proxyOptions = null) =>
+  _refreshCodexToken(refreshToken, log, proxyOptions);
 
 export const refreshIflowToken = (refreshToken) =>
   _refreshIflowToken(refreshToken, log);
@@ -147,6 +147,9 @@ function _refreshProjectId(provider, connectionId, accessToken) {
  * @returns {Promise<object>} updated credentials object
  */
 export async function checkAndRefreshToken(provider, credentials, options = {}) {
+  // The account's proxy is off or gone, so its request will be refused; a
+  // refresh now would reach the provider from this machine's IP.
+  if (credentials?.providerSpecificData?.blockedReason) return credentials;
   let creds = { ...credentials };
   if (!creds.connectionId && creds.id) {
     creds.connectionId = creds.id;

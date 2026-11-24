@@ -26,6 +26,7 @@ import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
 import BulkImportGrokCliModal from "./BulkImportGrokCliModal";
 import { fetchKeyLifespans, withLifespans, withToggledActive } from "../utils";
+import { PROXY_DIRECT } from "@/lib/network/proxyRouting.js";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
 
@@ -922,7 +923,8 @@ export default function ProviderDetailPage() {
     const poolIds = new Set(selectedConnections.map((conn) => conn.providerSpecificData?.proxyPoolId || "__none__"));
     if (poolIds.size === 1) {
       const onlyId = [...poolIds][0];
-      if (onlyId === "__none__") return "All selected currently unbound";
+      if (onlyId === "__none__") return "All selected currently inherit";
+      if (onlyId === PROXY_DIRECT) return "All selected currently Direct (no proxy)";
       const pool = proxyPools.find((p) => p.id === onlyId);
       return `All selected currently bound to ${pool?.name || onlyId}`;
     }
@@ -950,7 +952,8 @@ export default function ProviderDetailPage() {
           const res = await fetch(`/api/providers/${connectionId}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ proxyPoolId }),
+            // Like the row menu: any bulk pick replaces a legacy per-account URL.
+            body: JSON.stringify({ proxyPoolId, connectionProxyEnabled: false, connectionProxyUrl: "" }),
           });
           if (!res.ok) failed += 1;
         } catch (e) {
@@ -1020,12 +1023,13 @@ export default function ProviderDetailPage() {
                     const res = await fetch(`/api/providers/${conn.id}`, {
                       method: "PUT",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ proxyPoolId: proxyPoolId || null }),
+                      // A menu pick replaces a legacy per-account proxy URL.
+                      body: JSON.stringify({ proxyPoolId: proxyPoolId || null, connectionProxyEnabled: false, connectionProxyUrl: "" }),
                     });
                     if (res.ok) {
                       setConnections(prev => prev.map(c =>
                         c.id === conn.id
-                          ? { ...c, providerSpecificData: { ...c.providerSpecificData, proxyPoolId: proxyPoolId || null } }
+                          ? { ...c, providerSpecificData: { ...c.providerSpecificData, proxyPoolId: proxyPoolId || null, connectionProxyEnabled: false, connectionProxyUrl: "" } }
                           : c
                       ));
                     }
@@ -1071,7 +1075,15 @@ export default function ProviderDetailPage() {
             className="flex items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
           >
             <span className="material-symbols-outlined text-text-muted text-[18px]">link_off</span>
-            <span className="text-sm text-text-main">None (unbind all)</span>
+            <span className="text-sm text-text-main">Inherit (unbind all)</span>
+          </button>
+          <button
+            onClick={() => handleApplySinglePool(PROXY_DIRECT)}
+            disabled={bulkUpdatingProxy}
+            className="flex items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <span className="material-symbols-outlined text-text-muted text-[18px]">language</span>
+            <span className="text-sm text-text-main">Direct (no proxy, all)</span>
           </button>
           {proxyPools.map((pool) => (
             <button

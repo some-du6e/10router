@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Badge, Button, Card, CardSkeleton, Input, Modal, Toggle, ConfirmModal } from "@/shared/components";
 import { useNotificationStore } from "@/store/notificationStore";
+import ProxyRoutingCard from "./ProxyRoutingCard";
+import { RELAY_TYPES } from "@/lib/network/proxyRouting.js";
 
 function getStatusVariant(status) {
   if (status === "active") return "success";
@@ -17,7 +19,8 @@ function formatDateTime(value) {
   return date.toLocaleString();
 }
 
-function normalizeFormData(data = {}) {
+// A new pool starts strict; an existing one shows what it was saved with.
+function normalizeFormData(data = { strictProxy: true }) {
   return {
     name: data.name || "",
     proxyUrl: data.proxyUrl || "",
@@ -30,6 +33,8 @@ function normalizeFormData(data = {}) {
 export default function ProxyPoolsPage() {
   const [proxyPools, setProxyPools] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [poolsLoaded, setPoolsLoaded] = useState(false);
+  const [poolsError, setPoolsError] = useState("");
   const [showFormModal, setShowFormModal] = useState(false);
   const [showBatchImportModal, setShowBatchImportModal] = useState(false);
   const [showVercelModal, setShowVercelModal] = useState(false);
@@ -76,10 +81,15 @@ export default function ProxyPoolsPage() {
         if (requestId !== latestFetchProxyPoolsRequestRef.current) return;
         const nextPools = data.proxyPools || [];
         setProxyPools(nextPools);
+        setPoolsLoaded(true);
+        setPoolsError("");
         setSelectedIds((prev) => prev.filter((id) => nextPools.some((pool) => pool.id === id)));
+      } else if (requestId === latestFetchProxyPoolsRequestRef.current) {
+        setPoolsError(data?.error || `Request failed (${res.status})`);
       }
     } catch (error) {
       console.log("Error fetching proxy pools:", error);
+      if (requestId === latestFetchProxyPoolsRequestRef.current) setPoolsError(error.message || "Request failed");
     } finally {
       if (requestId === latestFetchProxyPoolsRequestRef.current) {
         setLoading(false);
@@ -166,7 +176,9 @@ export default function ProxyPoolsPage() {
 
           const data = await res.json();
           if (res.status === 409) {
-            notify.warning(`Cannot delete: ${data.boundConnectionCount || 0} connection(s) are still using this pool.`);
+            notify.warning(data.boundLayers
+              ? `Cannot delete: ${data.error}. Change that layer in Proxy routing first.`
+              : `Cannot delete: ${data.boundConnectionCount || 0} connection(s) are still using this pool.`);
           } else {
             notify.error(data.error || "Failed to delete proxy pool");
           }
@@ -579,18 +591,10 @@ export default function ProxyPoolsPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-1 sm:gap-6 sm:px-0">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <h1 className="text-xl font-semibold sm:text-2xl">Proxy Pools</h1>
-          <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-800 dark:text-amber-200">
-            <span className="material-symbols-outlined mt-0.5 shrink-0 text-[18px]">warning</span>
-            <p>
-              <span className="font-semibold">Provider terms warning:</span> routing a paid or subscription account (including Claude Code/Claude OAuth) through a proxy or relay may violate its terms and can lead to throttling, suspension, or a ban. Use proxying only where the provider explicitly allows it; IP masking does not remove that risk.
-            </p>
-          </div>
-        </div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h1 className="min-w-0 text-xl font-semibold sm:text-2xl">Proxy Pools</h1>
 
-        <div className="grid grid-cols-1 gap-2 sm:flex sm:items-center">
+        <div className="grid grid-cols-1 gap-2 sm:flex sm:shrink-0 sm:items-center">
           <div className="relative" ref={relayMenuRef}>
             <Button
               size="sm"
@@ -646,6 +650,15 @@ export default function ProxyPoolsPage() {
           <Button size="sm" icon="add" onClick={openCreateModal}>Add Proxy Pool</Button>
         </div>
       </div>
+
+      <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-800 dark:text-amber-200">
+        <span className="material-symbols-outlined mt-0.5 shrink-0 text-[18px]">warning</span>
+        <p>
+          <span className="font-semibold">Provider terms warning:</span> routing a paid or subscription account (including Claude Code/Claude OAuth) through a proxy or relay may violate its terms and can lead to throttling, suspension, or a ban. Use proxying only where the provider explicitly allows it; IP masking does not remove that risk.
+        </p>
+      </div>
+
+      <ProxyRoutingCard proxyPools={proxyPools} poolsLoaded={poolsLoaded} poolsError={poolsError} onPoolsChanged={fetchProxyPools} />
 
       <Card>
         <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -736,6 +749,10 @@ export default function ProxyPoolsPage() {
                     <Badge variant="default" size="sm">
                       {pool.boundConnectionCount || 0} bound
                     </Badge>
+                    {/* Relays have no direct fallback, so only proxies can leak. */}
+                    {pool.strictProxy !== true && !RELAY_TYPES.has(pool.type) && (
+                      <Badge variant="warning" size="sm">falls back to direct</Badge>
+                    )}
                   </div>
                   <p className="text-xs text-text-muted truncate mt-1">{pool.proxyUrl}</p>
                   {pool.noProxy ? (
@@ -1048,7 +1065,7 @@ export default function ProxyPoolsPage() {
           <div className="flex flex-col gap-3 rounded-lg border border-border/50 p-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="font-medium text-sm">Strict Proxy</p>
-              <p className="text-xs text-text-muted">Fail request if proxy is unreachable instead of falling back to direct.</p>
+              <p className="text-xs text-text-muted">Fail the request if the proxy is unreachable instead of falling back to direct. Relays always fail closed.</p>
             </div>
             <Toggle
               checked={formData.strictProxy === true}
