@@ -377,14 +377,18 @@ func (w *UsageWriter) loop() {
 	}
 }
 
-// Flush writes everything queued now. A batch that fails goes back to the
-// front of the queue.
+// Flush writes the rows queued when it starts; rows added meanwhile wait for
+// the next one, so a flush ends however fast rows come. A batch that fails
+// stays at the front of the queue.
 func (w *UsageWriter) Flush(ctx context.Context) error {
 	w.flushMu.Lock()
 	defer w.flushMu.Unlock()
-	for {
+	w.mu.Lock()
+	remaining := len(w.queue)
+	w.mu.Unlock()
+	for remaining > 0 {
 		w.mu.Lock()
-		n := min(len(w.queue), w.opts.MaxBatch)
+		n := min(len(w.queue), w.opts.MaxBatch, remaining)
 		batch := append([]UsageEntry(nil), w.queue[:n]...)
 		droppedBefore := w.dropped
 		w.mu.Unlock()
@@ -402,7 +406,9 @@ func (w *UsageWriter) Flush(ctx context.Context) error {
 		w.queue = w.queue[min(n-droppedHere, len(w.queue)):]
 		w.written += int64(n)
 		w.mu.Unlock()
+		remaining -= n
 	}
+	return nil
 }
 
 // Close stops the timer and writes what is left. Later calls only flush.

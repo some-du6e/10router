@@ -155,6 +155,46 @@ func TestCloseRunsQueuedWritesThenRefuses(t *testing.T) {
 	}
 }
 
+func TestUsageFlushEndsWhileRowsKeepComing(t *testing.T) {
+	d, node, _ := open(t, dbtest.Options{})
+	w := d.NewUsageWriter(UsageWriterOptions{Interval: time.Hour, MaxBatch: 20})
+	stop := make(chan struct{})
+	added := make(chan int)
+	go func() {
+		n := 0
+		for {
+			select {
+			case <-stop:
+				added <- n
+				return
+			default:
+				w.Add(UsageEntry{Timestamp: ISOTime(fixedNow), Model: "m"})
+				n++
+				time.Sleep(100 * time.Microsecond)
+			}
+		}
+	}()
+	time.Sleep(50 * time.Millisecond)
+	done := make(chan error, 1)
+	go func() { done <- w.Flush(context.Background()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Flush kept chasing new rows")
+	}
+	close(stop)
+	n := <-added
+	if err := w.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := dbtest.QueryString(t, node, `SELECT COUNT(*) FROM usageHistory`); got != fmt.Sprint(n) {
+		t.Fatalf("rows %s, added %d", got, n)
+	}
+}
+
 func TestWatchRechecksWhenNodeRecordsAnotherDriver(t *testing.T) {
 	d, node, _ := open(t, dbtest.Options{})
 	ctx, cancel := context.WithCancel(context.Background())
