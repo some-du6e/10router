@@ -523,6 +523,8 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   // A 401/403 sent the request through a token refresh and a retry.
   let authRetried = false;
   try {
+    // Refuse before any executor runs: not every executor sends through proxyAwareFetch.
+    if (proxyOptions.blockedReason) throw new Error(`[ProxyFetch] Request blocked: ${proxyOptions.blockedReason}`);
     const result = await runAttempt({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected, onHeadersBudget, imageCacheKey, bodyCache });
     upstreamRespondedAt = Date.now();
     providerResponse = result.response;

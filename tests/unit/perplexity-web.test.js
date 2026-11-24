@@ -12,6 +12,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+// The executor sends through proxyAwareFetch, which keeps the fetch it saw at
+// import time; route it to whatever global.fetch each test installs.
+vi.mock("../../open-sse/utils/proxyFetch.js", () => ({ proxyAwareFetch: (...args) => globalThis.fetch(...args) }));
 import {
   parseOpenAIMessages,
   buildQuery,
