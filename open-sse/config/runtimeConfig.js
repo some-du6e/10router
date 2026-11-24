@@ -164,9 +164,9 @@ export const MEMORY_ADMISSION = {
   // Env: MEMORY_HEAP_HIGH_WATER_PCT (0 turns the check off).
   heapHighWaterPct: envInt("MEMORY_HEAP_HIGH_WATER_PCT", 85, { max: 100 }),
   // A heap limit over this fraction of the container's memory gets a warning
-  // on the first chat request: resident memory follows the heap's peak plus what lives
-  // outside it, and the kernel kills the process at the container's limit.
-  // V8's own default for a 2 GiB container is about half.
+  // on the first chat request: resident memory follows the heap's peak plus
+  // what lives outside it, and the kernel kills the process at the
+  // container's limit. V8's own default for a 2 GiB container is about half.
   maxHeapOfContainer: 0.6,
   // A request without Content-Length counts as a body this long until it has
   // been read, so a burst of them can't all go in at 0 bytes.

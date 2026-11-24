@@ -235,7 +235,7 @@ describe("heap backstop", () => {
     expect(await g.acquire({ bodyLength: 1 * MB })).toEqual({ refused: "heap", retryAfterSec: 7 });
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(logger.warn.mock.calls[0][0]).toBe("MEMORY");
-    expect(logger.warn.mock.calls[0][1]).toMatch(/refusing new requests \(heap\): 1 in flight holding 1MB, 1MB of bodies not yet replying, heap 900MB \+ 1MB coming \(high water 850MB of 1000MB\), 1 waiting/);
+    expect(logger.warn.mock.calls[0][1]).toMatch(/refusing new requests \(heap\): 1 in flight holding 1MB, 1MB of bodies not yet replying, heap 900MB \+ 2MB coming \(high water 850MB of 1000MB\), 1 waiting/);
   });
 
   it("counts admitted requests that haven't started replying, which the heap doesn't show yet", async () => {
@@ -323,31 +323,82 @@ describe("heap backstop", () => {
     expect((await g.acquire({ bodyLength: 1 * MB })).ticket).toBeTruthy();
   });
 
-  it("stops counting a request while it sleeps (idleWhile), and counts it again after", async () => {
-    const g = heapGate({ used: 100 * MB }, { maxWaitMs: 1000 });
+  it("stops counting a request while it sleeps (idleWhile); awake, it waits for room ahead of new requests", async () => {
+    const g = heapGate({ used: 100 * MB }, { maxWaitMs: 5000 });
     let wake;
     let during;
-    let after;
-    const res = await withMemoryAdmission(request("/v1/messages", { bytes: 300 * MB }), async (ticket) => {
+    let newcomer;
+    const res = await withMemoryAdmission(request("/v1/messages", { bytes: 300 * MB }), async () => {
       // Deep in routing, with no ticket at hand: found through the request's async context.
       const sleeping = idleWhile(new Promise((resolve) => { wake = resolve; }));
       during = g.stats().pendingBytes;
-      // Another request fits while this one sleeps: 100 + 0 + 500 ≤ 850.
+      // Another request fits in the room it gave back: 100 + 500 ≤ 850.
       const other = await g.acquire({ bodyLength: 500 * MB });
       wake("ok");
-      expect(await sleeping).toBe("ok");
-      after = g.stats().pendingBytes;
+      await tick();
+      // Awake, it doesn't take the room back: 100 + 500 + 300 > 850.
+      expect(g.stats()).toMatchObject({ waiting: 1, resumeWaits: 1, pendingBytes: 500 * MB });
+      // A new request arriving now queues behind it.
+      newcomer = g.acquire({ bodyLength: 500 * MB });
+      await tick();
+      expect(g.stats().waiting).toBe(2);
       other.ticket.release();
-      // Released while asleep: nothing is counted back later.
-      ticket.idleWhile(new Promise(() => {}));
+      // It goes first, and is counted at once, so the new one (100 + 300 + 500 > 850) still waits.
+      expect(g.stats()).toMatchObject({ waiting: 1, pendingBytes: 300 * MB });
+      expect(await sleeping).toBe("ok");
       return new Response("done");
     }, { gate: g });
     await res.text();
+    // Its reply started: the new one fits now.
+    expect((await newcomer).ticket).toBeTruthy();
     expect(during).toBe(0);
-    expect(after).toBe(800 * MB);
-    expect(g.stats()).toMatchObject({ inflight: 0, pendingBytes: 0, heldBytes: 0 });
     // Outside any admitted request it does nothing.
     await expect(idleWhile(Promise.resolve(1))).resolves.toBe(1);
+  });
+
+  it("an awake request goes on with nothing else in flight, after the wait at most, or when released", async () => {
+    // Alone: in at once, whatever the heap says.
+    const heap = { used: 900 * MB };
+    const alone = heapGate(heap, { maxWaitMs: 5000 });
+    await withMemoryAdmission(request("/v1/messages", { bytes: 10 * MB }), async () => {
+      await idleWhile(Promise.resolve());
+      expect(alone.stats()).toMatchObject({ resumeWaits: 0, pendingBytes: 10 * MB });
+      return new Response(null, { status: 204 });
+    }, { gate: alone });
+
+    // Not alone and no room: it waits maxWaitMs, then goes on anyway (it was admitted).
+    const rising = { used: 100 * MB };
+    const busy = heapGate(rising, { maxWaitMs: 30 });
+    const other = await busy.acquire({ bodyLength: 1 * MB });
+    await withMemoryAdmission(request("/v1/messages", { bytes: 10 * MB }), async () => {
+      rising.used = 900 * MB;
+      const t0 = Date.now();
+      // A failed sleep is passed on, after the wait for room.
+      await expect(idleWhile(Promise.reject(new Error("aborted")))).rejects.toThrow("aborted");
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(25);
+      expect(busy.stats()).toMatchObject({ resumeWaits: 1, waiting: 0, pendingBytes: 11 * MB });
+      return new Response(null, { status: 204 });
+    }, { gate: busy });
+    other.ticket.release();
+
+    // Released while it waits for room: it leaves the queue, and the queue moves.
+    const later = { used: 100 * MB };
+    const g = heapGate(later, { maxWaitMs: 5000 });
+    const held = await g.acquire({ bodyLength: 1 * MB });
+    let ticket;
+    const resuming = withMemoryAdmission(request("/v1/messages", { bytes: 10 * MB }), async (t) => {
+      ticket = t;
+      later.used = 900 * MB;
+      await idleWhile(Promise.resolve());
+      return new Response(null, { status: 204 });
+    }, { gate: g });
+    await tick();
+    expect(g.stats().waiting).toBe(1);
+    ticket.release();
+    expect(g.stats()).toMatchObject({ waiting: 0, pendingBytes: 1 * MB });
+    await resuming;
+    held.ticket.release();
+    expect(g.stats()).toMatchObject({ inflight: 0, pendingBytes: 0, heldBytes: 0 });
   });
 
   it("checks nothing when MEMORY_HEAP_HIGH_WATER_PCT is 0", async () => {

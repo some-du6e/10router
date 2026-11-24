@@ -7,11 +7,10 @@
 // the process past its memory limit, it is killed, and every request in flight
 // fails with it. This gate counts the body bytes the
 // admitted requests hold and lets a new one in only while it fits a budget,
-// the process's resident memory is under a high-water mark, and the V8 heap
-// (plus what the admitted requests that haven't started replying are still
-// about to allocate) stays under the heap's own high-water mark. V8 aborts the
-// process when its heap fills, well before resident memory reaches the
-// container's limit, so the heap check is what keeps it alive. Otherwise the
+// and while resident memory and the V8 heap, plus what the admitted requests
+// that haven't started replying are still about to allocate, stay under their
+// high-water marks. V8 aborts the process when its heap fills, which can come
+// well before resident memory reaches the container's limit. Otherwise the
 // request waits its turn (FIFO) for a while, then gets a 503 with Retry-After,
 // which the agents' SDKs retry. With nothing in flight a request is always let
 // in, however big, so one huge prompt is never starved. Limits are in
@@ -48,7 +47,7 @@ export function resolveHighWater({ highWaterMb = MEMORY_ADMISSION.highWaterMb, f
  * @property {(bodyLength: number) => void} noteBodyLength - the body was read: count it at least this long (exactly this long when there was no Content-Length)
  * @property {() => void} replied - the reply has started (or, not streamed, ended): what it holds shows in the heap and resident memory now; idempotent
  * @property {(settled: Promise<unknown>) => void} pendUntil - the request keeps building upstream bodies until `settled` settles (a reply sent early, before routing is done): it counts as not yet replying until then, even once replied() is called
- * @property {(waiting: Promise<unknown>) => void} idleWhile - the request sleeps until `waiting` settles (a warm-key wait, a limit hold): it builds nothing meanwhile, so it doesn't count as about to allocate
+ * @property {<T>(waiting: Promise<T>, signal?: AbortSignal | null) => Promise<T>} idleWhile - the request sleeps until `waiting` settles (a warm-key wait, a limit hold's sleep): it builds nothing meanwhile, so it doesn't count as about to allocate; on waking it waits for room to count again
  * @property {() => void} release - the request is done; idempotent
  */
 
@@ -92,7 +91,8 @@ export function createMemoryGate({
   // reading, parsing, translating and serializing them (on every 429 fallback
   // again), which the heap and resident memory don't show yet when a burst
   // has just been let in. Weighed by pendingHeapCopies against the heap and
-  // pendingRssCopies against resident memory.
+  // pendingRssCopies against resident memory. A request asleep (idleWhile)
+  // isn't in it.
   let pendingBytes = 0;
   let inflight = 0;
   /** @type {{ length: number, admit: () => void }[]} */
@@ -101,14 +101,16 @@ export function createMemoryGate({
   // Set from the first refusal until the next admission, so each episode logs twice.
   let refusingSince = 0;
   let refusedInEpisode = 0;
-  const totals = { admitted: 0, queued: 0, refused: 0, aborted: 0 };
+  const totals = { admitted: 0, queued: 0, refused: 0, aborted: 0, resumeWaits: 0 };
 
   // Why a request with a body of `length` can't go in now, or null. Nothing in
   // flight: it goes in, so an oversized prompt isn't starved and a resident
   // size that hasn't come down since the last requests ended can't wedge the gate.
-  function blocker(length) {
-    if (inflight === 0) return null;
-    if (budgetBytes > 0 && heldBytes + length * bodyCopies > budgetBytes) return "budget";
+  // A request `resuming` from a sleep is in flight already: its bytes are in
+  // the budget, and nothing else in flight lets it go on.
+  function blocker(length, resuming = false) {
+    if (inflight === (resuming ? 1 : 0)) return null;
+    if (!resuming && budgetBytes > 0 && heldBytes + length * bodyCopies > budgetBytes) return "budget";
     const coming = pendingBytes + length;
     if (highWaterBytes > 0 && rss() + coming * pendingRssCopies > highWaterBytes) return "memory";
     if (heapFraction > 0) {
@@ -118,18 +120,60 @@ export function createMemoryGate({
     return null;
   }
 
-  // The bodies not yet replying are weighed in, so the line reads against its marks.
-  function describe() {
+  // The bodies not yet replying (and the refused one) are weighed in, so the
+  // line reads against its marks.
+  function describe(length = 0) {
+    const coming = pendingBytes + length;
     const parts = [`${inflight} in flight holding ${mb(heldBytes)}`];
     if (budgetBytes > 0) parts[0] += ` of ${mb(budgetBytes)}`;
     parts.push(`${mb(pendingBytes)} of bodies not yet replying`);
-    if (highWaterBytes > 0) parts.push(`rss ${mb(rss())} + ${mb(pendingBytes * pendingRssCopies)} coming (high water ${mb(highWaterBytes)})`);
+    if (highWaterBytes > 0) parts.push(`rss ${mb(rss())} + ${mb(coming * pendingRssCopies)} coming (high water ${mb(highWaterBytes)})`);
     if (heapFraction > 0) {
       const { used_heap_size: used, heap_size_limit: limit } = heapStats();
-      parts.push(`heap ${mb(used)} + ${mb(pendingBytes * pendingHeapCopies)} coming (high water ${mb(limit * heapFraction)} of ${mb(limit)})`);
+      parts.push(`heap ${mb(used)} + ${mb(coming * pendingHeapCopies)} coming (high water ${mb(limit * heapFraction)} of ${mb(limit)})`);
     }
     parts.push(`${queue.length} waiting`);
     return parts.join(", ");
+  }
+
+  function startRecheck() {
+    // Resident memory and the heap drop on garbage collection, with no request ending.
+    if ((highWaterBytes > 0 || heapFraction > 0) && !recheck) {
+      recheck = setInterval(pump, recheckMs);
+      recheck.unref?.();
+    }
+  }
+
+  // A request waking from a sleep waits for room as a new one would, ahead of
+  // the new ones (it is in flight already), for at most maxWaitMs: it isn't
+  // turned away, but it doesn't take room the gate gave others while it slept.
+  // `wake()` counts it again, synchronously, when it goes on; `hook.cancel`
+  // ends the wait (the request is done).
+  function waitToResume(length, signal, hook, wake) {
+    if (!blocker(length, true) || !(maxWaitMs > 0) || signal?.aborted) {
+      wake();
+      return Promise.resolve();
+    }
+    totals.resumeWaits++;
+    return new Promise((resolve) => {
+      const waiter = { length, resuming: true, admit: () => done() };
+      const timer = setTimeout(() => done(), maxWaitMs);
+      hook.cancel = done;
+      function done() {
+        hook.cancel = null;
+        clearTimeout(timer);
+        signal?.removeEventListener?.("abort", done);
+        const at = queue.indexOf(waiter);
+        if (at >= 0) queue.splice(at, 1);
+        wake();
+        resolve();
+        if (at === 0) pump();
+      }
+      signal?.addEventListener?.("abort", done, { once: true });
+      const firstNew = queue.findIndex((w) => !w.resuming);
+      queue.splice(firstNew < 0 ? queue.length : firstNew, 0, waiter);
+      startRecheck();
+    });
   }
 
   /** @returns {AdmissionTicket} */
@@ -153,6 +197,8 @@ export function createMemoryGate({
     // routing has settled, and not while the request sleeps.
     let counted = true;
     let pending = true;
+    // A wait for room after a sleep, which release() ends.
+    const resume = { cancel: null };
     const recount = () => {
       if (pending && replyStarted && routing === 0) pending = false;
       const should = !released && pending && idle === 0;
@@ -187,40 +233,52 @@ export function createMemoryGate({
         };
         Promise.resolve(settled).then(done, done);
       },
-      idleWhile(waiting) {
-        if (released || !pending) return;
+      async idleWhile(waiting, signal = null) {
+        if (released || !pending) return waiting;
         idle++;
         recount();
-        const done = () => {
+        let outcome;
+        try {
+          outcome = { value: await waiting };
+        } catch (error) {
+          outcome = { error };
+        }
+        // Counted again the moment there is room, before the queue lets in
+        // anyone behind it; an outer sleep still going needs none.
+        const wake = () => {
           idle--;
           recount();
         };
-        Promise.resolve(waiting).then(done, done);
+        if (idle === 1 && !released && pending) await waitToResume(length, signal, resume, wake);
+        else wake();
+        if ("error" in outcome) throw outcome.error;
+        return outcome.value;
       },
       release() {
         if (released) return;
         released = true;
         heldBytes -= length * bodyCopies;
         inflight--;
+        resume.cancel?.();
         recount();
         pump();
       },
     };
   }
 
-  function refuse(reason) {
+  function refuse(reason, length = 0) {
     totals.refused++;
     refusedInEpisode++;
     if (!refusingSince) {
       refusingSince = Date.now();
-      logger?.warn?.(TAG, `refusing new requests (${reason}): ${describe()}`);
+      logger?.warn?.(TAG, `refusing new requests (${reason}): ${describe(length)}`);
     }
     return { refused: reason, retryAfterSec };
   }
 
   // Let in waiting requests from the front while they fit.
   function pump() {
-    while (queue.length > 0 && !blocker(queue[0].length)) queue.shift().admit();
+    while (queue.length > 0 && !blocker(queue[0].length, queue[0].resuming)) queue.shift().admit();
     if (queue.length === 0 && recheck) {
       clearInterval(recheck);
       recheck = null;
@@ -239,7 +297,7 @@ export function createMemoryGate({
     if (signal?.aborted) return { aborted: true };
     // Behind anyone already waiting: the queue is first come, first served.
     if (queue.length === 0 && !blocker(length)) return { ticket: grant(length, sized) };
-    if (!(maxWaitMs > 0)) return refuse(blocker(length) || "queue");
+    if (!(maxWaitMs > 0)) return refuse(blocker(length) || "queue", length);
 
     totals.queued++;
     return new Promise((resolve) => {
@@ -261,15 +319,11 @@ export function createMemoryGate({
       timer = setTimeout(() => {
         // Out of turn but it fits now: let it in rather than turn it away.
         const why = blocker(length);
-        settle(why ? refuse(why) : { ticket: grant(length, sized) });
+        settle(why ? refuse(why, length) : { ticket: grant(length, sized) });
       }, maxWaitMs);
       signal?.addEventListener?.("abort", onAbort, { once: true });
       queue.push(waiter);
-      // Resident memory and the heap drop on garbage collection, with no request ending.
-      if ((highWaterBytes > 0 || heapFraction > 0) && !recheck) {
-        recheck = setInterval(pump, recheckMs);
-        recheck.unref?.();
-      }
+      startRecheck();
     });
   }
 
@@ -326,15 +380,18 @@ const current = new AsyncLocalStorage();
 
 /**
  * The request running this code sleeps until `waiting` settles (a warm-key
- * wait, a limit hold), so memory admission stops counting it as about to
- * allocate until then. Returns `waiting`.
+ * wait, a limit hold's sleep), so memory admission stops counting it as about
+ * to allocate. When it wakes it waits, ahead of new requests and for at most
+ * the queue's wait, until there is room again to count it (or `signal`
+ * aborts). Resolves or rejects as `waiting` does.
  * @template T
  * @param {Promise<T>} waiting
+ * @param {AbortSignal | null} [signal]
  * @returns {Promise<T>}
  */
-export function idleWhile(waiting) {
-  current.getStore()?.idleWhile(waiting);
-  return waiting;
+export function idleWhile(waiting, signal = null) {
+  const ticket = current.getStore();
+  return ticket ? ticket.idleWhile(waiting, signal) : waiting;
 }
 
 /** `to` was built from `from`: it runs under `from`'s admission. Returns `to`. */

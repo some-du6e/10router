@@ -19,6 +19,13 @@
 // has a non-Latin-1 character, as most real ones do, so V8 holds its text two
 // bytes per character (HERD_ASCII=1 turns that off). MEMORY_HIGH_WATER_MB
 // defaults to 1638 here (0.8 of a 2 GiB container), as in production.
+// HERD_NO_LENGTH=1 sends no Content-Length; HERD_429=n answers each
+// conversation's first n attempts with a 429 (set STREAM_EARLY_HEADERS_MS
+// under HERD_UPSTREAM_MS to send replies early as well); HERD_DETAILS=1 turns
+// full request details on. It fails when the live heap (after a
+// mark-compact) passes HERD_MAX_LIVE_PCT (85) of the limit, or resident
+// memory passes HERD_MAX_RSS_MB when set. The CI legs are in
+// .github/workflows/admission-herd.yml.
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -60,6 +67,7 @@ const setEnv = (name, value) => {
 // HERD_429 set, each conversation's first HERD_429 attempts get a 429 at once,
 // so requests fall back across the two keys and wait for them, as under load.
 const CONVERSATION = Buffer.from("conversation ");
+const LIMIT_MESSAGE = "Too many requests for this herd key";
 function startSlowUpstream() {
   const state = { requests: 0, limited: 0 };
   const attempts = new Map();
@@ -79,7 +87,7 @@ function startSlowUpstream() {
       if (head && n <= LIMIT_FIRST) {
         state.limited++;
         res.writeHead(429, { "content-type": "application/json", "retry-after": "1" });
-        res.end(JSON.stringify({ error: { message: "Too many requests", type: "requests", code: "429" } }));
+        res.end(JSON.stringify({ error: { message: LIMIT_MESSAGE, type: "requests", code: "429" } }));
         return;
       }
       setTimeout(() => {
@@ -212,8 +220,9 @@ describe("restart herd", () => {
       sample();
       if (res.status === 503) expect(res.headers.get("retry-after")).toMatch(/^\d+$/);
       // A reply that went out early (early headers) ends in an error frame when
-      // routing then fails: with HERD_429, both keys locked.
-      if (res.status === 200 && !text.includes("Done")) return LIMIT_FIRST > 0 && text.includes("error") ? "200 with an error frame" : "200 without an answer";
+      // routing then fails: with HERD_429, both keys locked, the upstream's own
+      // 429 message. Any other frame (a 500, a 502) is a failure.
+      if (res.status === 200 && !text.includes("Done")) return LIMIT_FIRST > 0 && text.includes(LIMIT_MESSAGE) ? "200 with the 429 as an error frame" : "200 without an answer";
       return res.status;
     }));
     clearInterval(sampler);
@@ -239,7 +248,7 @@ describe("restart herd", () => {
 
     // With HERD_429, a request can find both keys locked and get the 429 itself
     // (or, once its headers went out early, as an error frame).
-    expect(statuses.every((s) => s === 200 || s === 503 || (LIMIT_FIRST > 0 && (s === 429 || s === "200 with an error frame")))).toBe(true);
+    expect(statuses.every((s) => s === 200 || s === 503 || (LIMIT_FIRST > 0 && (s === 429 || s === "200 with the 429 as an error frame")))).toBe(true);
     expect(counts[200] || 0).toBeGreaterThan(0);
     // The scenario ran as named: the upstream did answer 429s, and V8 did collect.
     if (LIMIT_FIRST > 0) expect(upstream.state.limited).toBeGreaterThan(0);

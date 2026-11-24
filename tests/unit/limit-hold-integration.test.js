@@ -198,9 +198,9 @@ describe("rate-limit hold wiring", () => {
 
   // A non-streamed hold sleeps inside the request for up to hours; meanwhile
   // memory admission mustn't count it as about to allocate.
-  it("a JSON client's hold stops counting as not yet replying while it sleeps", async () => {
+  it("a JSON client's hold stops counting as not yet replying while it sleeps, and counts its re-attempt", async () => {
     const { memoryAdmissionStats } = await import("@/sse/services/memoryAdmission.js");
-    const before = memoryAdmissionStats().pendingBytes;
+    const { pendingBytes: before, inflight } = memoryAdmissionStats();
     // Every account is limited for 300 ms, then the one key answers.
     const clearAt = Date.now() + 300;
     const auth = await import("@/sse/services/auth.js");
@@ -215,15 +215,16 @@ describe("rate-limit hold wiring", () => {
       { endpoint: "/v1/chat/completions", body: {}, headers: { accept: "application/json" } }
     );
     await new Promise((resolve) => setTimeout(resolve, 100));
-    during = memoryAdmissionStats().pendingBytes;
-    // Its rerun runs inside the hold, uncounted like a streamed hold's.
+    during = memoryAdmissionStats();
+    // The re-attempt once the limit clears builds its body again: counted.
     await vi.waitFor(() => expect(state.coreResults).toHaveLength(0), { timeout: 5000, interval: 10 });
     const rerunning = memoryAdmissionStats().pendingBytes;
     resolveSecond({ success: true, response: new Response('{"ok":true}', { headers: { "Content-Type": "application/json" } }) });
     const res = await pending;
     expect(await res.text()).toBe('{"ok":true}');
-    expect(during).toBe(before);
-    expect(rerunning).toBe(before);
+    // Admitted and in flight the whole time, but asleep.
+    expect(during).toMatchObject({ inflight: inflight + 1, pendingBytes: before });
+    expect(rerunning).toBeGreaterThan(before);
     expect(memoryAdmissionStats().pendingBytes).toBe(before);
   }, 30000);
 

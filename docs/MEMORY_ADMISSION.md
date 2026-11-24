@@ -28,10 +28,13 @@ is read.
   serializing its body (again on each 429 fallback), so neither the heap nor
   resident memory shows all of it yet. A reply that went out early (early
   headers) doesn't end that: the request stays not yet replying until its
-  routing settles. While it sleeps (a warm-key wait, a limit hold, streamed
-  or not) it doesn't count, since it builds nothing then; the attempt after a
-  warm-key wait counts again. A hold can last hours, so its re-attempts
-  aren't counted.
+  routing settles. While it sleeps (a warm-key wait, a JSON client's limit
+  hold) it doesn't count, since it builds nothing then, and the gate can let
+  others into the room. When it wakes it waits for room to count again,
+  ahead of new requests, for at most `INFLIGHT_QUEUE_WAIT_MS` (it was
+  admitted, so it then goes on regardless), and its next attempt counts. A
+  streamed limit hold's reply has started, so it isn't counted at all: its
+  re-attempts, when the limit clears, are the one thing the gate doesn't see.
 - A new request is admitted when, with it counted too:
   - its `× 3` bytes fit the budget (`INFLIGHT_BODY_BUDGET_MB`);
   - resident memory plus 2 × the bodies not yet replying (their bytes and

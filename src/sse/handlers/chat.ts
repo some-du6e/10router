@@ -680,16 +680,17 @@ async function holdUntilClear({ first, attempt: rerun, willStream, sourceFormat,
     return rerun();
   };
   if (!willStream) {
-    // Hours, at worst: memory admission stops counting it as about to
-    // allocate, as a streamed hold's reply does.
-    const settled = await idleWhile(awaitLimitClear({
+    // It sleeps for up to hours: memory admission doesn't count it as about to
+    // allocate while it does, only while each re-attempt runs.
+    const settled = await awaitLimitClear({
       retryAtMs: first.retryAtMs,
       attempt,
       provider,
       model: model || modelStr,
       signal,
       log,
-    } as Parameters<typeof awaitLimitClear>[0])) as { response?: Response } | null;
+      sleep: (ms: number, s: AbortSignal | null) => idleWhile(abortableSleep(ms, s), s),
+    } as Parameters<typeof awaitLimitClear>[0]) as { response?: Response } | null;
     return settled?.response || first.response;
   }
 
@@ -976,7 +977,7 @@ async function routeSingleModelChat(
       // rebuilt in one serialize: while it waits, a request keeps its client
       // body only, not the last attempt's bytes and translated body.
       attemptCache.last = null;
-      await idleWhile(abortableSleep(waitMs, signal));
+      await idleWhile(abortableSleep(waitMs, signal), signal);
       continue;
     }
 

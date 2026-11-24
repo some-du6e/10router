@@ -6,11 +6,13 @@ name: Admission herd
 # Node 22 picks by itself in a 2 GiB container) and the resident-memory high
 # water of a 2 GiB container (1638 MB).
 #
-# Branch legs must answer every request with a reply or a 503 (or the
-# upstream's own 429), keep the live heap under 85% of its limit and resident
-# memory under 90% of 2 GiB. The heap-only leg turns the byte budget and the
-# resident-memory check off, so it passes only if the heap check holds on its
-# own. Base legs run the same harness with the base branch's source files and
+# Branch legs must answer every request with a reply or a 503 (or, in the
+# fallback leg, the upstream's own 429, as a status or as an error frame after
+# early headers), keep the live heap under 85% of its limit and resident
+# memory under 90% of 2 GiB. The heap-only legs turn the byte budget and the
+# resident-memory check off, so they pass only if the heap check holds on its
+# own, and must keep the live heap under 70%; one of them runs with 429
+# fallback, warm-key waits and early headers. Base legs run the same harness with the base branch's source files and
 # only report what happened (the one without Content-Length is expected to
 # crash with "JavaScript heap out of memory").
 on:
@@ -52,6 +54,8 @@ jobs:
         include:
           - leg: branch
             scenario: heap-only
+          - leg: branch
+            scenario: heap-only-fallback
     steps:
       - uses: actions/checkout@v5
         with:
@@ -74,15 +78,15 @@ jobs:
         env:
           NODE_OPTIONS: --max-old-space-size=1048
           HERD_N: "300"
-          MEMORY_HIGH_WATER_MB: ${{ matrix.scenario == 'heap-only' && '0' || '1638' }}
-          INFLIGHT_BODY_BUDGET_MB: ${{ matrix.scenario == 'heap-only' && '0' || '900' }}
+          MEMORY_HIGH_WATER_MB: ${{ startsWith(matrix.scenario, 'heap-only') && '0' || '1638' }}
+          INFLIGHT_BODY_BUDGET_MB: ${{ startsWith(matrix.scenario, 'heap-only') && '0' || '900' }}
           HERD_NO_LENGTH: ${{ (matrix.scenario == 'no-length' || matrix.scenario == 'heap-only') && '1' || '0' }}
-          HERD_429: ${{ matrix.scenario == 'fallback' && '1' || '0' }}
+          HERD_429: ${{ endsWith(matrix.scenario, 'fallback') && '1' || '0' }}
           # Under the upstream's 3 s, so replies go out early while routing goes on.
-          STREAM_EARLY_HEADERS_MS: ${{ matrix.scenario == 'fallback' && '1000' || '30000' }}
+          STREAM_EARLY_HEADERS_MS: ${{ endsWith(matrix.scenario, 'fallback') && '1000' || '30000' }}
           HERD_MAX_RSS_MB: ${{ matrix.leg == 'branch' && '1843' || '' }}
           # Alone, the heap check must hold the live heap well under its own mark.
-          HERD_MAX_LIVE_PCT: ${{ matrix.scenario == 'heap-only' && '70' || '85' }}
+          HERD_MAX_LIVE_PCT: ${{ startsWith(matrix.scenario, 'heap-only') && '70' || '85' }}
         run: |
           set +e
           ./node_modules/.bin/vitest run --config vitest.benchmark.config.js bench/admission-herd-benchmark.test.js > "$RUNNER_TEMP/herd.txt" 2>&1
