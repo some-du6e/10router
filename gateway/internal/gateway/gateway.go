@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	gatewayfiles "github.com/some-du6e/10router/gateway"
 	"github.com/some-du6e/10router/gateway/internal/clientip"
 	"github.com/some-du6e/10router/gateway/internal/config"
 	"github.com/some-du6e/10router/gateway/internal/db"
@@ -162,6 +163,10 @@ type Gateway struct {
 
 // nativeStatus is what health reports for the native routes: ready, or why not.
 func (g *Gateway) nativeStatus() (ready bool, reason string) {
+	// A port behind its Node code keeps the native route proxied.
+	if off := gatewayfiles.NativeOff(); off != "" {
+		return false, off
+	}
 	g.nativeMu.Lock()
 	d, openErr := g.native, g.nativeErr
 	g.nativeMu.Unlock()

@@ -1,0 +1,12 @@
+{
+  "budgetMb": 900,
+  "bodyCopies": 3,
+  "maxWaitMs": 15000,
+  "retryAfterSec": 10,
+  "unknownBodyMb": 4,
+  "recheckMs": 250,
+  "highWaterFraction": 0.8,
+  "maxTimerMs": 2147483647,
+  "busyMessage": "Server is busy with other large requests; retry in {s}s.",
+  "busyErrorType": "overloaded_error"
+}

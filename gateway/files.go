@@ -1,0 +1,74 @@
+// Package gatewayfiles embeds the files at the module root that the gateway
+// reads at run time: GATEWAY_PROXY_ONLY and node-map.json (docs/GO_GATEWAY.md,
+// Risks, "Drift as Node changes").
+//
+// A package listed in GATEWAY_PROXY_ONLY has a Node change its port hasn't
+// caught up with. Every mapped package sits on the native /v1/messages path,
+// so any listed one keeps that whole route proxied to Node.
+package gatewayfiles
+
+import (
+	_ "embed"
+	"encoding/json"
+	"fmt"
+	"slices"
+	"sort"
+	"strings"
+)
+
+//go:embed GATEWAY_PROXY_ONLY
+var proxyOnlyText string
+
+//go:embed node-map.json
+var nodeMapJSON []byte
+
+// ProxyOnly is the packages GATEWAY_PROXY_ONLY lists, in its order.
+func ProxyOnly() []string { return parseProxyOnly(proxyOnlyText) }
+
+func parseProxyOnly(text string) []string {
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// MappedPackages is node-map.json's packages, sorted.
+func MappedPackages() []string {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(nodeMapJSON, &m); err != nil {
+		panic(fmt.Sprintf("gatewayfiles: node-map.json: %v", err))
+	}
+	var out []string
+	for k := range m {
+		if !strings.HasPrefix(k, "_") {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// NativeOff is why the native route stays proxied, or "" when nothing keeps
+// it so. A name that isn't a mapped package counts too: when in doubt, proxy.
+func NativeOff() string { return nativeOff(ProxyOnly(), MappedPackages()) }
+
+func nativeOff(listed, mapped []string) string {
+	if len(listed) == 0 {
+		return ""
+	}
+	var unknown []string
+	for _, p := range listed {
+		if !slices.Contains(mapped, p) {
+			unknown = append(unknown, p)
+		}
+	}
+	reason := fmt.Sprintf("GATEWAY_PROXY_ONLY lists %s, whose Node code changed without the port", strings.Join(listed, ", "))
+	if len(unknown) > 0 {
+		reason += fmt.Sprintf(" (%s is not a package in node-map.json)", strings.Join(unknown, ", "))
+	}
+	return reason
+}

@@ -1,0 +1,2829 @@
+{
+ "db": {
+  "keys": [
+   {
+    "key": "sk-active",
+    "isActive": 1
+   },
+   {
+    "key": "sk-inactive",
+    "isActive": 0
+   },
+   {
+    "key": "sk-expired",
+    "isActive": 1,
+    "expiresAt": "2001-01-01T00:00:00.000Z"
+   },
+   {
+    "key": "sk-future",
+    "isActive": 1,
+    "expiresAt": "2999-01-01T00:00:00.000Z"
+   },
+   {
+    "key": "sk-spent",
+    "isActive": 1,
+    "budgetUsd": 5,
+    "spentUsd": 5
+   },
+   {
+    "key": "sk-budget",
+    "isActive": 1,
+    "budgetUsd": 5,
+    "spentUsd": 1.25
+   },
+   {
+    "key": "sk-reset",
+    "isActive": 1,
+    "budgetUsd": 5,
+    "spentUsd": 9,
+    "spendOffsetUsd": 6
+   },
+   {
+    "key": "sk-zero-budget",
+    "isActive": 1,
+    "budgetUsd": 0
+   },
+   {
+    "key": "sk-allow-combo",
+    "isActive": 1,
+    "allowedModels": "[\"main\"]"
+   },
+   {
+    "key": "sk-allow-members",
+    "isActive": 1,
+    "allowedModels": "[\"hot/model-a\",\"hot/model-b\"]"
+   },
+   {
+    "key": "sk-allow-partial",
+    "isActive": 1,
+    "allowedModels": "[\"hot/model-a\"]"
+   },
+   {
+    "key": "sk-allow-bare",
+    "isActive": 1,
+    "allowedModels": "[\"model-a\",\"model-b\"]"
+   },
+   {
+    "key": "sk-allow-alias",
+    "isActive": 1,
+    "allowedModels": "[\"fast\"]"
+   },
+   {
+    "key": "sk-allow-alias-target",
+    "isActive": 1,
+    "allowedModels": "[\"hot/model-a\"]"
+   },
+   {
+    "key": "sk-allow-ctx",
+    "isActive": 1,
+    "allowedModels": "[\"main[1m]\"]"
+   },
+   {
+    "key": "sk-allow-nested",
+    "isActive": 1,
+    "allowedModels": "[\"nested\"]"
+   },
+   {
+    "key": "sk-allow-nested-members",
+    "isActive": 1,
+    "allowedModels": "[\"main\",\"hot/model-d\"]"
+   },
+   {
+    "key": "sk-allow-case",
+    "isActive": 1,
+    "allowedModels": "[\"MAIN\"]"
+   },
+   {
+    "key": "sk-allow-upper-members",
+    "isActive": 1,
+    "allowedModels": "[\"HOT/Model-A\",\"hot/MODEL-B[1m]\"]"
+   },
+   {
+    "key": "sk-allow-deep",
+    "isActive": 1,
+    "allowedModels": "[\"hot/model-z\"]"
+   },
+   {
+    "key": "sk-allow-fusion",
+    "isActive": 1,
+    "allowedModels": "[\"hot/model-a\",\"hot/judge\"]"
+   },
+   {
+    "key": "sk-allow-unicode",
+    "isActive": 1,
+    "allowedModels": "[\"mäin\"]"
+   },
+   {
+    "key": "sk-allow-empty",
+    "isActive": 1,
+    "allowedModels": "[]"
+   },
+   {
+    "key": "sk-budget-allow",
+    "isActive": 1,
+    "budgetUsd": 10,
+    "spentUsd": 2,
+    "allowedModels": "[\"main\"]"
+   },
+   {
+    "key": " sk-padded",
+    "isActive": 1
+   }
+  ],
+  "combos": {
+   "main": [
+    "hot/model-a",
+    "hot/model-b"
+   ],
+   "nested": [
+    "main",
+    "hot/model-d"
+   ],
+   "d1": [
+    "d2"
+   ],
+   "d2": [
+    "d3"
+   ],
+   "d3": [
+    "d4"
+   ],
+   "d4": [
+    "d5"
+   ],
+   "d5": [
+    "hot/model-z"
+   ],
+   "loop": [
+    "loop"
+   ],
+   "fusey": [
+    "hot/model-a"
+   ]
+  },
+  "aliases": {
+   "fast": "hot/model-a"
+  },
+  "comboStrategies": {
+   "fusey": {
+    "fallbackStrategy": "fusion",
+    "judgeModel": " hot/judge "
+   }
+  }
+ },
+ "cases": [
+  {
+   "name": "sk-active local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-active"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-active",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-active local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-active"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-active",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-active remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-active"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-active",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-active remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-active"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-active",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-inactive local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-inactive"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 401
+   }
+  },
+  {
+   "name": "sk-inactive local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-inactive"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-inactive",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-inactive remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-inactive"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "sk-inactive remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-inactive"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "sk-expired local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-expired"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 401
+   }
+  },
+  {
+   "name": "sk-expired local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-expired"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 401
+   }
+  },
+  {
+   "name": "sk-expired remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-expired"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 401
+   }
+  },
+  {
+   "name": "sk-expired remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-expired"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 401
+   }
+  },
+  {
+   "name": "sk-future local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-future"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-future",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-future local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-future"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-future",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-future remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-future"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-future",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-future remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-future"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-future",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-spent local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-spent"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 402
+   }
+  },
+  {
+   "name": "sk-spent local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-spent"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 402
+   }
+  },
+  {
+   "name": "sk-spent remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-spent"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 402
+   }
+  },
+  {
+   "name": "sk-spent remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-spent"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 402
+   }
+  },
+  {
+   "name": "sk-budget local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-budget"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-budget",
+    "hasBudget": true
+   }
+  },
+  {
+   "name": "sk-budget local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-budget"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-budget",
+    "hasBudget": true
+   }
+  },
+  {
+   "name": "sk-budget remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-budget"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-budget",
+    "hasBudget": true
+   }
+  },
+  {
+   "name": "sk-budget remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-budget"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-budget",
+    "hasBudget": true
+   }
+  },
+  {
+   "name": "sk-reset local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-reset"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-reset",
+    "hasBudget": true
+   }
+  },
+  {
+   "name": "sk-reset local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-reset"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-reset",
+    "hasBudget": true
+   }
+  },
+  {
+   "name": "sk-reset remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-reset"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-reset",
+    "hasBudget": true
+   }
+  },
+  {
+   "name": "sk-reset remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-reset"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-reset",
+    "hasBudget": true
+   }
+  },
+  {
+   "name": "sk-zero-budget local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-zero-budget"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 402
+   }
+  },
+  {
+   "name": "sk-zero-budget local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-zero-budget"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 402
+   }
+  },
+  {
+   "name": "sk-zero-budget remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-zero-budget"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 402
+   }
+  },
+  {
+   "name": "sk-zero-budget remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-zero-budget"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 402
+   }
+  },
+  {
+   "name": "sk-allow-combo local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-combo"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-combo",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-combo local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-combo"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-combo",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-combo remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-combo"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-combo",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-combo remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-combo"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-combo",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-members local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-members"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-members local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-members"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-members remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-members"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-members remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-members"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-partial local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-partial"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-partial local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-partial"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-partial remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-partial"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-partial remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-partial"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-bare local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-bare"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-bare",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-bare local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-bare"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-bare",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-bare remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-bare"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-bare",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-bare remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-bare"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-bare",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-alias local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-alias"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-alias local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-alias"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-alias remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-alias"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-alias remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-alias"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-alias-target local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-alias-target"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-alias-target local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-alias-target"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-alias-target remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-alias-target"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-alias-target remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-alias-target"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-ctx local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-ctx"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-ctx",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-ctx local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-ctx"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-ctx",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-ctx remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-ctx"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-ctx",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-ctx remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-ctx"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-ctx",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-nested local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-nested"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-nested local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-nested"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-nested remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-nested"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-nested remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-nested"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-nested-members local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-nested-members"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-nested-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-nested-members local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-nested-members"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-nested-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-nested-members remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-nested-members"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-nested-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-nested-members remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-nested-members"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-nested-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-case local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-case"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-case local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-case"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-case remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-case"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-case remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-case"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-upper-members local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-upper-members"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-upper-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-upper-members local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-upper-members"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-upper-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-upper-members remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-upper-members"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-upper-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-upper-members remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-upper-members"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-upper-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-deep local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-deep"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-deep local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-deep"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-deep remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-deep"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-deep remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-deep"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-fusion local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-fusion"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-fusion local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-fusion"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-fusion remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-fusion"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-fusion remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-fusion"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-unicode local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-unicode"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "a non-ASCII allowlist entry",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-unicode local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-unicode"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "a non-ASCII allowlist entry",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-unicode remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-unicode"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "a non-ASCII allowlist entry",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-unicode remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-unicode"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "a non-ASCII allowlist entry",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-empty local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-empty"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-empty",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-empty local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-empty"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-empty",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-empty remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-empty"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-empty",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-empty remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-empty"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-empty",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-budget-allow local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-budget-allow"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-budget-allow",
+    "hasBudget": true
+   }
+  },
+  {
+   "name": "sk-budget-allow local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-budget-allow"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-budget-allow",
+    "hasBudget": true
+   }
+  },
+  {
+   "name": "sk-budget-allow remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-budget-allow"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-budget-allow",
+    "hasBudget": true
+   }
+  },
+  {
+   "name": "sk-budget-allow remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-budget-allow"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-budget-allow",
+    "hasBudget": true
+   }
+  },
+  {
+   "name": "sk-padded local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": " sk-padded"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 401
+   }
+  },
+  {
+   "name": "sk-padded local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": " sk-padded"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-padded",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-padded remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": " sk-padded"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "sk-padded remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": " sk-padded"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "no key local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 401
+   }
+  },
+  {
+   "name": "no key remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "unknown key local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-unknown"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 401
+   }
+  },
+  {
+   "name": "unknown key remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-unknown"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "no key local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": null,
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "no key remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "unknown key local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-unknown"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-unknown",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "unknown key remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-unknown"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "bearer",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "authorization": "Bearer sk-active"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-active",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "bearer lowercase scheme",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "authorization": "bearer sk-active"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "bearer before x-api-key",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "authorization": "Bearer sk-inactive",
+    "x-api-key": "sk-active"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "non-bearer authorization falls to x-api-key",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "authorization": "Basic abc",
+    "x-api-key": "sk-active"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-active",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "empty bearer hides x-api-key",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "authorization": "Bearer ",
+    "x-api-key": "sk-active"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-active",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "x-goog-api-key",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-goog-api-key": "sk-active"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-active",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "x-api-key before x-goog-api-key",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-inactive",
+    "x-goog-api-key": "sk-active"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "query key",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test"
+   },
+   "query": "key=sk-active",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "the key in the query string",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-active",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "query without a key",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-active"
+   },
+   "query": "beta=true",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-active",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "query and no header, local, no key needed",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128"
+   },
+   "query": "beta=true",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "a query string with no key header",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": null,
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "padded key",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "authorization": "Bearer  sk-padded"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": " sk-padded",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "management key local",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "10r-mgmt-abc"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "management key in bearer",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "authorization": "Bearer 10r-mgmt-abc"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "management key padded",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "authorization": "Bearer  x10r-mgmt-abc"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "local with a forwarding header",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-forwarded-for": "198.51.100.4"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "local with a loopback origin",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "origin": "http://localhost:3000"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "an Origin header",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": null,
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "local with a loopback origin and a key",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "origin": "http://localhost:3000",
+    "x-api-key": "sk-active"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-active",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "local with a foreign origin",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "origin": "https://other.example.test"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "local with a bad origin",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "origin": "null"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "local cross-site fetch",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "sec-fetch-site": "cross-site"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "local same-origin fetch",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "sec-fetch-site": "same-origin"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": null,
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "local typed navigation",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "sec-fetch-site": "none"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": null,
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "loopback socket, public Host",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "router.example.test"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "loopback socket, no Host",
+   "socketIp": "127.0.0.1",
+   "headers": {},
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": null,
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "mapped loopback socket",
+   "socketIp": "::ffff:127.0.0.1",
+   "headers": {
+    "host": "127.0.0.1:20128"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": null,
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \"\" with sk-active",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-active"
+   },
+   "query": "",
+   "model": "",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 400
+   }
+  },
+  {
+   "name": "model \"   \" with sk-active",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-active"
+   },
+   "query": "",
+   "model": "   ",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 400
+   }
+  },
+  {
+   "name": "model \"main[1m]\" with sk-allow-combo",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-combo"
+   },
+   "query": "",
+   "model": "main[1m]",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-combo",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \"main[1M]\" with sk-allow-members",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-members"
+   },
+   "query": "",
+   "model": "main[1M]",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \" main \" with sk-allow-combo",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-combo"
+   },
+   "query": "",
+   "model": " main ",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-combo",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \"fast\" with sk-allow-alias",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-alias"
+   },
+   "query": "",
+   "model": "fast",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-alias",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \"fast\" with sk-allow-alias-target",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-alias-target"
+   },
+   "query": "",
+   "model": "fast",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-alias-target",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \"fast\" with sk-allow-members",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-members"
+   },
+   "query": "",
+   "model": "fast",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \"nested\" with sk-allow-nested",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-nested"
+   },
+   "query": "",
+   "model": "nested",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-nested",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \"nested\" with sk-allow-nested-members",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-nested-members"
+   },
+   "query": "",
+   "model": "nested",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-nested-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \"nested\" with sk-allow-members",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-members"
+   },
+   "query": "",
+   "model": "nested",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "model \"d1\" with sk-allow-deep",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-deep"
+   },
+   "query": "",
+   "model": "d1",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-deep",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \"d1\" with sk-allow-members",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-members"
+   },
+   "query": "",
+   "model": "d1",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \"loop\" with sk-allow-members",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-members"
+   },
+   "query": "",
+   "model": "loop",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \"fusey\" with sk-allow-fusion",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-fusion"
+   },
+   "query": "",
+   "model": "fusey",
+   "requireApiKey": true,
+   "conservative": "a fusion combo in the allowlist walk",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-fusion",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \"fusey\" with sk-allow-members",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-members"
+   },
+   "query": "",
+   "model": "fusey",
+   "requireApiKey": true,
+   "conservative": "a fusion combo in the allowlist walk",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "model \"hot/model-a\" with sk-allow-bare",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-bare"
+   },
+   "query": "",
+   "model": "hot/model-a",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-bare",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \"other/model-a\" with sk-allow-bare",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-bare"
+   },
+   "query": "",
+   "model": "other/model-a",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-bare",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \"hot/x/model-a\" with sk-allow-bare",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-bare"
+   },
+   "query": "",
+   "model": "hot/x/model-a",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "model \"HOT/MODEL-A\" with sk-allow-members",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-members"
+   },
+   "query": "",
+   "model": "HOT/MODEL-A",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \"main\" with sk-allow-upper-members",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-upper-members"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-upper-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \"cc/claude-x\" with sk-allow-members",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-members"
+   },
+   "query": "",
+   "model": "cc/claude-x",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "model \"main\" with sk-budget-allow",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-budget-allow"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-budget-allow",
+    "hasBudget": true
+   }
+  },
+  {
+   "name": "model \"nested\" with sk-budget-allow",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-budget-allow"
+   },
+   "query": "",
+   "model": "nested",
+   "requireApiKey": true,
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  }
+ ]
+}

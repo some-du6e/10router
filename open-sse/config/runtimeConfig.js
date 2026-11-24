@@ -42,7 +42,7 @@ export const MEMORY_CONFIG = {
 };
 
 // Largest delay setTimeout honours; above it the timer fires at once.
-const MAX_TIMER_MS = 2 ** 31 - 1;
+export const MAX_TIMER_MS = 2 ** 31 - 1;
 
 // Parse an integer env override (min..MAX_TIMER_MS), falling back to a default.
 function envMs(name, def, min = 1) {

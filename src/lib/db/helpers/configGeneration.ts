@@ -50,16 +50,61 @@ function isRuntimeField(key: string): boolean {
 
 type ConnectionFields = Record<string, unknown> | null | undefined;
 
+/** A token refresh's own fields, which count as runtime state for that write (connectionConfigChanged). */
+export interface RefreshedFields {
+  /** Top-level connection fields the refresh result writes (buildCredentialUpdates). */
+  fields?: Iterable<string>;
+  /** providerSpecificData keys its patch writes (Copilot's token, a project or account id). */
+  providerSpecificData?: Iterable<string>;
+}
+
+/** The fields a token refresh result writes, from its connection update (credentialSave.js). */
+export function refreshedFields(update: Record<string, unknown> | null | undefined): RefreshedFields {
+  const psd = update?.providerSpecificData;
+  return {
+    fields: Object.keys(update || {}).filter((key) => key !== "providerSpecificData"),
+    providerSpecificData: psd && typeof psd === "object" ? Object.keys(psd) : [],
+  };
+}
+
+const json = (value: unknown): string | undefined => JSON.stringify(value ?? null);
+
 /**
  * Did a providerConnections write change anything but runtime state? `before`
  * and `after` are connection objects as connectionsRepo reads them (columns
  * and data together). isActive is a column, so turning a key off counts.
+ *
+ * `refreshed` names what a token refresh wrote: those fields, and those keys
+ * of providerSpecificData, are runtime for this write. A refresh rewrites
+ * tokens on a timer; the gateway reads connections fresh at pick time, so
+ * reloading its whole config snapshot for one would buy nothing.
  */
-export function connectionConfigChanged(before: ConnectionFields, after: ConnectionFields): boolean {
+export function connectionConfigChanged(before: ConnectionFields, after: ConnectionFields, refreshed: RefreshedFields | null = null): boolean {
+  const refreshedTop = new Set(refreshed?.fields || []);
+  const refreshedPsd = new Set(refreshed?.providerSpecificData || []);
   const keys = new Set([...Object.keys(before || {}), ...Object.keys(after || {})]);
   for (const key of keys) {
-    if (isRuntimeField(key)) continue;
-    if (JSON.stringify(before?.[key] ?? null) !== JSON.stringify(after?.[key] ?? null)) return true;
+    if (isRuntimeField(key) || refreshedTop.has(key)) continue;
+    if (key === "providerSpecificData" && refreshedPsd.size > 0) {
+      if (providerSpecificDataChanged(before?.[key], after?.[key], refreshedPsd)) return true;
+      continue;
+    }
+    if (json(before?.[key]) !== json(after?.[key])) return true;
+  }
+  return false;
+}
+
+// providerSpecificData compared key by key, leaving out the keys a refresh
+// wrote. A missing one is empty: the refresh's patch is applied over `{}`.
+function providerSpecificDataChanged(before: unknown, after: unknown, skip: ReadonlySet<string>): boolean {
+  const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+  before ??= {};
+  after ??= {};
+  if (!isObject(before) || !isObject(after)) return json(before) !== json(after);
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const key of keys) {
+    if (skip.has(key)) continue;
+    if (json(before[key]) !== json(after[key])) return true;
   }
   return false;
 }

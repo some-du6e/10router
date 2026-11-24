@@ -1,0 +1,583 @@
+{
+ "config": {
+  "nodes": [
+   {
+    "id": "openai-compatible-chat-0001",
+    "type": "openai-compatible",
+    "prefix": "hot"
+   },
+   {
+    "id": "openai-compatible-chat-0002",
+    "type": "openai-compatible",
+    "prefix": "hot"
+   },
+   {
+    "id": "openai-compatible-responses-0003",
+    "type": "openai-compatible",
+    "prefix": "resp"
+   },
+   {
+    "id": "anthropic-compatible-0004",
+    "type": "anthropic-compatible",
+    "prefix": "anth"
+   },
+   {
+    "id": "anthropic-compatible-0005",
+    "type": "anthropic-compatible",
+    "prefix": "both"
+   },
+   {
+    "id": "openai-compatible-chat-0006",
+    "type": "openai-compatible",
+    "prefix": "both"
+   },
+   {
+    "id": "custom-embedding-0007",
+    "type": "custom-embedding",
+    "prefix": "emb"
+   },
+   {
+    "id": "openai-compatible-chat-0008",
+    "type": "openai-compatible",
+    "prefix": "openai"
+   },
+   {
+    "id": "openai-compatible-chat-0009",
+    "type": "openai-compatible",
+    "prefix": "xmtp"
+   },
+   {
+    "id": "openai-compatible-chat-0010",
+    "type": "openai-compatible",
+    "prefix": ""
+   },
+   {
+    "id": "openai-compatible-chat-0011",
+    "type": "openai-compatible",
+    "prefix": 7
+   },
+   {
+    "id": "openai-compatible-chat-0012",
+    "type": "openai-compatible"
+   }
+  ],
+  "combos": {
+   "main": [
+    "hot/model-a",
+    "hot/model-b(high)",
+    "anth/model-c"
+   ],
+   "nested": [
+    "main",
+    "hot/model-d"
+   ],
+   "self": [
+    "self",
+    "hot/model-a"
+   ],
+   "empty": [],
+   "mixed": [
+    "hot/model-a",
+    7,
+    null
+   ],
+   "with[1m]": [
+    "hot/model-a"
+   ],
+   "grok-build": [
+    "hot/model-e"
+   ]
+  },
+  "aliases": {
+   "fast": "hot/model-a",
+   "objectAlias": {
+    "provider": "hot",
+    "model": "model-b"
+   },
+   "objectBuiltin": {
+    "provider": "cc",
+    "model": "claude-x"
+   },
+   "halfObject": {
+    "provider": "hot"
+   },
+   "noSlash": "model-only",
+   "falsy": "",
+   "numberAlias": 5,
+   "builtinTarget": "gcli/whatever",
+   "main": "hot/shadowed-by-combo"
+  }
+ },
+ "cases": [
+  {
+   "model": "main",
+   "info": {
+    "provider": null,
+    "model": "main"
+   },
+   "comboModels": [
+    "hot/model-a",
+    "hot/model-b(high)",
+    "anth/model-c"
+   ],
+   "comboLookupName": "main"
+  },
+  {
+   "model": "main[1m]",
+   "info": {
+    "provider": null,
+    "model": "main"
+   },
+   "comboModels": [
+    "hot/model-a",
+    "hot/model-b(high)",
+    "anth/model-c"
+   ],
+   "comboLookupName": "main"
+  },
+  {
+   "model": "MAIN",
+   "info": {
+    "provider": "openai",
+    "model": "MAIN"
+   },
+   "comboModels": null,
+   "comboLookupName": "MAIN"
+  },
+  {
+   "model": "nested",
+   "info": {
+    "provider": null,
+    "model": "nested"
+   },
+   "comboModels": [
+    "main",
+    "hot/model-d"
+   ],
+   "comboLookupName": "nested"
+  },
+  {
+   "model": "self",
+   "info": {
+    "provider": null,
+    "model": "self"
+   },
+   "comboModels": [
+    "self",
+    "hot/model-a"
+   ],
+   "comboLookupName": "self"
+  },
+  {
+   "model": "empty",
+   "info": {
+    "provider": null,
+    "model": "empty"
+   },
+   "comboModels": null,
+   "comboLookupName": "empty"
+  },
+  {
+   "model": "mixed",
+   "info": {
+    "provider": null,
+    "model": "mixed"
+   },
+   "comboModels": [
+    "hot/model-a",
+    7,
+    null
+   ],
+   "comboLookupName": "mixed"
+  },
+  {
+   "model": "with[1m]",
+   "info": {
+    "provider": "openai",
+    "model": "with"
+   },
+   "comboModels": null,
+   "comboLookupName": "with"
+  },
+  {
+   "model": "with",
+   "info": {
+    "provider": "openai",
+    "model": "with"
+   },
+   "comboModels": null,
+   "comboLookupName": "with"
+  },
+  {
+   "model": "grok-build",
+   "info": {
+    "provider": null,
+    "model": "grok-build"
+   },
+   "comboModels": [
+    "hot/model-e"
+   ],
+   "comboLookupName": "grok-build"
+  },
+  {
+   "model": "fast",
+   "info": {
+    "provider": "hot",
+    "model": "model-a"
+   },
+   "comboModels": null,
+   "comboLookupName": "fast"
+  },
+  {
+   "model": "objectAlias",
+   "info": {
+    "provider": "hot",
+    "model": "model-b"
+   },
+   "comboModels": null,
+   "comboLookupName": "objectAlias"
+  },
+  {
+   "model": "objectBuiltin",
+   "info": {
+    "provider": "claude",
+    "model": "claude-x"
+   },
+   "comboModels": null,
+   "comboLookupName": "objectBuiltin"
+  },
+  {
+   "model": "halfObject",
+   "info": {
+    "provider": "openai",
+    "model": "halfObject"
+   },
+   "comboModels": null,
+   "comboLookupName": "halfObject"
+  },
+  {
+   "model": "noSlash",
+   "info": {
+    "provider": "openai",
+    "model": "noSlash"
+   },
+   "comboModels": null,
+   "comboLookupName": "noSlash"
+  },
+  {
+   "model": "falsy",
+   "info": {
+    "provider": "openai",
+    "model": "falsy"
+   },
+   "comboModels": null,
+   "comboLookupName": "falsy"
+  },
+  {
+   "model": "numberAlias",
+   "info": {
+    "provider": "openai",
+    "model": "numberAlias"
+   },
+   "comboModels": null,
+   "comboLookupName": "numberAlias"
+  },
+  {
+   "model": "builtinTarget",
+   "info": {
+    "provider": "grok-cli",
+    "model": "whatever"
+   },
+   "comboModels": null,
+   "comboLookupName": "builtinTarget"
+  },
+  {
+   "model": "hot/model-a",
+   "info": {
+    "provider": "openai-compatible-chat-0001",
+    "model": "model-a"
+   },
+   "comboModels": null,
+   "comboLookupName": "hot/model-a"
+  },
+  {
+   "model": "hot/model-b(high)",
+   "info": {
+    "provider": "openai-compatible-chat-0001",
+    "model": "model-b(high)"
+   },
+   "comboModels": null,
+   "comboLookupName": "hot/model-b(high)"
+  },
+  {
+   "model": "hot/model-a[1m]",
+   "info": {
+    "provider": "openai-compatible-chat-0001",
+    "model": "model-a"
+   },
+   "comboModels": null,
+   "comboLookupName": "hot/model-a"
+  },
+  {
+   "model": "hot/model-a[200K]",
+   "info": {
+    "provider": "openai-compatible-chat-0001",
+    "model": "model-a"
+   },
+   "comboModels": null,
+   "comboLookupName": "hot/model-a"
+  },
+  {
+   "model": "hot/a/b",
+   "info": {
+    "provider": "openai-compatible-chat-0001",
+    "model": "a/b"
+   },
+   "comboModels": null,
+   "comboLookupName": "hot/a/b"
+  },
+  {
+   "model": "hot/",
+   "info": {
+    "provider": "openai-compatible-chat-0001",
+    "model": ""
+   },
+   "comboModels": null,
+   "comboLookupName": "hot/"
+  },
+  {
+   "model": "resp/model",
+   "info": {
+    "provider": "openai-compatible-responses-0003",
+    "model": "model"
+   },
+   "comboModels": null,
+   "comboLookupName": "resp/model"
+  },
+  {
+   "model": "anth/model",
+   "info": {
+    "provider": "anthropic-compatible-0004",
+    "model": "model"
+   },
+   "comboModels": null,
+   "comboLookupName": "anth/model"
+  },
+  {
+   "model": "both/model",
+   "info": {
+    "provider": "openai-compatible-chat-0006",
+    "model": "model"
+   },
+   "comboModels": null,
+   "comboLookupName": "both/model"
+  },
+  {
+   "model": "emb/model",
+   "info": {
+    "provider": "custom-embedding-0007",
+    "model": "model"
+   },
+   "comboModels": null,
+   "comboLookupName": "emb/model"
+  },
+  {
+   "model": "openai/gpt-x",
+   "info": {
+    "provider": "openai",
+    "model": "gpt-x"
+   },
+   "comboModels": null,
+   "comboLookupName": "openai/gpt-x"
+  },
+  {
+   "model": "xmtp/model",
+   "info": {
+    "provider": "xiaomi-tokenplan",
+    "model": "model"
+   },
+   "comboModels": null,
+   "comboLookupName": "xmtp/model"
+  },
+  {
+   "model": "/model",
+   "info": {
+    "provider": "openai-compatible-chat-0010",
+    "model": "model"
+   },
+   "comboModels": null,
+   "comboLookupName": "/model"
+  },
+  {
+   "model": "cc/claude-x",
+   "info": {
+    "provider": "claude",
+    "model": "claude-x"
+   },
+   "comboModels": null,
+   "comboLookupName": "cc/claude-x"
+  },
+  {
+   "model": "claude/claude-x",
+   "info": {
+    "provider": "claude",
+    "model": "claude-x"
+   },
+   "comboModels": null,
+   "comboLookupName": "claude/claude-x"
+  },
+  {
+   "model": "unknownprefix/model",
+   "info": {
+    "provider": "unknownprefix",
+    "model": "model"
+   },
+   "comboModels": null,
+   "comboLookupName": "unknownprefix/model"
+  },
+  {
+   "model": "7/model",
+   "info": {
+    "provider": "7",
+    "model": "model"
+   },
+   "comboModels": null,
+   "comboLookupName": "7/model"
+  },
+  {
+   "model": "claude-opus-5",
+   "info": {
+    "provider": "anthropic",
+    "model": "claude-opus-5"
+   },
+   "comboModels": null,
+   "comboLookupName": "claude-opus-5"
+  },
+  {
+   "model": "Claude-Opus-5",
+   "info": {
+    "provider": "anthropic",
+    "model": "Claude-Opus-5"
+   },
+   "comboModels": null,
+   "comboLookupName": "Claude-Opus-5"
+  },
+  {
+   "model": "gemini-3",
+   "info": {
+    "provider": "gemini",
+    "model": "gemini-3"
+   },
+   "comboModels": null,
+   "comboLookupName": "gemini-3"
+  },
+  {
+   "model": "gpt-5",
+   "info": {
+    "provider": "openai",
+    "model": "gpt-5"
+   },
+   "comboModels": null,
+   "comboLookupName": "gpt-5"
+  },
+  {
+   "model": "o3-mini",
+   "info": {
+    "provider": "openai",
+    "model": "o3-mini"
+   },
+   "comboModels": null,
+   "comboLookupName": "o3-mini"
+  },
+  {
+   "model": "o2",
+   "info": {
+    "provider": "openai",
+    "model": "o2"
+   },
+   "comboModels": null,
+   "comboLookupName": "o2"
+  },
+  {
+   "model": "deepseek-r1",
+   "info": {
+    "provider": "openrouter",
+    "model": "deepseek-r1"
+   },
+   "comboModels": null,
+   "comboLookupName": "deepseek-r1"
+  },
+  {
+   "model": "llama-3",
+   "info": {
+    "provider": "openai",
+    "model": "llama-3"
+   },
+   "comboModels": null,
+   "comboLookupName": "llama-3"
+  },
+  {
+   "model": "",
+   "info": {
+    "provider": null,
+    "model": null
+   },
+   "comboModels": null,
+   "comboLookupName": ""
+  },
+  {
+   "model": "model[1m]",
+   "info": {
+    "provider": "openai",
+    "model": "model"
+   },
+   "comboModels": null,
+   "comboLookupName": "model"
+  },
+  {
+   "model": "model[1M]",
+   "info": {
+    "provider": "openai",
+    "model": "model"
+   },
+   "comboModels": null,
+   "comboLookupName": "model"
+  },
+  {
+   "model": "model[12k]",
+   "info": {
+    "provider": "openai",
+    "model": "model"
+   },
+   "comboModels": null,
+   "comboLookupName": "model"
+  },
+  {
+   "model": "model[m]",
+   "info": {
+    "provider": "openai",
+    "model": "model[m]"
+   },
+   "comboModels": null,
+   "comboLookupName": "model[m]"
+  },
+  {
+   "model": "model[1g]",
+   "info": {
+    "provider": "openai",
+    "model": "model[1g]"
+   },
+   "comboModels": null,
+   "comboLookupName": "model[1g]"
+  },
+  {
+   "model": "model [1m]",
+   "info": {
+    "provider": "openai",
+    "model": "model "
+   },
+   "comboModels": null,
+   "comboLookupName": "model "
+  }
+ ]
+}

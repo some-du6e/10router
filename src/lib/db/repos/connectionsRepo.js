@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
-import { bumpConfigGenerationSync, connectionConfigChanged, writeConfig } from "../helpers/configGeneration.js";
+import { bumpConfigGenerationSync, connectionConfigChanged, refreshedFields, writeConfig } from "../helpers/configGeneration.js";
 import { DEMOTE_PREFIX } from "../../../shared/utils/connectionStatus.js";
 
 const OPTIONAL_FIELDS = [
@@ -318,7 +318,9 @@ export async function createProviderConnection(data) {
 // null patch change nothing). stampLastRefreshAt sets lastRefreshAt to now
 // when data carries an access token other than the stored one and no
 // lastRefreshAt of its own.
-export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed, refreshTokenUsed, patchProviderSpecificData = false, stampLastRefreshAt = false } = {}) {
+// tokenRefresh: data is a token refresh result (credentialSave.js); the fields
+// it writes don't move the config generation.
+export async function updateProviderConnection(id, data, { autoDisable = null, demote = null, liftDemote = null, noteServed = false, apiKeyUsed, refreshTokenUsed, patchProviderSpecificData = false, stampLastRefreshAt = false, tokenRefresh = false } = {}) {
   const db = await getAdapter();
   let result;
   let servesChanged = false;
@@ -371,7 +373,7 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
     // Dashboard edits move the config generation; the request path's lock,
     // error and rotation writes don't. A priority write renumbers the other
     // connections too, so it counts even when this row's priority stays.
-    if (data.priority !== undefined || connectionConfigChanged(existing, merged)) bumpConfigGenerationSync(db);
+    if (data.priority !== undefined || connectionConfigChanged(existing, merged, tokenRefresh ? refreshedFields(data) : null)) bumpConfigGenerationSync(db);
     result = merged;
     // Token refreshes and rate-limit stamps write here constantly; only a
     // change to what the connection serves counts.

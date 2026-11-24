@@ -38,5 +38,33 @@
     "src/shared/utils/nodeQuirks.ts",
     "src/sse/handlers/chat.ts",
     "src/sse/utils/requestBody.js"
+  ],
+  "route": [
+    "next.config.mjs",
+    "src/app/api/v1/messages/route.js",
+    "src/sse/handlers/chat.ts",
+    "src/sse/utils/requestBody.js",
+    "open-sse/utils/bypassHandler.js",
+    "open-sse/utils/modelMarkers.js"
+  ],
+  "clientauth": [
+    "src/shared/utils/clientApiKey.js",
+    "src/dashboardGuard.js",
+    "src/lib/auth/trustedPeer.js",
+    "src/shared/utils/managementKey.js",
+    "src/sse/handlers/chat.ts",
+    "src/sse/services/keyLimits.js",
+    "src/shared/utils/apiKeyLimits.js",
+    "src/lib/db/repos/apiKeysRepo.js"
+  ],
+  "admission": [
+    "src/sse/services/memoryAdmission.js",
+    "src/shared/utils/cgroupMemory.ts"
+  ],
+  "combo": [
+    "src/sse/services/model.js",
+    "open-sse/services/model.js",
+    "src/lib/db/repos/combosRepo.js",
+    "src/lib/db/repos/nodesRepo.js"
   ]
 }

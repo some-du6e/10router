@@ -10,7 +10,8 @@ const MEDIA_ONLY_ALIASES = {
   "aws-polly": "aws-polly",
 };
 
-const ALIAS_TO_PROVIDER_ID = { ...MEDIA_ONLY_ALIASES };
+// Exported for the Go gateway's table export (gateway/internal/combo/tables.json).
+export const ALIAS_TO_PROVIDER_ID = { ...MEDIA_ONLY_ALIASES };
 for (const entry of REGISTRY) {
   ALIAS_TO_PROVIDER_ID[entry.id] = entry.id;
   if (entry.alias) ALIAS_TO_PROVIDER_ID[entry.alias] = entry.id;
@@ -155,7 +156,7 @@ export function withContextWindow(info, parsed) {
 }
 
 // Config-driven prefix → provider inference (first match wins, fallback "openai").
-const MODEL_PREFIX_PROVIDERS = [
+export const MODEL_PREFIX_PROVIDERS = [
   [/^claude-/, "anthropic"],
   [/^gemini-/, "gemini"],
   [/^gpt-/, "openai"],
