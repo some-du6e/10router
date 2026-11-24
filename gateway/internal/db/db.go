@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -59,9 +60,14 @@ type DB struct {
 	// lastErr is the watcher's latest poll or reload error ("" after a good poll).
 	lastErr atomic.Value
 
-	watchMu  sync.Mutex
-	watching bool
-	stats    watchStats
+	watchMu   sync.Mutex
+	watching  bool
+	stopWatch context.CancelFunc
+	watchDone chan struct{}
+	stats     watchStats
+	// loadedAt is when the last snapshot loaded (UnixNano), ttl Watch's TTL.
+	loadedAt atomic.Int64
+	ttl      atomic.Int64
 }
 
 // DataFile is where Node keeps its database: DATA_DIR/db/data.sqlite, else
@@ -69,6 +75,19 @@ type DB struct {
 // as src/lib/dataDir.js and src/lib/db/paths.js resolve it.
 func DataFile(getenv func(string) string) (string, error) {
 	dir := getenv("DATA_DIR")
+	// getDataDir's fallbacks: a Unix path on Windows, and a DATA_DIR it can't
+	// create for lack of permission, both mean the default directory.
+	if dir != "" && runtime.GOOS == "windows" && strings.HasPrefix(dir, "/") {
+		dir = ""
+	}
+	if dir != "" {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			if !errors.Is(err, fs.ErrPermission) {
+				return "", err
+			}
+			dir = ""
+		}
+	}
 	if dir == "" {
 		if runtime.GOOS == "windows" {
 			appData := getenv("APPDATA")
@@ -174,6 +193,13 @@ func Open(path string, o Options) (*DB, error) {
 // on the last close; while Node runs it can't, so the gateway never
 // checkpoints under Node.
 func (d *DB) Close() error {
+	d.watchMu.Lock()
+	stop, done := d.stopWatch, d.watchDone
+	d.watchMu.Unlock()
+	if stop != nil {
+		stop()
+		<-done
+	}
 	d.w.close()
 	return errors.Join(d.readers.Close(), d.writer.Close())
 }
@@ -181,8 +207,10 @@ func (d *DB) Close() error {
 // writeTx queues fn for the writer goroutine (writer.go), which runs it in a
 // BEGIN IMMEDIATE transaction, possibly with other queued writes, inside a
 // savepoint of its own: an error rolls back fn's changes only. It returns
-// fn's error, or the commit's. ctx bounds only the wait to be queued; once
-// queued, the write runs, so a caller never retries one that landed.
+// fn's error, or the commit's, and an error only for a write that didn't land
+// (one whose transaction SQLite rolled back is failed with all the others in
+// it), so a caller never retries one that did. A write whose ctx ends before
+// it starts is skipped with ctx's error; once started it runs to its end.
 func (d *DB) writeTx(ctx context.Context, fn func(ctx context.Context, tx *sql.Tx) error) error {
 	return d.w.submit(ctx, fn)
 }

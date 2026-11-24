@@ -229,7 +229,9 @@ func (g *Gateway) tryOpenNative(ctx context.Context, getenv func(string) string)
 						g.logger.Printf("[Gateway] native routes off: %s", st.Reason)
 					}
 				},
-				// One line per distinct error, not one per 250 ms poll.
+				// One line per distinct error, not one per 250 ms poll; an error
+				// that comes back after a good reload is logged again.
+				OnReload: func(*db.Snapshot) { lastErr = "" },
 				OnError: func(err error) {
 					if msg := err.Error(); msg != lastErr {
 						lastErr = msg
@@ -353,16 +355,18 @@ func (g *Gateway) health(w http.ResponseWriter, r *http.Request) {
 	case !appUp:
 		body["status"], code = "app_down", http.StatusServiceUnavailable
 	}
+	peer, _ := proxy.PeerOf(r.RemoteAddr, g.listenIPv6)
+	local := g.rule.IsOnThisMachine(clientip.FromRequest(r), peer)
 	if g.cfg.Mode == config.ModeNative {
 		// Native routes off never fails the check: everything is proxied.
 		ready, reason := g.nativeStatus()
 		body["native"] = map[bool]string{true: "ready", false: "off"}[ready]
-		if !ready {
+		// The reason can carry SQLite's error text: this machine's clients only.
+		if !ready && local {
 			body["nativeReason"] = reason
 		}
 	}
-	peer, _ := proxy.PeerOf(r.RemoteAddr, g.listenIPv6)
-	if g.rule.IsOnThisMachine(clientip.FromRequest(r), peer) {
+	if local {
 		body["inflight"] = g.tracker.Inflight()
 		body["uptimeSeconds"] = int(time.Since(g.startedAt).Seconds())
 		body["version"] = g.version

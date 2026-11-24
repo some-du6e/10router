@@ -37,6 +37,9 @@ const (
 var ErrClosed = errors.New("db: closed")
 
 type writeOp struct {
+	// ctx is the caller's: a write it ends before the write starts is
+	// skipped (it provably never ran); once started, it runs to its end.
+	ctx  context.Context
 	fn   func(ctx context.Context, tx *sql.Tx) error
 	done chan error
 }
@@ -70,7 +73,7 @@ func newWriter(db *sql.DB) *writer {
 }
 
 func (w *writer) submit(ctx context.Context, fn func(ctx context.Context, tx *sql.Tx) error) error {
-	op := &writeOp{fn: fn, done: make(chan error, 1)}
+	op := &writeOp{ctx: ctx, fn: fn, done: make(chan error, 1)}
 	w.mu.RLock()
 	if w.closed {
 		w.mu.RUnlock()
@@ -108,11 +111,15 @@ func (w *writer) loop() {
 		select {
 		case first = <-w.ops:
 		case <-w.stop:
-			// No submit can start now; run what is queued.
+			// No submit can start now; run what is queued, still paced.
 			for {
 				select {
 				case op := <-w.ops:
+					if wait := w.gap - time.Since(lastEnd); wait > 0 && !lastEnd.IsZero() {
+						time.Sleep(wait)
+					}
 					w.batch(op)
+					lastEnd = time.Now()
 				default:
 					return
 				}
@@ -128,29 +135,58 @@ func (w *writer) loop() {
 
 // batch runs first, then whatever else is queued, in one transaction.
 func (w *writer) batch(first *writeOp) {
+	if err := first.ctx.Err(); err != nil {
+		first.done <- err
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), batchTimeout)
 	defer cancel()
 	asked := time.Now()
 	tx, err := w.db.BeginTx(ctx, nil)
 	if err != nil {
-		w.record(time.Since(asked), 0, 1, 1)
-		first.done <- err
+		// The lock didn't come within busy_timeout: the writes queued behind
+		// this one would each wait as long again, so they fail with it.
+		failed := []*writeOp{first}
+		for drained := false; !drained; {
+			select {
+			case op := <-w.ops:
+				failed = append(failed, op)
+			default:
+				drained = true
+			}
+		}
+		for _, op := range failed {
+			op.done <- err
+		}
+		w.record(time.Since(asked), 0, len(failed), len(failed))
 		return
 	}
 	began := time.Now()
 	ops := []*writeOp{first}
 	errs := []error{runOp(ctx, tx, first)}
-	for time.Since(began) < w.maxHold {
+	lost := errors.Is(errs[0], errTxLost)
+	for !lost && time.Since(began) < w.maxHold {
 		select {
 		case op := <-w.ops:
 			ops = append(ops, op)
 			errs = append(errs, runOp(ctx, tx, op))
+			lost = errors.Is(errs[len(errs)-1], errTxLost)
 			continue
 		default:
 		}
 		break
 	}
-	if err := tx.Commit(); err != nil {
+	if lost {
+		// SQLite rolled the whole transaction back (an I/O error, a full
+		// disk): nothing in it landed, and a savepoint now would start, and
+		// commit, a transaction of its own.
+		_ = tx.Rollback()
+		for i := range errs {
+			if !errors.Is(errs[i], errTxLost) {
+				errs[i] = fmt.Errorf("%w: another write in its transaction failed", errTxLost)
+			}
+		}
+	} else if err := tx.Commit(); err != nil {
 		_ = tx.Rollback()
 		for i := range errs {
 			errs[i] = err
@@ -166,20 +202,34 @@ func (w *writer) batch(first *writeOp) {
 	w.record(began.Sub(asked), time.Since(began), len(ops), failed)
 }
 
-// runOp runs one write in a savepoint, so its error (or panic) undoes it alone.
+// errTxLost marks a write whose transaction SQLite rolled back as a whole.
+var errTxLost = errors.New("db: the write's transaction was rolled back")
+
+// runOp runs one write in a savepoint, so its error (or panic) undoes it
+// alone. When the savepoint itself is gone (SQLite rolled back the whole
+// transaction), the error wraps errTxLost. A write whose caller has gone
+// isn't started.
 func runOp(ctx context.Context, tx *sql.Tx, op *writeOp) (err error) {
-	if _, err := tx.ExecContext(ctx, "SAVEPOINT gw_write"); err != nil {
+	if err := op.ctx.Err(); err != nil {
 		return err
+	}
+	if _, err := tx.ExecContext(ctx, "SAVEPOINT gw_write"); err != nil {
+		return fmt.Errorf("%w: %v", errTxLost, err)
 	}
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("db: write panicked: %v", r)
 		}
 		if err != nil {
-			_, _ = tx.ExecContext(ctx, "ROLLBACK TO gw_write")
+			if _, rbErr := tx.ExecContext(ctx, "ROLLBACK TO gw_write"); rbErr != nil {
+				err = fmt.Errorf("%w: %v (then %v)", errTxLost, err, rbErr)
+				return
+			}
 		}
-		if _, relErr := tx.ExecContext(ctx, "RELEASE gw_write"); relErr != nil && err == nil {
-			err = relErr
+		if _, relErr := tx.ExecContext(ctx, "RELEASE gw_write"); relErr != nil {
+			if err == nil {
+				err = fmt.Errorf("%w: %v", errTxLost, relErr)
+			}
 		}
 	}()
 	return op.fn(ctx, tx)

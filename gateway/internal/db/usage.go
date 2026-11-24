@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -165,6 +167,18 @@ func add(o *jsjson.Object, key string, n float64) {
 	o.Set(key, num(v)+n)
 }
 
+// plusEquals is addToCounter's bare `target[key].x += n`: a missing field is
+// undefined + n, NaN, which JSON.stringify writes as null (a counter from
+// before that field existed); null + n is n.
+func plusEquals(o *jsjson.Object, key string, n float64) {
+	v, ok := o.Get(key)
+	if !ok {
+		o.Set(key, nil)
+		return
+	}
+	o.Set(key, num(v)+n)
+}
+
 // child is `day[key] ||= {}`.
 func child(o *jsjson.Object, key string) *jsjson.Object {
 	v, _ := o.Get(key)
@@ -204,11 +218,11 @@ func addToCounter(target *jsjson.Object, key string, v counterValues) {
 		}
 		target.Set(key, c)
 	}
-	add(c, "requests", 1)
-	add(c, "promptTokens", v.promptTokens)
-	add(c, "completionTokens", v.completionTokens)
-	add(c, "cachedTokens", v.cachedTokens)
-	add(c, "cost", v.cost)
+	plusEquals(c, "requests", 1)
+	plusEquals(c, "promptTokens", v.promptTokens)
+	plusEquals(c, "completionTokens", v.completionTokens)
+	plusEquals(c, "cachedTokens", v.cachedTokens)
+	plusEquals(c, "cost", v.cost)
 	for _, m := range v.meta {
 		if _, undefined := m.Value.(absent); undefined {
 			// JSON.stringify drops an undefined property, so the next read
@@ -314,10 +328,11 @@ type UsageWriter struct {
 	d    *DB
 	opts UsageWriterOptions
 
-	mu      sync.Mutex
-	queue   []UsageEntry
-	dropped int64
-	written int64
+	mu       sync.Mutex
+	queue    []UsageEntry
+	dropped  int64
+	written  int64
+	rejected int64
 
 	flushMu   sync.Mutex
 	stop      chan struct{}
@@ -341,8 +356,12 @@ func (d *DB) NewUsageWriter(o UsageWriterOptions) *UsageWriter {
 	return w
 }
 
-// Add queues one row.
+// Add queues one row. A row without a timestamp gets now, as
+// saveRequestUsage stamps it when called, not when a flush gets to it.
 func (w *UsageWriter) Add(e UsageEntry) {
+	if e.Timestamp == "" {
+		e.Timestamp = ISOTime(w.d.now())
+	}
 	w.mu.Lock()
 	w.queue = append(w.queue, e)
 	if over := len(w.queue) - w.opts.MaxQueued; over > 0 {
@@ -396,7 +415,14 @@ func (w *UsageWriter) Flush(ctx context.Context) error {
 			return nil
 		}
 		if err := w.d.WriteUsage(ctx, batch); err != nil {
-			return err
+			if !rowError(err) {
+				return err
+			}
+			// A row that can never be written would hold every row behind it:
+			// write them one by one and drop (and count) the ones that fail so.
+			if err := w.isolate(ctx, batch); err != nil {
+				return err
+			}
 		}
 		w.mu.Lock()
 		// Add only appends, or drops from the front past MaxQueued: what it
@@ -409,6 +435,43 @@ func (w *UsageWriter) Flush(ctx context.Context) error {
 		remaining -= n
 	}
 	return nil
+}
+
+// rowError is an error that comes from a row's content, which the same row
+// will hit again however often it is retried: a value the JSON writer can't
+// encode, or a constraint.
+func rowError(err error) bool {
+	if errors.Is(err, errTxLost) || errors.Is(err, ErrClosed) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || IsBusy(err) {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "write panicked") || strings.Contains(s, "constraint")
+}
+
+func (w *UsageWriter) isolate(ctx context.Context, batch []UsageEntry) error {
+	for i := range batch {
+		err := w.d.WriteUsage(ctx, batch[i:i+1])
+		if err == nil {
+			continue
+		}
+		if !rowError(err) {
+			return err
+		}
+		w.mu.Lock()
+		w.rejected++
+		w.mu.Unlock()
+		if w.opts.OnError != nil {
+			w.opts.OnError(fmt.Errorf("db: a usage row was dropped: %w", err))
+		}
+	}
+	return nil
+}
+
+// Rejected is how many rows were dropped because they could never be written.
+func (w *UsageWriter) Rejected() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.rejected
 }
 
 // Close stops the timer and writes what is left. Later calls only flush.

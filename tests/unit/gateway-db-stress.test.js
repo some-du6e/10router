@@ -209,6 +209,12 @@ for (const driver of ["better-sqlite3", "node:sqlite"]) {
       expect(shared.lagMs.p99).toBeLessThan(LAG_P99_LIMIT_MS);
       // The gateway saw Node's config writes.
       expect(gateway.generations.length).toBeGreaterThan(2);
+      // And it kept up with its load (500 usage rows/s, 100 connection writes/s):
+      // a gateway that wrote little would leave Node nothing to wait for.
+      const seconds = SHARED_MS / 1000;
+      expect(gateway.usageRows).toBeGreaterThan(0.9 * 500 * seconds);
+      expect(gateway.connectionWrites).toBeGreaterThan(0.8 * 100 * seconds);
+      expect(gateway.connectionWritesSkipped).toBeLessThan(0.05 * 100 * seconds);
 
       // Nothing was lost: every row each side wrote is there, and the
       // counters both sides move add up.

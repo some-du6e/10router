@@ -69,9 +69,10 @@ func TestOpenNeverCreatesTheFile(t *testing.T) {
 }
 
 func TestDataFile(t *testing.T) {
-	env := map[string]string{"DATA_DIR": "/data", "HOME": "/home/x"}
+	dataDir := t.TempDir()
+	env := map[string]string{"DATA_DIR": dataDir, "HOME": "/home/x"}
 	got, _ := DataFile(func(k string) string { return env[k] })
-	if got != "/data/db/data.sqlite" {
+	if got != dataDir+"/db/data.sqlite" {
 		t.Fatalf("DATA_DIR: %s", got)
 	}
 	delete(env, "DATA_DIR")

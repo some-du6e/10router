@@ -126,6 +126,151 @@ func TestAFailedWriteUndoesOnlyItself(t *testing.T) {
 	}
 }
 
+// insertMeta is a write that adds one _meta row, after waiting for hold.
+func insertMeta(key string, hold <-chan struct{}) func(context.Context, *sql.Tx) error {
+	return func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO _meta(key, value) VALUES(?, '1')`, key); err != nil {
+			return err
+		}
+		if hold != nil {
+			<-hold
+		}
+		return nil
+	}
+}
+
+// submitAsync queues fn and returns its result channel once it is queued.
+func submitAsync(d *DB, fn func(context.Context, *sql.Tx) error) <-chan error {
+	out := make(chan error, 1)
+	go func() { out <- d.writeTx(context.Background(), fn) }()
+	return out
+}
+
+func metaKeys(t *testing.T, node *sql.DB) string {
+	return dbtest.QueryString(t, node, `SELECT COALESCE(group_concat(key), '') FROM (SELECT key FROM _meta WHERE key LIKE 'w_%' ORDER BY key)`)
+}
+
+func TestWritesInOneTransactionFailAlone(t *testing.T) {
+	d, node, _ := open(t, dbtest.Options{})
+	d.w.maxHold = time.Minute // keep everything queued in the first batch
+	hold := make(chan struct{})
+	first := submitAsync(d, insertMeta("w_a", hold))
+	time.Sleep(20 * time.Millisecond)
+	before := d.LockStats().Transactions
+	failing := submitAsync(d, func(ctx context.Context, tx *sql.Tx) error {
+		_, _ = tx.ExecContext(ctx, `INSERT INTO _meta(key, value) VALUES('w_b', '1')`)
+		return errors.New("no")
+	})
+	panicking := submitAsync(d, func(ctx context.Context, tx *sql.Tx) error {
+		_, _ = tx.ExecContext(ctx, `INSERT INTO _meta(key, value) VALUES('w_c', '1')`)
+		panic("boom")
+	})
+	last := submitAsync(d, insertMeta("w_d", nil))
+	time.Sleep(20 * time.Millisecond)
+	close(hold)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-failing; err == nil || err.Error() != "no" {
+		t.Fatalf("failing: %v", err)
+	}
+	if err := <-panicking; err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("panicking: %v", err)
+	}
+	if err := <-last; err != nil {
+		t.Fatal(err)
+	}
+	if got := metaKeys(t, node); got != "w_a,w_d" {
+		t.Fatalf("rows %q", got)
+	}
+	if n := d.LockStats().Transactions - before; n != 1 {
+		t.Fatalf("the four writes took %d transactions", n)
+	}
+}
+
+func TestALostTransactionFailsEveryWriteInIt(t *testing.T) {
+	d, node, _ := open(t, dbtest.Options{})
+	d.w.maxHold = time.Minute
+	hold := make(chan struct{})
+	first := submitAsync(d, insertMeta("w_a", hold))
+	time.Sleep(20 * time.Millisecond)
+	// As SQLITE_FULL or an I/O error would: SQLite ends the transaction itself.
+	killer := submitAsync(d, func(ctx context.Context, tx *sql.Tx) error {
+		_, _ = tx.ExecContext(ctx, `ROLLBACK`)
+		return errors.New("disk full")
+	})
+	time.Sleep(10 * time.Millisecond)
+	after := submitAsync(d, insertMeta("w_c", nil))
+	time.Sleep(20 * time.Millisecond)
+	close(hold)
+	if err := <-first; !errors.Is(err, errTxLost) {
+		t.Fatalf("a write in the lost transaction reported %v", err)
+	}
+	if err := <-killer; !errors.Is(err, errTxLost) {
+		t.Fatalf("killer: %v", err)
+	}
+	// The write queued behind it runs in the next transaction.
+	if err := <-after; err != nil {
+		t.Fatalf("after: %v", err)
+	}
+	if got := metaKeys(t, node); got != "w_c" {
+		t.Fatalf("rows %q: a write was reported failed but landed, or the reverse", got)
+	}
+}
+
+func TestOneTransactionStopsTakingWritesAfterMaxHold(t *testing.T) {
+	d, _, _ := open(t, dbtest.Options{})
+	hold := make(chan struct{})
+	first := submitAsync(d, insertMeta("w_first", hold))
+	time.Sleep(20 * time.Millisecond)
+	before := d.LockStats().Transactions
+	var results []<-chan error
+	for i := 0; i < 20; i++ {
+		results = append(results, submitAsync(d, func(ctx context.Context, tx *sql.Tx) error {
+			time.Sleep(4 * time.Millisecond)
+			_, err := tx.ExecContext(ctx, `INSERT INTO _meta(key, value) VALUES(?, '1')`, fmt.Sprintf("w_%02d", i))
+			return err
+		}))
+	}
+	time.Sleep(20 * time.Millisecond)
+	close(hold)
+	<-first
+	for _, r := range results {
+		if err := <-r; err != nil {
+			t.Fatal(err)
+		}
+	}
+	st := d.LockStats()
+	// 20 writes of 4 ms each, at most ~10 ms of them per transaction.
+	if n := st.Transactions - before; n < 6 {
+		t.Fatalf("20 slow writes in %d transactions: MaxWriteHold isn't bounding them (%+v)", n, st)
+	}
+}
+
+func TestUsageWriterDropsARowThatCanNeverBeWritten(t *testing.T) {
+	d, node, _ := open(t, dbtest.Options{})
+	var reported []error
+	w := d.NewUsageWriter(UsageWriterOptions{Interval: time.Hour, OnError: func(err error) { reported = append(reported, err) }})
+	bad := jsjson.NewObject()
+	bad.Set("input_tokens", map[string]any{}) // jsjson can't write it
+	for i := 0; i < 5; i++ {
+		e := UsageEntry{Timestamp: ISOTime(fixedNow), Model: "m"}
+		if i == 2 {
+			e.Tokens = bad
+		}
+		w.Add(e)
+	}
+	if err := w.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := dbtest.QueryString(t, node, `SELECT COUNT(*) FROM usageHistory`); n != "4" {
+		t.Fatalf("rows %s", n)
+	}
+	if w.Rejected() != 1 || len(reported) != 1 {
+		t.Fatalf("rejected %d, reported %v", w.Rejected(), reported)
+	}
+}
+
 func TestCloseRunsQueuedWritesThenRefuses(t *testing.T) {
 	path, node := dbtest.New(t, dbtest.Options{})
 	insertConn(t, node, "c1", "p", 1, 1, `{}`)
@@ -145,10 +290,18 @@ func TestCloseRunsQueuedWritesThenRefuses(t *testing.T) {
 	}
 	wg.Wait()
 	close(results)
+	ran := 0
 	for err := range results {
 		if err != nil && !errors.Is(err, ErrClosed) {
 			t.Fatalf("a queued write failed: %v", err)
 		}
+		if err == nil {
+			ran++
+		}
+	}
+	// Writes queued before Close ran rather than being refused.
+	if ran == 0 {
+		t.Fatal("no queued write ran")
 	}
 	if err := lockWrite(d, "c1", 0); !errors.Is(err, ErrClosed) {
 		t.Fatalf("after Close: %v", err)

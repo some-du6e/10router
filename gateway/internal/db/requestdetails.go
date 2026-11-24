@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"database/sql"
+	"math/rand/v2"
+	"regexp"
 
 	"github.com/some-du6e/10router/gateway/internal/db/jsjson"
 )
@@ -54,6 +56,23 @@ func orEmptyPayload(v any) any {
 	return v
 }
 
+var notIDChar = regexp.MustCompile(`[^a-zA-Z0-9-]`)
+
+// detailID is requestDetailsRepo.js's generateDetailId:
+// `${timestamp}-${6 random base-36 chars}-${model with other chars as "-"}`.
+func detailID(timestamp, model string) string {
+	const digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+	random := make([]byte, 6)
+	for i := range random {
+		random[i] = digits[rand.IntN(len(digits))]
+	}
+	modelPart := "unknown"
+	if model != "" {
+		modelPart = notIDChar.ReplaceAllString(model, "-")
+	}
+	return timestamp + "-" + string(random) + "-" + modelPart
+}
+
 // Record is the JSON stored in the row's data column, in buildSave's key order.
 func (r *RequestDetail) Record() *jsjson.Object {
 	o := jsjson.NewObject()
@@ -91,7 +110,14 @@ func (d *DB) SaveRequestDetails(ctx context.Context, rows []RequestDetail, maxRe
 		rows = rows[n:]
 		err := d.writeTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			for i := range batch {
-				r := &batch[i]
+				r := batch[i]
+				// buildSave's defaults.
+				if r.Timestamp == "" {
+					r.Timestamp = ISOTime(d.now())
+				}
+				if r.ID == "" {
+					r.ID = detailID(r.Timestamp, r.Model)
+				}
 				var full any
 				if r.FullData != nil {
 					full = r.FullData

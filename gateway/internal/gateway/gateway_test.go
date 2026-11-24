@@ -513,6 +513,8 @@ func TestNativeHealthReportsTheSchemaGuard(t *testing.T) {
 	defer app.Close()
 	health := func(g *Gateway) map[string]any {
 		r := httptest.NewRequest("GET", HealthPath, nil)
+		r.RemoteAddr = "127.0.0.1:5000"
+		r.Host = "localhost:20128"
 		w := httptest.NewRecorder()
 		g.ServeHTTP(w, r)
 		var body map[string]any

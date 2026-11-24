@@ -69,13 +69,17 @@ func (d *DB) LastError() string {
 	return s
 }
 
-// Snapshot is the latest config snapshot, nil before the first load or
-// while the guard says the schema can't be read.
+// Snapshot is the latest config snapshot: nil before the first load, while
+// the guard says the schema can't be read, and once reloads have failed for
+// two TTLs (the TTL is the most staleness a caller may see).
 func (d *DB) Snapshot() *Snapshot {
-	if d.Status().Ready {
-		return d.snapshot.Load()
+	if !d.Status().Ready {
+		return nil
 	}
-	return nil
+	if at, ttl := d.loadedAt.Load(), d.ttl.Load(); ttl > 0 && time.Since(time.Unix(0, at)) > 2*time.Duration(ttl) {
+		return nil
+	}
+	return d.snapshot.Load()
 }
 
 // Watch checks the schema and loads the snapshot, then keeps both current
@@ -101,8 +105,17 @@ func (d *DB) Watch(ctx context.Context, o WatchOptions) error {
 	if o.TTL <= 0 {
 		o.TTL = SnapshotTTL
 	}
+	d.ttl.Store(int64(o.TTL))
+	// Close stops the watcher too, if the caller's ctx hasn't.
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	d.watchMu.Lock()
+	d.stopWatch, d.watchDone = cancel, done
+	d.watchMu.Unlock()
 	conn, err := d.readers.Conn(ctx)
 	if err != nil {
+		cancel()
+		close(done)
 		return err
 	}
 	w := &watcher{d: d, o: o, conn: conn}
@@ -112,6 +125,7 @@ func (d *DB) Watch(ctx context.Context, o WatchOptions) error {
 		d.lastErr.Store("")
 	}
 	go func() {
+		defer close(done)
 		defer conn.Close()
 		t := time.NewTicker(o.PollInterval)
 		defer t.Stop()
@@ -225,6 +239,7 @@ func (w *watcher) poll(ctx context.Context, first bool) error {
 		return err
 	}
 	d.snapshot.Store(snap)
+	d.loadedAt.Store(time.Now().UnixNano())
 	d.stats.reloads.Add(1)
 	w.generation, w.loadedAt = snap.Generation, time.Now()
 	if w.o.OnReload != nil {
