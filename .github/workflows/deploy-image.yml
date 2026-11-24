@@ -1,0 +1,125 @@
+name: Deploy image
+
+# Builds the production image in CI, so the server never compiles the app.
+# For each master commit that changes what goes into the image:
+#   1. build it from Dockerfile
+#   2. run the gateway E2E on it (.github/e2e/gateway/run.sh: the image as
+#      shipped, then with GATEWAY_MODE=proxy)
+#   3. push it as ghcr.io/<owner>/<repo>:<commit>
+#   4. fast-forward the `deploy` branch to that commit
+# A server that deploys `deploy` builds Dockerfile.deploy, which only pulls
+# that image, so an image that failed the E2E never reaches it.
+#
+# Master runs go one at a time. A commit that lands during a run waits, and of
+# several waiting only the newest runs, carrying the others. Pull requests that
+# change this workflow or Dockerfile.deploy run steps 1-2 and push nothing.
+on:
+  push:
+    branches: [master]
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!gitbook/**"
+      - "!tests/**"
+      - "!**/*.md"
+      - "!.github/**"
+      - ".github/workflows/deploy-image.yml"
+  pull_request:
+    paths:
+      - ".github/workflows/deploy-image.yml"
+      - "Dockerfile.deploy"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-image-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write # move the deploy branch
+      packages: write # push to GHCR
+    env:
+      PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies (for the E2E seed)
+        run: bun install --ignore-scripts
+      - name: Image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.IMAGE }}
+          build-args: SOURCE_COMMIT=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=deploy-image
+          cache-to: ${{ env.PUBLISH == 'true' && 'type=gha,mode=max,scope=deploy-image' || '' }}
+          provenance: false
+          sbom: false
+      - name: E2E (GATEWAY_MODE unset, then proxy)
+        env:
+          OUT_DIR: ${{ github.workspace }}/e2e-out
+        run: |
+          set -o pipefail
+          bash .github/e2e/gateway/run.sh 2>&1 | tee e2e.txt
+      # What the server will build: the docker driver resolves FROM from the
+      # local image store, and the base's labels carry over.
+      - name: Dockerfile.deploy resolves to this image
+        run: |
+          docker buildx build --builder default --load -f Dockerfile.deploy \
+            --build-arg SOURCE_COMMIT="$GITHUB_SHA" -t deploy-check .
+          got="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' deploy-check)"
+          [ "$got" = "$GITHUB_SHA" ] || { echo "Dockerfile.deploy built revision '$got', want $GITHUB_SHA"; exit 1; }
+      - name: Log in to GHCR
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push the image
+        if: env.PUBLISH == 'true'
+        run: docker push "$IMAGE"
+      # Through the refs API, so GitHub refuses anything but a fast-forward and
+      # a re-run of an older commit can't move the deploy backwards.
+      - name: Move deploy to this commit
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/deploy" > /dev/null 2>&1; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/deploy" -f sha="$GITHUB_SHA" -F force=false > /dev/null
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref=refs/heads/deploy -f sha="$GITHUB_SHA" > /dev/null
+          fi
+          echo "deploy -> $GITHUB_SHA"
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "Image: \`$IMAGE\` (published: $PUBLISH)"
+            echo '```'
+            grep -E '^(PASS|FAIL)' e2e.txt 2> /dev/null | head -100
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: deploy-image-e2e
+          path: |
+            e2e.txt
+            e2e-out/*.json
+            e2e-out/*.log
