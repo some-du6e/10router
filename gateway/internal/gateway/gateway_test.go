@@ -273,6 +273,39 @@ func TestDashboardStreamsCloseWhenTheDrainStarts(t *testing.T) {
 	}
 }
 
+func TestOptionsStarReachesTheApp(t *testing.T) {
+	seen := make(chan string, 1)
+	app := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Method + " " + r.RequestURI
+		w.Header().Set("Allow", "GET, POST")
+		w.WriteHeader(204)
+	}))
+	// So the stand-in app answers it itself, as Node does.
+	app.Config.DisableGeneralOptionsHandler = true
+	app.Start()
+	defer app.Close()
+	g := startUnsupervised(t, baseConfig(portOf(t, app.URL)))
+	conn, err := net.Dial("tcp", strings.TrimPrefix(g.url, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	fmt.Fprint(conn, "OPTIONS * HTTP/1.1\r\nHost: localhost\r\n\r\n")
+	res, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != 204 || res.Header.Get("Allow") != "GET, POST" {
+		t.Fatalf("got %d %v: net/http answered instead of the app", res.StatusCode, res.Header)
+	}
+	if got := <-seen; got != "OPTIONS *" {
+		t.Fatalf("the app saw %q", got)
+	}
+	g.signals <- syscall.SIGTERM
+	g.waitExit(t, 3*time.Second)
+}
+
 func TestRefusesAShortPeerToken(t *testing.T) {
 	cfg := baseConfig(freePort(t))
 	cfg.PeerToken = "short"
@@ -352,6 +385,15 @@ func TestSignalsPassedOnToNode(t *testing.T) {
 		if got := PassOnSignals(opts, nil); len(got) != 2 || got[1] != want {
 			t.Errorf("PassOnSignals(%q) = %v, want SIGUSR1 and %v", opts, got, want)
 		}
+	}
+	// No inspector handler: SIGUSR1 stays with the gateway (ignored).
+	if got := PassOnSignals("--disable-sigusr1", nil); got == nil || len(got) != 0 {
+		t.Errorf("--disable-sigusr1: %#v, want an empty list", got)
+	}
+	// Node registers the report handler on the name as written; a lowercase
+	// one installs none, so SIGHUP must not go on.
+	if got := PassOnSignals("--report-signal=sighup", nil); len(got) != 1 {
+		t.Errorf("lowercase report signal: %v", got)
 	}
 	// Reports switched back off on the command line: no handler left.
 	if got := PassOnSignals("--report-on-signal", []string{"node", "--no-report-on-signal", "custom-server.js"}); len(got) != 1 {

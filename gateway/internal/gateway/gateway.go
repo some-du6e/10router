@@ -266,26 +266,33 @@ func seconds(d time.Duration) int { return int((d + 500*time.Millisecond) / time
 var diagnosticSignals = map[string]os.Signal{"SIGUSR2": syscall.SIGUSR2, "SIGHUP": syscall.SIGHUP, "SIGQUIT": syscall.SIGQUIT}
 
 // PassOnSignals are the signals the gateway hands to the app server instead
-// of acting on them: SIGUSR1 (Node's inspector), and the signal a heap
+// of acting on them: SIGUSR1 (Node's inspector, unless --disable-sigusr1),
+// and the signal a heap
 // snapshot or diagnostic report handler is on (--heapsnapshot-signal, or
 // --report-on-signal / --report-signal, default SIGUSR2) when it is SIGUSR2,
 // SIGHUP or SIGQUIT. Any of those with no handler stays ignored: as PID 1,
 // Node ignored them, and now its default action would kill it.
 func PassOnSignals(nodeOptions string, command []string) []os.Signal {
-	signals := []os.Signal{syscall.SIGUSR1}
+	// Never nil: Run reads nil as "SIGUSR1 only".
+	signals := []os.Signal{}
 	args := strings.Fields(nodeOptions)
 	if len(command) > 1 {
 		args = append(args, nodeFlags(command[1:])...)
 	}
-	heapSignal, reportOn, reportSignal := "", false, "SIGUSR2"
+	heapSignal, reportOn, reportSignal, inspectorOn := "", false, "SIGUSR2", true
 	for i, a := range args {
 		name, value, hasValue := strings.Cut(a, "=")
 		name = strings.ReplaceAll(name, "_", "-")
 		if !hasValue && nodeValueFlags[name] && i+1 < len(args) {
 			value = args[i+1]
 		}
-		value = strings.ToUpper(strings.Trim(value, `"'`))
+		// Exact case: Node registers the handler on the name as written, and
+		// a lowercase one installs none.
+		value = strings.Trim(value, `"'`)
 		switch name {
+		case "--disable-sigusr1":
+			// No inspector handler, so SIGUSR1's default action would kill it.
+			inspectorOn = false
 		case "--heapsnapshot-signal":
 			heapSignal = value
 		case "--report-on-signal":
@@ -296,6 +303,9 @@ func PassOnSignals(nodeOptions string, command []string) []os.Signal {
 			// Implies --report-on-signal, as in Node.
 			reportSignal, reportOn = value, true
 		}
+	}
+	if inspectorOn {
+		signals = append(signals, syscall.SIGUSR1)
 	}
 	handlers := []string{heapSignal}
 	if reportOn {

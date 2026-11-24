@@ -65,7 +65,7 @@ func main() {
 	// in its own process group, so a terminal's signals reach only the gateway.
 	// Any of them Node has a diagnostic handler on is passed on instead.
 	var ignored []os.Signal
-	for _, sig := range []os.Signal{syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGABRT, syscall.SIGPIPE, syscall.SIGUSR2} {
+	for _, sig := range []os.Signal{syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGABRT, syscall.SIGPIPE, syscall.SIGUSR1, syscall.SIGUSR2} {
 		if !slices.Contains(pass, sig) {
 			ignored = append(ignored, sig)
 		}
