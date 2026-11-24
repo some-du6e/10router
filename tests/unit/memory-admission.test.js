@@ -11,6 +11,7 @@ import {
   readCgroupMemoryLimit,
   resolveHighWater,
   heapFitWarning,
+  idleWhile,
 } from "@/sse/services/memoryAdmission.js";
 import { FORMATS } from "open-sse/translator/formats.js";
 
@@ -234,12 +235,12 @@ describe("heap backstop", () => {
     expect(await g.acquire({ bodyLength: 1 * MB })).toEqual({ refused: "heap", retryAfterSec: 7 });
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(logger.warn.mock.calls[0][0]).toBe("MEMORY");
-    expect(logger.warn.mock.calls[0][1]).toMatch(/refusing new requests \(heap\): 1 in flight holding 1MB, 1MB of bodies not yet replying, heap 900MB \(high water 850MB of 1000MB\), 1 waiting/);
+    expect(logger.warn.mock.calls[0][1]).toMatch(/refusing new requests \(heap\): 1 in flight holding 1MB, 1MB of bodies not yet replying, heap 900MB \+ 1MB coming \(high water 850MB of 1000MB\), 1 waiting/);
   });
 
   it("counts admitted requests that haven't started replying, which the heap doesn't show yet", async () => {
     // A burst all arrives before any of it has been parsed: the heap still reads 100 MB.
-    const g = heapGate({ used: 100 * MB }, { maxWaitMs: 50 });
+    const g = heapGate({ used: 100 * MB }, { maxWaitMs: 1000 });
     const a = await g.acquire({ bodyLength: 300 * MB });
     const b = await g.acquire({ bodyLength: 300 * MB });
     expect(a.ticket && b.ticket).toBeTruthy();
@@ -272,7 +273,7 @@ describe("heap backstop", () => {
   });
 
   it("keeps a request answered early counted until its routing settles (pendUntil)", async () => {
-    const g = heapGate({ used: 100 * MB }, { maxWaitMs: 50 });
+    const g = heapGate({ used: 100 * MB }, { maxWaitMs: 1000 });
     const a = await g.acquire({ bodyLength: 300 * MB });
     let finishRouting;
     a.ticket.pendUntil(new Promise((resolve) => { finishRouting = resolve; }));
@@ -320,6 +321,33 @@ describe("heap backstop", () => {
     expect((await g.acquire({ bodyLength: 1 * MB })).refused).toBe("memory");
     first.ticket.replied();
     expect((await g.acquire({ bodyLength: 1 * MB })).ticket).toBeTruthy();
+  });
+
+  it("stops counting a request while it sleeps (idleWhile), and counts it again after", async () => {
+    const g = heapGate({ used: 100 * MB }, { maxWaitMs: 1000 });
+    let wake;
+    let during;
+    let after;
+    const res = await withMemoryAdmission(request("/v1/messages", { bytes: 300 * MB }), async (ticket) => {
+      // Deep in routing, with no ticket at hand: found through the request's async context.
+      const sleeping = idleWhile(new Promise((resolve) => { wake = resolve; }));
+      during = g.stats().pendingBytes;
+      // Another request fits while this one sleeps: 100 + 0 + 500 ≤ 850.
+      const other = await g.acquire({ bodyLength: 500 * MB });
+      wake("ok");
+      expect(await sleeping).toBe("ok");
+      after = g.stats().pendingBytes;
+      other.ticket.release();
+      // Released while asleep: nothing is counted back later.
+      ticket.idleWhile(new Promise(() => {}));
+      return new Response("done");
+    }, { gate: g });
+    await res.text();
+    expect(during).toBe(0);
+    expect(after).toBe(800 * MB);
+    expect(g.stats()).toMatchObject({ inflight: 0, pendingBytes: 0, heldBytes: 0 });
+    // Outside any admitted request it does nothing.
+    await expect(idleWhile(Promise.resolve(1))).resolves.toBe(1);
   });
 
   it("checks nothing when MEMORY_HEAP_HIGH_WATER_PCT is 0", async () => {

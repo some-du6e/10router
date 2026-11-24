@@ -211,8 +211,9 @@ describe("restart herd", () => {
       const text = await res.text();
       sample();
       if (res.status === 503) expect(res.headers.get("retry-after")).toMatch(/^\d+$/);
-      // A reply that went out early (a hold, early headers) can still end in an error frame.
-      if (res.status === 200 && !text.includes("Done")) return "200 without an answer";
+      // A reply that went out early (early headers) ends in an error frame when
+      // routing then fails: with HERD_429, both keys locked.
+      if (res.status === 200 && !text.includes("Done")) return LIMIT_FIRST > 0 && text.includes("error") ? "200 with an error frame" : "200 without an answer";
       return res.status;
     }));
     clearInterval(sampler);
@@ -236,9 +237,13 @@ describe("restart herd", () => {
       "",
     ].join("\n"));
 
-    // With HERD_429, a request can find both keys locked and get the 429 itself.
-    expect(statuses.every((s) => s === 200 || s === 503 || (LIMIT_FIRST > 0 && s === 429))).toBe(true);
+    // With HERD_429, a request can find both keys locked and get the 429 itself
+    // (or, once its headers went out early, as an error frame).
+    expect(statuses.every((s) => s === 200 || s === 503 || (LIMIT_FIRST > 0 && (s === 429 || s === "200 with an error frame")))).toBe(true);
     expect(counts[200] || 0).toBeGreaterThan(0);
+    // The scenario ran as named: the upstream did answer 429s, and V8 did collect.
+    if (LIMIT_FIRST > 0) expect(upstream.state.limited).toBeGreaterThan(0);
+    expect(m.live).toBeGreaterThan(0);
     // Healthy: the live heap stayed well clear of the limit, and resident
     // memory under HERD_MAX_RSS_MB when that is set.
     expect(m.live / limit).toBeLessThan(Number(process.env.HERD_MAX_LIVE_PCT || 85) / 100);

@@ -132,6 +132,17 @@ describe("a request waiting for a warm key", () => {
       .toEqual({ cache: false, bytes: false, value: false, source: false });
   }, 30_000);
 
+  // It sleeps and builds nothing, so memory admission doesn't count it as
+  // about to allocate (it keeps it in flight, holding its counted bytes).
+  it("isn't counted as about to allocate while it waits", async () => {
+    const admission = await import("@/sse/services/memoryAdmission.js");
+    const before = admission.memoryAdmissionStats();
+    const during = await waitedTurn(3, async () => admission.memoryAdmissionStats());
+    expect(during.inflight).toBe(before.inflight + 1);
+    expect(during.pendingBytes).toBe(before.pendingBytes);
+    expect(admission.memoryAdmissionStats().pendingBytes).toBe(before.pendingBytes);
+  }, 30_000);
+
   it("sends the same bytes after the wait and stores the same request rows", async () => {
     // Full copies too ("Show full request details"); clearing them drops the cached setting.
     await db.updateSettings({ showSensitiveRequestDetails: true });

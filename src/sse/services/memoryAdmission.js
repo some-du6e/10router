@@ -16,6 +16,7 @@
 // which the agents' SDKs retry. With nothing in flight a request is always let
 // in, however big, so one huge prompt is never starved. Limits are in
 // MEMORY_ADMISSION (open-sse/config/runtimeConfig.js).
+import { AsyncLocalStorage } from "node:async_hooks";
 import v8 from "node:v8";
 import { readCgroupMemoryLimit } from "@/shared/utils/cgroupMemory.js";
 import { HTTP_STATUS, MEMORY_ADMISSION } from "open-sse/config/runtimeConfig.js";
@@ -47,6 +48,7 @@ export function resolveHighWater({ highWaterMb = MEMORY_ADMISSION.highWaterMb, f
  * @property {(bodyLength: number) => void} noteBodyLength - the body was read: count it at least this long (exactly this long when there was no Content-Length)
  * @property {() => void} replied - the reply has started (or, not streamed, ended): what it holds shows in the heap and resident memory now; idempotent
  * @property {(settled: Promise<unknown>) => void} pendUntil - the request keeps building upstream bodies until `settled` settles (a reply sent early, before routing is done): it counts as not yet replying until then, even once replied() is called
+ * @property {(waiting: Promise<unknown>) => void} idleWhile - the request sleeps until `waiting` settles (a warm-key wait, a limit hold): it builds nothing meanwhile, so it doesn't count as about to allocate
  * @property {() => void} release - the request is done; idempotent
  */
 
@@ -116,14 +118,15 @@ export function createMemoryGate({
     return null;
   }
 
+  // The bodies not yet replying are weighed in, so the line reads against its marks.
   function describe() {
     const parts = [`${inflight} in flight holding ${mb(heldBytes)}`];
     if (budgetBytes > 0) parts[0] += ` of ${mb(budgetBytes)}`;
     parts.push(`${mb(pendingBytes)} of bodies not yet replying`);
-    if (highWaterBytes > 0) parts.push(`rss ${mb(rss())} (high water ${mb(highWaterBytes)})`);
+    if (highWaterBytes > 0) parts.push(`rss ${mb(rss())} + ${mb(pendingBytes * pendingRssCopies)} coming (high water ${mb(highWaterBytes)})`);
     if (heapFraction > 0) {
       const { used_heap_size: used, heap_size_limit: limit } = heapStats();
-      parts.push(`heap ${mb(used)} (high water ${mb(limit * heapFraction)} of ${mb(limit)})`);
+      parts.push(`heap ${mb(used)} + ${mb(pendingBytes * pendingHeapCopies)} coming (high water ${mb(limit * heapFraction)} of ${mb(limit)})`);
     }
     parts.push(`${queue.length} waiting`);
     return parts.join(", ");
@@ -141,16 +144,22 @@ export function createMemoryGate({
       refusingSince = 0;
       refusedInEpisode = 0;
     }
-    let pending = true;
     let released = false;
-    // replied() was called, and how many pendUntil() promises are still out.
+    // replied() was called; pendUntil() promises still out; idleWhile() waits still out.
     let replyStarted = false;
     let routing = 0;
-    const settlePending = () => {
-      if (released || !pending || !replyStarted || routing > 0) return;
-      pending = false;
-      pendingBytes -= length;
-      pump();
+    let idle = 0;
+    // Whether `length` is in pendingBytes now: until the reply has started and
+    // routing has settled, and not while the request sleeps.
+    let counted = true;
+    let pending = true;
+    const recount = () => {
+      if (pending && replyStarted && routing === 0) pending = false;
+      const should = !released && pending && idle === 0;
+      if (should === counted) return;
+      counted = should;
+      pendingBytes += should ? length : -length;
+      if (!should) pump();
     };
     return {
       get bytes() { return length * bodyCopies; },
@@ -160,31 +169,40 @@ export function createMemoryGate({
         if (released || (sized && next <= length)) return;
         sized = true;
         heldBytes += (next - length) * bodyCopies;
-        if (pending) pendingBytes += next - length;
+        if (counted) pendingBytes += next - length;
         const shrank = next < length;
         length = next;
         if (shrank) pump();
       },
       replied() {
         replyStarted = true;
-        settlePending();
+        recount();
       },
       pendUntil(settled) {
         if (released || !pending) return;
         routing++;
         const done = () => {
           routing--;
-          settlePending();
+          recount();
         };
         Promise.resolve(settled).then(done, done);
+      },
+      idleWhile(waiting) {
+        if (released || !pending) return;
+        idle++;
+        recount();
+        const done = () => {
+          idle--;
+          recount();
+        };
+        Promise.resolve(waiting).then(done, done);
       },
       release() {
         if (released) return;
         released = true;
         heldBytes -= length * bodyCopies;
-        if (pending) pendingBytes -= length;
-        pending = false;
         inflight--;
+        recount();
         pump();
       },
     };
@@ -303,6 +321,22 @@ export function memoryAdmissionStats() {
 // handing a new Request to handleChat admits once, before its own copy.
 const tickets = new WeakMap();
 
+// The admitted request whose code is running, for the waits deep in routing.
+const current = new AsyncLocalStorage();
+
+/**
+ * The request running this code sleeps until `waiting` settles (a warm-key
+ * wait, a limit hold), so memory admission stops counting it as about to
+ * allocate until then. Returns `waiting`.
+ * @template T
+ * @param {Promise<T>} waiting
+ * @returns {Promise<T>}
+ */
+export function idleWhile(waiting) {
+  current.getStore()?.idleWhile(waiting);
+  return waiting;
+}
+
 /** `to` was built from `from`: it runs under `from`'s admission. Returns `to`. */
 export function carryAdmission(from, to) {
   const ticket = tickets.get(from);
@@ -415,7 +449,7 @@ export async function withMemoryAdmission(request, run, { gate = memoryGate() } 
   tickets.set(request, ticket);
   let response;
   try {
-    response = await run(ticket);
+    response = await current.run(ticket, () => run(ticket));
   } catch (error) {
     ticket.release();
     throw error;

@@ -28,12 +28,15 @@ is read.
   serializing its body (again on each 429 fallback), so neither the heap nor
   resident memory shows all of it yet. A reply that went out early (early
   headers) doesn't end that: the request stays not yet replying until its
-  routing settles. A limit hold's reply does end it, since a hold can last
-  hours.
+  routing settles. While it sleeps (a warm-key wait, a limit hold, streamed
+  or not) it doesn't count, since it builds nothing then; the attempt after a
+  warm-key wait counts again. A hold can last hours, so its re-attempts
+  aren't counted.
 - A new request is admitted when, with it counted too:
   - its `× 3` bytes fit the budget (`INFLIGHT_BODY_BUDGET_MB`);
-  - resident memory plus 5 × the bodies not yet replying stays under the
-    high-water mark (`MEMORY_HIGH_WATER_MB`);
+  - resident memory plus 2 × the bodies not yet replying (their bytes and
+    the bytes sent upstream, outside the heap) stays under the high-water
+    mark (`MEMORY_HIGH_WATER_MB`);
   - the V8 heap in use plus 3 × the bodies not yet replying stays under
     `MEMORY_HEAP_HIGH_WATER_PCT` of the heap limit (`heap_size_limit`).
 
@@ -86,8 +89,8 @@ Buffers, code and the runtime outside it. Node 22 picks about 1 GB by itself
 in a 2 GiB container. With 1400 MB in a 2 GiB container, resident memory
 reached the container's limit and the kernel killed the process, while the
 gate was already refusing; garbage from requests already admitted kept
-growing. The server logs a warning at startup when the heap limit is over
-60% of the container.
+growing. The server logs a warning when the first chat request arrives if
+the heap limit is over 60% of the container.
 
 The heap check follows whatever heap limit the process has. The heap in use
 includes garbage not yet collected, so near the mark new requests can wait
@@ -95,7 +98,10 @@ for the next collection (the queue rechecks every 250 ms). The weights for
 bodies not yet replying come from
 `tests/bench/admission-herd-benchmark.test.js` (Node 22, Claude Code bodies
 with non-Latin-1 text, through the real route): a request in flight takes
-about 1.8-1.9× its body of live heap and 3.5-5.4× of resident memory. A parsed
+about 1.8-1.9× its body of live heap and 3.5-5.4× of resident memory over a
+fresh process. The heap's part is the heap check's; outside the heap are the
+body's bytes and the bytes sent upstream, and once a process has peaked V8
+keeps its heap pages resident, so new heap allocations mostly reuse them. A parsed
 1,000-message body takes 1.1-1.2× its JSON length on the heap, and its text
 and the string sent upstream take 1× each (2× each when the body has any
 character outside Latin-1, as most do). They are counted on top of whatever

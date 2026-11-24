@@ -25,6 +25,7 @@ on:
       - "open-sse/executors/**"
       - "open-sse/translator/**"
       - "open-sse/utils/earlyHeaders.js"
+      - "open-sse/utils/limitHold.js"
       - "open-sse/config/runtimeConfig.js"
       - "tests/bench/admission-herd-benchmark.test.js"
       - "tests/helpers/claudeCodeBody.js"
@@ -77,7 +78,11 @@ jobs:
           INFLIGHT_BODY_BUDGET_MB: ${{ matrix.scenario == 'heap-only' && '0' || '900' }}
           HERD_NO_LENGTH: ${{ (matrix.scenario == 'no-length' || matrix.scenario == 'heap-only') && '1' || '0' }}
           HERD_429: ${{ matrix.scenario == 'fallback' && '1' || '0' }}
+          # Under the upstream's 3 s, so replies go out early while routing goes on.
+          STREAM_EARLY_HEADERS_MS: ${{ matrix.scenario == 'fallback' && '1000' || '30000' }}
           HERD_MAX_RSS_MB: ${{ matrix.leg == 'branch' && '1843' || '' }}
+          # Alone, the heap check must hold the live heap well under its own mark.
+          HERD_MAX_LIVE_PCT: ${{ matrix.scenario == 'heap-only' && '70' || '85' }}
         run: |
           set +e
           ./node_modules/.bin/vitest run --config vitest.benchmark.config.js bench/admission-herd-benchmark.test.js > "$RUNNER_TEMP/herd.txt" 2>&1

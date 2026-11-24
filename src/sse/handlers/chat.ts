@@ -64,7 +64,7 @@ import { detectClientTool } from "open-sse/utils/clientDetector.js";
 import { sanitizeNodeQuirks } from "@/shared/utils/nodeQuirks.js";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers.js";
 import { recordEndpointRequests } from "@/lib/endpointRequestLog.js";
-import { withMemoryAdmission } from "../services/memoryAdmission.js";
+import { withMemoryAdmission, idleWhile } from "../services/memoryAdmission.js";
 import type { AdmissionTicket } from "../services/memoryAdmission.js";
 import { readJsonObject, missingModel } from "../utils/requestBody.js";
 
@@ -680,14 +680,16 @@ async function holdUntilClear({ first, attempt: rerun, willStream, sourceFormat,
     return rerun();
   };
   if (!willStream) {
-    const settled = await awaitLimitClear({
+    // Hours, at worst: memory admission stops counting it as about to
+    // allocate, as a streamed hold's reply does.
+    const settled = await idleWhile(awaitLimitClear({
       retryAtMs: first.retryAtMs,
       attempt,
       provider,
       model: model || modelStr,
       signal,
       log,
-    } as Parameters<typeof awaitLimitClear>[0]) as { response?: Response } | null;
+    } as Parameters<typeof awaitLimitClear>[0])) as { response?: Response } | null;
     return settled?.response || first.response;
   }
 
@@ -974,7 +976,7 @@ async function routeSingleModelChat(
       // rebuilt in one serialize: while it waits, a request keeps its client
       // body only, not the last attempt's bytes and translated body.
       attemptCache.last = null;
-      await abortableSleep(waitMs, signal);
+      await idleWhile(abortableSleep(waitMs, signal));
       continue;
     }
 
