@@ -47,8 +47,9 @@ const (
 // Options for Run.
 type Options struct {
 	Config config.Config
-	// Command is the app server to start (e.g. node custom-server.js). Empty
-	// relays to an app server already listening on Config.AppPort.
+	// Command is the app server to start (e.g. node custom-server.js). The
+	// binary always passes one; empty (tests only) relays to an app server
+	// already listening on Config.AppPort.
 	Command []string
 	Env     []string
 	Signals <-chan os.Signal
@@ -60,15 +61,35 @@ type Options struct {
 	OnListening func(addr string)
 }
 
-// Header size. net/http allows MaxHeaderBytes plus 4096 bytes of slack, so
-// 12 KiB here caps a client at Node's default --max-http-header-size of
-// 16 KiB, request line included. Node behind the gateway gets
-// appMaxHeaderSize, room for that plus the peer headers the gateway adds, so
-// the gateway is the one that answers 431.
-const (
-	MaxHeaderBytes   = 12 << 10
-	appMaxHeaderSize = 20 << 10
-)
+// maxHeaderBytes caps a client's headers at about Node's --max-http-header-size
+// (16 KiB unless NODE_OPTIONS sets it): net/http allows MaxHeaderBytes plus
+// 4096 bytes of slack. custom-server.js gives its server 4 KiB more than that
+// behind the gateway, room for the peer headers, so the gateway is the one
+// that answers 431.
+func maxHeaderBytes(nodeOptions string) int {
+	size := nodeHeaderSize(nodeOptions)
+	if size <= 8<<10 {
+		return 4 << 10
+	}
+	return size - 4<<10
+}
+
+// nodeHeaderSize is the --max-http-header-size in NODE_OPTIONS, or Node's
+// default; the last one given wins, as in Node.
+func nodeHeaderSize(nodeOptions string) int {
+	size := 16 << 10
+	fields := strings.Fields(nodeOptions)
+	for i, f := range fields {
+		value, ok := strings.CutPrefix(f, "--max-http-header-size=")
+		if !ok && f == "--max-http-header-size" && i+1 < len(fields) {
+			value, ok = fields[i+1], true
+		}
+		if n, err := strconv.Atoi(value); ok && err == nil && n > 0 {
+			size = n
+		}
+	}
+	return size
+}
 
 // SignalSettle is how long the gateway waits after it stops admitting
 // requests before it passes the signal on to the app server. A request
@@ -200,6 +221,18 @@ func randomToken() string {
 
 func seconds(d time.Duration) int { return int((d + 500*time.Millisecond) / time.Second) }
 
+// passOn hands SIGUSR1/SIGUSR2 to the app server (SIGUSR1 opens Node's
+// inspector) and reports true; the shutdown signals are the gateway's own.
+func passOn(sig os.Signal, child *supervisor.Child) bool {
+	if sig != syscall.SIGUSR1 && sig != syscall.SIGUSR2 {
+		return false
+	}
+	if child != nil {
+		child.Signal(sig)
+	}
+	return true
+}
+
 // envValue is name's value in a KEY=value list, or "".
 func envValue(env []string, name string) string {
 	value := ""
@@ -252,7 +285,6 @@ func Run(o Options) int {
 			"HOSTNAME":           "127.0.0.1",
 			"KEEP_ALIVE_TIMEOUT": strconv.FormatInt(config.AppKeepAliveTimeout.Milliseconds(), 10),
 			"GATEWAY_PEER_TOKEN": cfg.PeerToken,
-			"NODE_OPTIONS":       strings.TrimSpace(envValue(o.Env, "NODE_OPTIONS") + " --max-http-header-size=" + strconv.Itoa(appMaxHeaderSize)),
 		})
 		var err error
 		child, err = supervisor.Start(o.Command, env)
@@ -287,7 +319,7 @@ func Run(o Options) int {
 		Handler:           g,
 		ReadHeaderTimeout: cfg.HeadersTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
-		MaxHeaderBytes:    MaxHeaderBytes,
+		MaxHeaderBytes:    maxHeaderBytes(envValue(o.Env, "NODE_OPTIONS")),
 		ErrorLog:          log.New(logger.Writer(), "[Gateway] http: ", 0),
 	}
 	serveErr := make(chan error, 1)
@@ -318,6 +350,9 @@ func Run(o Options) int {
 			stopChild(child, syscall.SIGTERM, childDeadline, logger)
 			return 1
 		case sig := <-o.Signals:
+			if passOn(sig, child) {
+				continue
+			}
 			return g.shutdown(sig, srv, child, o.Signals, childDeadline)
 		}
 	}
@@ -339,6 +374,9 @@ func waitForApp(addr string, child *supervisor.Child, signals <-chan os.Signal, 
 			logger.Printf("[Gateway] the app server exited with code %d before it listened", child.ExitCode())
 			return child.ExitCode(), true
 		case sig := <-signals:
+			if passOn(sig, child) {
+				continue
+			}
 			logger.Printf("[Gateway] %s before the app server listened: stopping it", sigName(sig))
 			child.Signal(sig)
 			return waitChild(child, childDeadline, logger), true
@@ -431,7 +469,11 @@ func (g *Gateway) shutdown(sig os.Signal, srv *http.Server, child *supervisor.Ch
 		}
 		select {
 		case again := <-signals:
-			if time.Since(startedAt) < DuplicateSignalWindow {
+			if passOn(again, child) {
+				continue
+			}
+			// Node's window opens when it gets the signal, SignalSettle later.
+			if time.Since(startedAt) < DuplicateSignalWindow+SignalSettle {
 				logger.Printf("[Gateway] %s right after the first signal: already draining, ignored", sigName(again))
 				continue
 			}

@@ -55,10 +55,13 @@ func main() {
 
 	// Before the child starts, so a signal in between isn't lost.
 	signals := make(chan os.Signal, 4)
-	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	// SIGTERM/SIGINT drain; SIGUSR1/SIGUSR2 go on to Node.
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1, syscall.SIGUSR2)
 	// As PID 1, Node ignored these (the kernel drops a default-action signal
 	// to a namespace's init); Go's runtime would exit on them, with no drain.
-	signal.Ignore(syscall.SIGHUP, syscall.SIGQUIT)
+	// Node runs in its own process group, so a terminal's signals reach only
+	// the gateway.
+	signal.Ignore(syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGABRT)
 	os.Exit(gateway.Run(gateway.Options{
 		Config:  cfg,
 		Command: args,

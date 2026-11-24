@@ -718,14 +718,25 @@ const GATEWAY_HEADERS = ["x-9r-gw-token", "x-9r-gw-peer-ip", "x-9r-gw-peer-port"
 // as before. One that carries them but can't prove them is a relayed client
 // nobody can place, so it is "unknown": never this machine.
 const UNPROVEN_PEER = { ip: "unknown", port: "" };
-function gatewayPeer(headers, socketIp) {
+// Node takes maxHeadersCount header lines (1000 by default). Current versions
+// refuse a request with more; older ones kept the first ones and dropped the
+// rest, so a request at the cap may have lost the gateway's headers. The
+// gateway itself never sends that many.
+const DEFAULT_MAX_HEADERS_COUNT = 1000;
+function mayHaveLostHeaders(req) {
+  const limit = (req.socket && req.socket.server && req.socket.server.maxHeadersCount) || DEFAULT_MAX_HEADERS_COUNT;
+  return Array.isArray(req.rawHeaders) && req.rawHeaders.length / 2 >= limit;
+}
+function gatewayPeer(req, socketIp) {
   if (!GATEWAY_ON) return null;
+  const headers = req.headers;
   const sent = GATEWAY_HEADERS.some((name) => headers[name] !== undefined);
   const token = headers["x-9r-gw-token"];
   const ip = String(headers["x-9r-gw-peer-ip"] || "");
   const port = String(headers["x-9r-gw-peer-port"] || "");
   for (const name of GATEWAY_HEADERS) delete headers[name];
-  if (!sent || !isLoopbackHost(socketIp)) return null;
+  if (!isLoopbackHost(socketIp)) return null;
+  if (!sent) return mayHaveLostHeaders(req) ? UNPROVEN_PEER : null;
   if (!GATEWAY_TOKEN || typeof token !== "string" || !net.isIP(ip)) return UNPROVEN_PEER;
   const given = Buffer.from(token);
   if (given.length !== GATEWAY_TOKEN.length || !crypto.timingSafeEqual(given, GATEWAY_TOKEN)) return UNPROVEN_PEER;
@@ -735,7 +746,7 @@ function gatewayPeer(headers, socketIp) {
 // The peer of an upgrade (the Codex WebSocket), the same way.
 function upgradePeerIp(req, socket) {
   const socketIp = socket.remoteAddress || "";
-  const handed = gatewayPeer(req.headers, socketIp);
+  const handed = gatewayPeer(req, socketIp);
   return handed ? handed.ip : socketIp;
 }
 
@@ -784,7 +795,7 @@ http.createServer = (...args) => {
   if (!handler) return origCreate(...args);
   const wrapped = (req, res) => {
     const tcpPeerIp = req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : "";
-    const handed = gatewayPeer(req.headers, tcpPeerIp);
+    const handed = gatewayPeer(req, tcpPeerIp);
     const socketIp = handed ? handed.ip : tcpPeerIp;
     // A Codex WebSocket turn's loopback POST from this process, sent just
     // before a shutdown signal, is still served and counted. One whose TCP
@@ -828,6 +839,13 @@ http.createServer = (...args) => {
     if (viaTunnel) req.headers["x-9r-via-tunnel"] = "1";
     return handler(req, res);
   };
+  // Behind the gateway, room for the peer headers it adds to a client's
+  // full --max-http-header-size, so the gateway is the one that answers 431.
+  if (GATEWAY_ON) {
+    const options = rest[0] && typeof rest[0] === "object" ? rest[0] : {};
+    if (options.maxHeaderSize === undefined) options.maxHeaderSize = http.maxHeaderSize + 4096;
+    if (rest[0] !== options) rest.unshift(options);
+  }
   const server = origCreate(...rest, wrapped);
   drain.addServer(server);
   server.once("listening", () => {

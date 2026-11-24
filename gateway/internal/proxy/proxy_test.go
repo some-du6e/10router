@@ -362,6 +362,26 @@ func TestAcceptEncodingIsTheClients(t *testing.T) {
 	}
 }
 
+func TestTooManyHeaderLinesIs431(t *testing.T) {
+	s := newStack(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("a request padded past Node's header count reached the app")
+	}), Options{PeerToken: strings.Repeat("t", 32)})
+	conn, err := net.Dial("tcp", s.front.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	fmt.Fprintf(conn, "GET /v1/models HTTP/1.1\r\nHost: localhost\r\n%s\r\n", strings.Repeat("D: \r\n", MaxHeaderLines+1))
+	res, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
+		t.Fatalf("status %d", res.StatusCode)
+	}
+}
+
 func TestNoContentTypeSniffing(t *testing.T) {
 	s := newStack(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Raw, so the upstream's own server doesn't sniff one either.

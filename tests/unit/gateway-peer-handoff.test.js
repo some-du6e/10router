@@ -113,6 +113,16 @@ describe("custom-server behind the Go gateway", () => {
     expect(h["x-9r-via-proxy"]).toBeUndefined();
   });
 
+  it("fails closed when a request reached Node's header count cap without the gateway's headers", async () => {
+    // 998 + Host + Connection = 1000 lines, the default cap. An older Node
+    // that dropped lines past it could have dropped the gateway's (they sort
+    // near the end), so such a request can't count as this machine's.
+    const padding = Object.fromEntries(Array.from({ length: 998 }, (_, i) => [`a${i}`, "1"]));
+    const h = await get(padding);
+    expect(h["x-9r-real-ip"]).toBe("unknown");
+    expect(h["x-9r-via-proxy"]).toBe("1");
+  });
+
   it("hands the Codex WebSocket bridge the same peer", () => {
     const { upgradePeerIp } = require(SERVER_PATH).__test__;
     const req = (headers) => ({ headers: { ...headers } });

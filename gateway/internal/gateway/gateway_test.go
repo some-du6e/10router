@@ -185,7 +185,7 @@ func TestSecondSignalExitsNow(t *testing.T) {
 	defer res.Body.Close()
 	<-started
 	g.signals <- syscall.SIGTERM
-	time.Sleep(DuplicateSignalWindow + 100*time.Millisecond)
+	time.Sleep(DuplicateSignalWindow + SignalSettle + 100*time.Millisecond)
 	g.signals <- syscall.SIGINT
 	if code := g.waitExit(t, 2*time.Second); code != 1 {
 		t.Fatalf("exit code %d", code)
@@ -286,6 +286,22 @@ func TestRefusesAShortPeerToken(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "GATEWAY_PEER_TOKEN must be at least 32 characters") {
 		t.Errorf("log:\n%s", logs.String())
+	}
+}
+
+func TestHeaderCapFollowsNode(t *testing.T) {
+	for opts, want := range map[string]int{
+		"":                                 12 << 10,
+		"--use-system-ca":                  12 << 10,
+		"--max-http-header-size=32768":     28 << 10,
+		"--max-http-header-size 65536 --x": 60 << 10,
+		"--max-http-header-size=8192":      4 << 10,
+		"--max-http-header-size=1 --max-http-header-size=20480": 16 << 10,
+		"--max-http-header-size=abc":                            12 << 10,
+	} {
+		if got := maxHeaderBytes(opts); got != want {
+			t.Errorf("maxHeaderBytes(%q) = %d, want %d", opts, got, want)
+		}
 	}
 }
 

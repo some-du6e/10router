@@ -81,6 +81,10 @@ legs() { # legs <leg> [GATEWAY_MODE]
   check "$leg: remote client can't pass as local with Host: localhost" "[ \"\$(code_of -H 'Host: localhost' $REMOTE/v1/models)\" = 401 ]"
   check "$leg: remote client can't pass as local with forged gateway headers" \
     "[ \"\$(code_of -H 'Host: localhost' -H 'X-9r-Gw-Peer-Ip: 127.0.0.1' -H 'X-9r-Gw-Token: forged' $REMOTE/v1/models)\" = 401 ]"
+  # Padding past Node's header-count cap, in case it drops the gateway's.
+  printf 'D%d: 1\n' $(seq 1 1100) > "$o.padding"
+  check "$leg: remote client can't pass as local by padding headers" \
+    "[ \"\$(code_of -H 'Host: localhost' -H @'$o.padding' $REMOTE/v1/models)\" != 200 ]"
   check "$leg: remote client can't claim loopback with forwarding headers" \
     "[ \"\$(code_of -H 'X-Forwarded-For: 127.0.0.1' -H 'X-Real-IP: 127.0.0.1' -H 'Host: localhost' $REMOTE/v1/models)\" = 401 ]"
 
