@@ -918,8 +918,9 @@ async function routeSingleModelChat(
   const excludeConnectionIds = new Set<string>();
   // What the last account's attempt sent and its client request, so the next
   // one reuses them when they come out the same (chatCore). Emptied once a
-  // reply starts; a later pass starts without it.
-  const attemptCache = {};
+  // reply starts; a later pass starts without it. `last` also goes before a
+  // wait for a warm key, below.
+  const attemptCache: { last?: unknown; clientRequest?: unknown } = {};
   const accountFailures: { account?: string; status?: number; error?: string }[] = [];
   const accountErrors: AccountError[] = [];
   passAccountErrors = accountErrors;
@@ -961,6 +962,10 @@ async function routeSingleModelChat(
       const waitMs = Math.max(0, credentials.warmRetryAtMs - Date.now());
       log.info("CACHE", `waiting ${waitMs}ms for a key holding this conversation's prompt cache`);
       cacheWaitedMs += waitMs;
+      // The wait takes seconds, many requests wait at once, and an attempt is
+      // rebuilt in one serialize: while it waits, a request keeps its client
+      // body only, not the last attempt's bytes and translated body.
+      attemptCache.last = null;
       await abortableSleep(waitMs, signal);
       continue;
     }

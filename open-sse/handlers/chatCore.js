@@ -609,7 +609,8 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   }
   // A reply is under way and nothing is sent again, so the stream doesn't keep
   // the body's bytes alive. Emptied, not dropped: executor closures still hold
-  // the cache. A failed attempt leaves them for the account loop's next one.
+  // the cache. A failed attempt leaves them for the account loop's next one
+  // (which drops them before waiting for a warm key).
   if (providerResponse.ok) bodyCache.last = bodyCache.clientRequest = null;
 
   // Hung up with an error in hand: a disconnect, not a failure. Either during
