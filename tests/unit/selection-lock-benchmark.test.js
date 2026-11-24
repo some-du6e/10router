@@ -13,9 +13,9 @@ vi.mock("@/lib/network/connectionProxy", async (importOriginal) => {
   const real = await importOriginal();
   return {
     ...real,
-    resolveConnectionProxyConfig: async (data = {}) => {
+    resolveConnectionProxyConfig: async (data = {}, provider) => {
       if (data.benchSlow) await new Promise((r) => setTimeout(r, SLOW_MS));
-      return real.resolveConnectionProxyConfig(data);
+      return real.resolveConnectionProxyConfig(data, provider);
     },
   };
 });

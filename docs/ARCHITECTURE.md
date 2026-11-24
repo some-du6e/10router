@@ -188,7 +188,7 @@ Usage DB:
   Spend is a running total per key, updated with each usage row
   (`docs/API_KEY_BUDGETS.md`)
 - Provider secrets persisted in `providerConnections` entries
-- Optional proxy support for upstream calls via env proxy variables (`open-sse/utils/proxyFetch.js`)
+- Upstream proxies (`src/lib/network/proxyRouting.ts`, `connectionProxy.ts`, applied in `open-sse/utils/proxyFetch.js`): each request resolves Account (`providerSpecificData.proxyPoolId`) → Provider (`settings.providerStrategies[provider].proxyPoolId`) → Global (`settings.globalProxyPoolId`) → env proxy variables. Each layer is unset (inherit), `__direct__` or a proxy pool id; the most specific set layer wins. A layer naming a pool that is off or gone blocks the request rather than falling through. Direct skips the env proxy. Embeddings, image, video, TTS/STT, search and web fetch handlers, Devin CLI's subprocess and Cursor's HTTP/2 AgentService text path don't use account proxies yet (only the env proxy, or none); chatCore still refuses a blocked account before any executor runs.
 
 ## 5) Cloud Sync
 
@@ -606,7 +606,7 @@ Environment variables actively used by code:
 - Logging: `ENABLE_REQUEST_LOGS`
 - Sync/cloud URLing: `NEXT_PUBLIC_BASE_URL`, `NEXT_PUBLIC_CLOUD_URL`
 - Analytics (optional, build-time): `NEXT_PUBLIC_GA_ID`. A Google Analytics 4 measurement ID (`G-` followed by uppercase letters and digits); anything else, or unset, builds without analytics. `next.config.mjs` inlines it during `next build`, so setting it on a running server does nothing. The tag never loads on `/callback`.
-- Outbound proxy: `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and lowercase variants
+- Outbound proxy: `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and lowercase variants (the last proxy layer; see the upstream proxies note above)
 - Endpoint detection: `DETECT_ANTHROPIC_FIRST_HINTS` (URL substrings that get Anthropic Messages probed first)
 - Shutdown: `SHUTDOWN_DRAIN_TIMEOUT_MS` (default `180000`; `0`/`off`/`false` disables). How long `custom-server.js` waits on SIGTERM/SIGINT for in-flight model requests (`/v1*`, `/api/v1*`, `/v1beta*`, `/api/v1beta*`, `/responses`, `/systemone`, `/codex/*`, `/backend-api/codex/*`, Codex WebSocket turns, a budgeted key's post-hang-up usage read) before exiting; see `server-drain.js` and the README's deploy notes. The stop timeout of whatever stops the process (container grace period, PM2 `kill_timeout`, systemd `TimeoutStopSec`) must be longer than this, or it kills the process first.
 - Memory admission: `INFLIGHT_BODY_BUDGET_MB` (default `900`; `0` disables), `INFLIGHT_QUEUE_WAIT_MS` (default `15000`), `INFLIGHT_RETRY_AFTER_S` (default `10`), `MEMORY_HIGH_WATER_MB` (default 80% of the cgroup memory limit, off without one; `0` disables), `MEMORY_HEAP_HIGH_WATER_PCT` (default `85`, percent of the V8 heap limit; `0` disables), `INFLIGHT_UNKNOWN_BODY_MB` (default `4`). See [MEMORY_ADMISSION.md](MEMORY_ADMISSION.md).

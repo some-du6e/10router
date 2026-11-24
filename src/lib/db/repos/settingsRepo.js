@@ -42,6 +42,8 @@ const DEFAULT_SETTINGS = {
   // Off by default: rotating is instant, waiting can cost hours to save a cache.
   limitHoldOnPinned: false,
   providerStrategies: {},
+  // Global proxy layer: a pool id, "__direct__", or null to use the system outbound proxy.
+  globalProxyPoolId: null,
   quotaVisibility: {},
   comboStrategy: "fallback",
   comboStickyRoundRobinLimit: 1,

@@ -1,6 +1,7 @@
 import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
 import { updateProviderCredentials } from "@/sse/services/credentialSave.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
+import { toProxyOptions } from "@/lib/network/proxyRouting.js";
 import { testProxyUrl } from "@/lib/network/proxyTest";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { getDefaultModel } from "open-sse/config/providerModels.js";
@@ -513,24 +514,14 @@ async function fetchWithConnectionProxy(url, options = {}, effectiveProxy = null
     options.signal = AbortSignal.timeout(15000);
   }
 
-  // Vercel relay: forward via relay URL
-  if (effectiveProxy?.vercelRelayUrl) {
-    const { proxyAwareFetch } = await import("open-sse/utils/proxyFetch.js");
-    return proxyAwareFetch(url, options, {
-      vercelRelayUrl: effectiveProxy.vercelRelayUrl,
-    });
-  }
-
-  if (!effectiveProxy?.connectionProxyEnabled || !effectiveProxy?.connectionProxyUrl) {
+  // No account route at all: plain fetch (system proxy). Otherwise the account's
+  // whole route, strictness and Direct included, the way real requests take it.
+  const route = toProxyOptions(effectiveProxy);
+  if (!route.vercelRelayUrl && !route.direct && !(route.connectionProxyEnabled && route.connectionProxyUrl)) {
     return fetch(url, options);
   }
-
   const { proxyAwareFetch } = await import("open-sse/utils/proxyFetch.js");
-  return proxyAwareFetch(url, options, {
-    connectionProxyEnabled: true,
-    connectionProxyUrl: effectiveProxy.connectionProxyUrl,
-    connectionNoProxy: effectiveProxy.connectionNoProxy || "",
-  });
+  return proxyAwareFetch(url, options, route);
 }
 
 async function testApiKeyConnection(connection, effectiveProxy = null) {
@@ -892,8 +883,18 @@ export async function testSingleConnection(id) {
   const connection = await getProviderConnectionById(id);
   if (!connection) return { valid: false, error: "Connection not found", latencyMs: 0, testedAt: new Date().toISOString() };
 
-  const effectiveProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+  const effectiveProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {}, connection.provider);
   const isKeyAuth = connection.authType === "apikey" || connection.authType === "cookie";
+
+  if (effectiveProxy.blockedReason) {
+    // Like every status write on an OAuth row: only onto the tokens this test read.
+    await updateProviderConnection(id, {
+      testStatus: "error",
+      lastError: effectiveProxy.blockedReason,
+      lastErrorAt: new Date().toISOString(),
+    }, isKeyAuth ? undefined : { refreshTokenUsed: connection.refreshToken ?? null });
+    return { valid: false, error: effectiveProxy.blockedReason, latencyMs: 0, testedAt: new Date().toISOString() };
+  }
 
   if (effectiveProxy.connectionProxyEnabled && effectiveProxy.connectionProxyUrl && !effectiveProxy.vercelRelayUrl) {
     const proxyResult = await testProxyUrl({ proxyUrl: effectiveProxy.connectionProxyUrl });

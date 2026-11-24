@@ -164,7 +164,7 @@ export async function POST(request) {
       type: "deno",
       noProxy: "",
       isActive: true,
-      strictProxy: false,
+      strictProxy: true,
     });
 
     return NextResponse.json({ proxyPool, deployUrl }, { status: 201 });

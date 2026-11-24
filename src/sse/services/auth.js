@@ -4,6 +4,7 @@ import { extractClientApiKey } from "@/shared/utils/clientApiKey.js";
 import { upstreamOf, connectionUpstream } from "./connectionUpstream.js";
 import { AUTH_DEMOTE_PREFIX, getAuthDemoteKey } from "@/lib/db/index.js";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
+import { toProxyOptions } from "@/lib/network/proxyRouting.js";
 import { formatRetryAfter, checkFallbackError, getQuotaCooldown, isModelLockActive, getModelLockUntil, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey, MODEL_LOCK_ALL, isHeadersTimeout } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS, AUTH_DEAD_CONFIG, AUTH_DEMOTE_CONFIG, LIMIT_REFUSAL, MODEL_REFUSAL, OPERATION_REFUSAL, HEADERS_TIMEOUT } from "open-sse/config/errorConfig.js";
 import { isBackoffText } from "open-sse/utils/errorClass.js";
@@ -98,10 +99,10 @@ function isModelRefusal(status, errorText) {
 // upstream they reach.
 async function networkPath(conn) {
   const psd = conn.providerSpecificData || {};
-  const p = await resolveConnectionProxyConfig(psd);
+  const p = await resolveConnectionProxyConfig(psd, conn.provider);
   const proxy = p.connectionProxyEnabled && p.connectionProxyUrl ? p.connectionProxyUrl : "";
   return {
-    transport: JSON.stringify([proxy, proxy ? p.connectionNoProxy || "" : "", p.vercelRelayUrl || ""]),
+    transport: JSON.stringify([proxy, proxy ? p.connectionNoProxy || "" : "", p.vercelRelayUrl || "", p.direct === true]),
     upstream: upstreamOf(psd),
   };
 }
@@ -123,6 +124,7 @@ export async function keysShareOneUpstream(provider) {
   const paths = await Promise.all(connections.map(networkPath));
   return new Set(paths.map(p => p.transport)).size <= 1;
 }
+
 
 // Only API keys count: an OAuth token or session cookie that fails to refresh
 // gets 401s while its peers' tokens work, and that isn't a dead account.
@@ -521,18 +523,16 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         const poolIds = allPools.filter(p => p.proxyUrl).map(p => p.id);
         pickedId = pickProxyPoolId(poolIds, strategy, providerId);
       }
-      const resolvedProxy = await resolveConnectionProxyConfig({ proxyPoolId: pickedId || "" });
+      const resolvedProxy = await resolveConnectionProxyConfig({ proxyPoolId: pickedId || "" }, providerId);
       return {
         id: "noauth",
         connectionName: "Public",
         isActive: true,
         accessToken: "public",
         providerSpecificData: {
-          connectionProxyEnabled: resolvedProxy.connectionProxyEnabled,
-          connectionProxyUrl: resolvedProxy.connectionProxyUrl,
-          connectionNoProxy: resolvedProxy.connectionNoProxy,
+          // Under the names proxyAwareFetch reads, so this object works as its proxy options.
+          ...toProxyOptions(resolvedProxy),
           connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
-          vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
         },
       };
     }
@@ -823,7 +823,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       connection = availableConnections[0];
     }
 
-    const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+    const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {}, providerId);
 
     return {
       authType: connection.authType,
@@ -839,11 +839,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       copilotToken: connection.providerSpecificData?.copilotToken,
       providerSpecificData: {
         ...(connection.providerSpecificData || {}),
-        connectionProxyEnabled: resolvedProxy.connectionProxyEnabled,
-        connectionProxyUrl: resolvedProxy.connectionProxyUrl,
-        connectionNoProxy: resolvedProxy.connectionNoProxy,
+        // Under the names proxyAwareFetch reads, so this object works as its proxy options.
+        ...toProxyOptions(resolvedProxy),
         connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
-        vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
       },
       connectionId: connection.id,
       // Include current status for optimization check
