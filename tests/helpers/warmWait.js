@@ -115,7 +115,7 @@ export async function seedWarmCold(db, { baseUrl, prefix, warmKey, coldKey }) {
   return { nodeId, model: MODEL, warmId: (await db.getProviderConnections({ provider: nodeId })).find((c) => c.name === `${prefix}-warm`).id };
 }
 
-/** Silence the console, counting the lines that announce a warm-key wait. Returns { count(), restore() }. */
+/** Silence the console, counting the lines that announce a warm-key wait. Returns { count(), reset(), restore() }. */
 export function countWaitLines() {
   const saved = {};
   let n = 0;

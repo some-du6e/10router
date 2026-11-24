@@ -2,7 +2,8 @@
 // tests/helpers/warmWait.js's warm/cold upstream, driven over HTTP.
 // POST /__control takes { limitNext } (the next N warm requests get a 429 at
 // once) or { barrier } (hold the next N warm requests, then answer them all
-// with a 429). GET /__state returns its counters and body digests.
+// with a 429). Every /__ request answers with the counters and body digests
+// (drive.mjs reads them with an empty POST /__control).
 import http from "node:http";
 import { warmUpstream } from "../../../tests/helpers/warmWait.js";
 

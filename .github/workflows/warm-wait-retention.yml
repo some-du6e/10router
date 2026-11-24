@@ -115,7 +115,7 @@ jobs:
   # The production build and entry point (custom-server.js), measured from
   # inside the server: this is where Next's proxy copy of each body shows.
   # Both legs fail on wrong behavior (a request not answered, sent to the cold
-  # key, or resumed with other bytes); the pr leg also when the waiting
+  # key, resumed before the probe, or resumed with other bytes); the pr leg also when the waiting
   # requests still hold their bodies outside the heap.
   e2e:
     runs-on: ubuntu-latest
