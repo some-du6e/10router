@@ -103,7 +103,10 @@ export function resolveHighWater({ highWaterMb = MEMORY_ADMISSION.highWaterMb, f
  * @param {number} [options.recheckMs]
  * @param {() => number} [options.rss]
  * @param {() => { used_heap_size: number, heap_size_limit: number }} [options.heapStats]
- * @param {() => number | null} [options.heapAfterGc] - heap in use after the last full collection, null: unknown
+ * @param {() => number | null} [options.heapAfterGc] - heap in use shortly after the last full collection,
+ *   null: unknown. Read when the gc entry is delivered (milliseconds after the collection), so it can
+ *   include what was allocated since: it may overstate the live heap, never understate it, and the
+ *   gate takes the smaller of it and the heap used.
  * @param {number} [options.heapHardStopPct] - 0: no backstop on used_heap_size
  * @param {((listener: () => void) => unknown) | null} [options.subscribeFullCollections]
  * @param {any} [options.logger]
