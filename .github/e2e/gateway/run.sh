@@ -143,10 +143,13 @@ legs() { # legs <leg> [GATEWAY_MODE]
   done
   node "$HERE/ws-probe.mjs" "$REMOTE" mock/fast > "$o.ws-nokey.json"
   show "$leg: WebSocket (remote, no key)" "$o.ws-nokey.json"
-  check "$leg: WebSocket turn from a remote client without a key is not served" "! json text < '$o.ws-nokey.json' | grep -q pong"
+  # The probe must have run (a status), or a broken probe would pass these.
+  check "$leg: WebSocket turn from a remote client without a key is not served" \
+    "[ -n \"\$(json status < '$o.ws-nokey.json')\" ] && [ \"\$(json status < '$o.ws-nokey.json')\" != null ] && ! json text < '$o.ws-nokey.json' | grep -q pong"
   WS_HOST=localhost node "$HERE/ws-probe.mjs" "$REMOTE" mock/fast > "$o.ws-spoof.json"
   show "$leg: WebSocket (remote, no key, Host: localhost)" "$o.ws-spoof.json"
-  check "$leg: WebSocket turn from a remote client passing as local is not served" "! json text < '$o.ws-spoof.json' | grep -q pong"
+  check "$leg: WebSocket turn from a remote client passing as local is not served" \
+    "[ -n \"\$(json status < '$o.ws-spoof.json')\" ] && [ \"\$(json status < '$o.ws-spoof.json')\" != null ] && ! json text < '$o.ws-spoof.json' | grep -q pong"
 
   # The dashboard (the legs must agree; compared at the end).
   echo "$(code_of "$REMOTE/dashboard") $(code_of "$REMOTE/login") $(code_of "$LOCAL/dashboard")" > "$o.dashboard"

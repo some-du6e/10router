@@ -329,6 +329,8 @@ func TestHeaderCapFollowsNode(t *testing.T) {
 		"--max-http-header-size=32768":     28 << 10,
 		"--max-http-header-size 65536 --x": 60 << 10,
 		"--max-http-header-size=8192":      4 << 10,
+		"--max-http-header-size=6144":      2 << 10,
+		"--max-http-header-size=2048":      1,
 		"--max-http-header-size=1 --max-http-header-size=20480": 16 << 10,
 		"--max-http-header-size=abc":                            12 << 10,
 		"--max_http_header_size=32768":                          28 << 10,

@@ -112,8 +112,12 @@ func Load(getenv func(string) string) Config {
 	c.ListenPort = c.port(getenv, "PORT", DefaultPublicPort)
 	c.AppPort = c.port(getenv, "GATEWAY_APP_PORT", DefaultAppPort)
 	if c.AppPort == c.ListenPort {
-		c.Warnings = append(c.Warnings, fmt.Sprintf("GATEWAY_APP_PORT=%d is the public port; using %d", c.AppPort, c.ListenPort+1))
-		c.AppPort = c.ListenPort + 1
+		other := c.ListenPort + 1
+		if other > 65535 {
+			other = c.ListenPort - 1
+		}
+		c.Warnings = append(c.Warnings, fmt.Sprintf("GATEWAY_APP_PORT=%d is the public port; using %d", c.AppPort, other))
+		c.AppPort = other
 	}
 	var warn string
 	c.DrainTimeout, warn = ParseDrainTimeout(getenv("SHUTDOWN_DRAIN_TIMEOUT_MS"))

@@ -19,6 +19,8 @@ let seen;
 
 beforeAll(async () => {
   delete require.cache[SERVER_PATH];
+  // An inherited TRUST_PROXY=true would make no loopback peer local.
+  delete process.env.TRUST_PROXY;
   process.env.GATEWAY_PEER_TOKEN = TOKEN;
   process.env.GATEWAY_MODE = "proxy";
   require(SERVER_PATH);

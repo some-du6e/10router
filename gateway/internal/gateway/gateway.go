@@ -76,10 +76,8 @@ func maxHeaderBytes(nodeOptions string, command []string) int {
 	if len(command) > 1 {
 		size = nodeHeaderSize(nodeFlags(command[1:]), size)
 	}
-	if size <= 8<<10 {
-		return 4 << 10
-	}
-	return size - 4<<10
+	// net/http never allows less than its 4 KiB of slack.
+	return max(size-4<<10, 1)
 }
 
 // Node flags that take their value as the next argument, as used to start an
@@ -242,6 +240,11 @@ func (g *Gateway) health(w http.ResponseWriter, r *http.Request) {
 		body["goroutines"] = runtime.NumGoroutine()
 	}
 	raw, _ := json.Marshal(body)
+	if r.ContentLength != 0 {
+		// A health check has no body; one that says it does is not drained
+		// (net/http would wait on it with no deadline), the connection ends.
+		w.Header().Set("Connection", "close")
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))

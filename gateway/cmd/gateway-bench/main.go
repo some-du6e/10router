@@ -56,7 +56,9 @@ func main() {
 		{"4 MB body in", "/big", big, *bigN},
 	}
 
-	client := &http.Client{Transport: &http.Transport{
+	// A bound on each request, so a stuck reply fails the run instead of
+	// hanging it.
+	client := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
 		MaxIdleConnsPerHost: *concurrency * 2,
 		DisableCompression:  true,
 		IdleConnTimeout:     time.Minute,

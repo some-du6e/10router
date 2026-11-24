@@ -229,6 +229,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		stripH2C(r.Header)
 		r = r.WithContext(context.WithValue(r.Context(), keyH2C, true))
 	}
+	// Node lets a reply stream while the request body is still arriving;
+	// without full duplex net/http would hold the reply until it had read
+	// the body.
+	_ = http.NewResponseController(w).EnableFullDuplex()
 	if r.Header.Get("Upgrade") != "" {
 		w = upgradeWriter{w}
 	}

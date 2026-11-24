@@ -66,6 +66,9 @@ func TestLoad(t *testing.T) {
 	if len(c.Warnings) != 1 {
 		t.Errorf("want one warning (the port clash), got %v", c.Warnings)
 	}
+	if top := Load(env(map[string]string{"PORT": "65535", "GATEWAY_APP_PORT": "65535"})); top.AppPort != 65534 {
+		t.Errorf("port clash at 65535: app port %d", top.AppPort)
+	}
 	bad := Load(env(map[string]string{"GATEWAY_MODE": "fast", "PORT": "http", "KEEP_ALIVE_TIMEOUT": "-5"}))
 	if bad.Mode != ModeOff || bad.ListenPort != 20128 || bad.IdleTimeout != 5*time.Second || len(bad.Warnings) != 2 {
 		t.Errorf("%+v", bad)

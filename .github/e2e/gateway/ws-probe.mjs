@@ -61,8 +61,9 @@ req.on("error", (e) => {
 req.on("upgrade", (res, socket, head) => {
   out.status = res.statusCode;
   socket.write(frame(JSON.stringify({ type: "response.create", model, input: [{ role: "user", content: "ping" }] })));
-  let buf = head;
-  socket.on("data", (chunk) => {
+  let buf = Buffer.alloc(0);
+  // Bytes that came with the 101 (head) are frames too.
+  const take = (chunk) => {
     buf = Buffer.concat([buf, chunk]);
     for (;;) {
       if (buf.length < 2) return;
@@ -96,7 +97,9 @@ req.on("upgrade", (res, socket, head) => {
       if (event.type === "response.output_text.delta") out.text += event.delta || "";
       if (event.type === "response.completed" || event.type === "response.failed" || event.type === "error") return finish();
     }
-  });
+  };
+  socket.on("data", take);
   socket.on("close", finish);
+  if (head && head.length) take(head);
 });
 req.end();
