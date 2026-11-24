@@ -33,6 +33,7 @@ export default function ProxyPoolsPage() {
   const [proxyPools, setProxyPools] = useState([]);
   const [loading, setLoading] = useState(true);
   const [poolsLoaded, setPoolsLoaded] = useState(false);
+  const [poolsError, setPoolsError] = useState("");
   const [showFormModal, setShowFormModal] = useState(false);
   const [showBatchImportModal, setShowBatchImportModal] = useState(false);
   const [showVercelModal, setShowVercelModal] = useState(false);
@@ -80,10 +81,14 @@ export default function ProxyPoolsPage() {
         const nextPools = data.proxyPools || [];
         setProxyPools(nextPools);
         setPoolsLoaded(true);
+        setPoolsError("");
         setSelectedIds((prev) => prev.filter((id) => nextPools.some((pool) => pool.id === id)));
+      } else if (requestId === latestFetchProxyPoolsRequestRef.current) {
+        setPoolsError(data?.error || `Request failed (${res.status})`);
       }
     } catch (error) {
       console.log("Error fetching proxy pools:", error);
+      if (requestId === latestFetchProxyPoolsRequestRef.current) setPoolsError(error.message || "Request failed");
     } finally {
       if (requestId === latestFetchProxyPoolsRequestRef.current) {
         setLoading(false);
@@ -652,7 +657,7 @@ export default function ProxyPoolsPage() {
         </p>
       </div>
 
-      <ProxyRoutingCard proxyPools={proxyPools} poolsLoaded={poolsLoaded} onPoolsChanged={fetchProxyPools} />
+      <ProxyRoutingCard proxyPools={proxyPools} poolsLoaded={poolsLoaded} poolsError={poolsError} onPoolsChanged={fetchProxyPools} />
 
       <Card>
         <div className="mb-4 flex flex-wrap items-center gap-2">

@@ -78,11 +78,12 @@ async function loadActiveConnections() {
 }
 
 async function refreshOne(connection) {
-  const { checkAndRefreshToken } = await import("./tokenRefresh.js");
-  // The DB row doesn't carry the resolved proxy; a blocked account skips the refresh.
+  // The DB row doesn't carry the resolved proxy; a blocked account skips the refresh,
+  // which would otherwise leave from this machine's IP.
   const { resolveConnectionProxyConfig } = await import("../../lib/network/connectionProxy.js");
   const { blockedReason } = await resolveConnectionProxyConfig(connection.providerSpecificData, connection.provider);
   if (blockedReason) return connection;
+  const { checkAndRefreshToken } = await import("./tokenRefresh.js");
   return checkAndRefreshToken(connection.provider, connection, { force: true });
 }
 
@@ -197,3 +198,5 @@ export function stopBackgroundTokenRefresh() {
     log.info("BG_TOKEN_REFRESH", "Scheduler stopped");
   }
 }
+
+export const __test__ = { refreshOne };

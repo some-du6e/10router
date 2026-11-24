@@ -75,9 +75,9 @@ function maskProxyUrl(raw: string): string {
 }
 const accountName = (c: Connection) => c.displayName || c.name || c.email || c.id;
 
-function Note({ icon, tone, children }: { icon: string; tone: string; children: ReactNode }) {
+function Note({ icon, tone, children, alert = false }: { icon: string; tone: string; children: ReactNode; alert?: boolean }) {
   return (
-    <p className={`flex items-start gap-1.5 text-xs ${tone}`}>
+    <p role={alert ? "alert" : undefined} className={`flex items-start gap-1.5 text-xs ${tone}`}>
       <span className="material-symbols-outlined mt-px shrink-0 text-[16px]">{icon}</span>
       <span>{children}</span>
     </p>
@@ -91,7 +91,9 @@ const TONE = {
   muted: "text-text-muted",
 };
 
-export default function ProxyRoutingCard({ proxyPools, poolsLoaded, onPoolsChanged }: { proxyPools: ProxyPoolLike[]; poolsLoaded: boolean; onPoolsChanged: () => unknown }) {
+export default function ProxyRoutingCard({ proxyPools, poolsLoaded, poolsError = "", onPoolsChanged }: {
+  proxyPools: ProxyPoolLike[]; poolsLoaded: boolean; poolsError?: string; onPoolsChanged: () => unknown;
+}) {
   const notify = useNotificationStore();
   const { blurClass } = useBlurEmails();
   const [connections, setConnections] = useState<Connection[]>([]);
@@ -457,12 +459,15 @@ export default function ProxyRoutingCard({ proxyPools, poolsLoaded, onPoolsChang
     );
   }
 
-  // Editing needs the pools, settings and accounts all loaded, so nothing is written over values that never arrived.
+  // Routes resolve against the pools, so nothing is drawn (or editable) before they,
+  // the settings and the accounts have loaded: an empty pool list would paint every
+  // bound account as blocked, and a save could write over values that never arrived.
+  const failure = loadError || (!poolsLoaded && poolsError);
   const ready = !!settings && poolsLoaded && !loadError;
-  if (!settings) {
-    return loadError ? (
+  if (!settings || !poolsLoaded) {
+    return failure ? (
       <Card title="Proxy routing" icon="layers">
-        <Note icon="error" tone={TONE.error}>Couldn&apos;t load proxy routing: {loadError}</Note>
+        <Note icon="error" tone={TONE.error} alert>Couldn&apos;t load proxy routing: {failure}</Note>
       </Card>
     ) : null;
   }
@@ -524,8 +529,8 @@ export default function ProxyRoutingCard({ proxyPools, poolsLoaded, onPoolsChang
         </div>
         {ready ? sidePanel(sel) : (
           <div className="self-start rounded-[10px] border border-border-subtle bg-bg p-4">
-            <Note icon="error" tone={TONE.error}>
-              {loadError ? `Couldn't load proxy routing: ${loadError}` : "Couldn't load the proxy pools, so routes can't be changed here."}
+            <Note icon="error" tone={TONE.error} alert>
+              Couldn&apos;t load proxy routing: {loadError}
             </Note>
           </div>
         )}

@@ -887,11 +887,12 @@ export async function testSingleConnection(id) {
   const isKeyAuth = connection.authType === "apikey" || connection.authType === "cookie";
 
   if (effectiveProxy.blockedReason) {
+    // Like every status write on an OAuth row: only onto the tokens this test read.
     await updateProviderConnection(id, {
       testStatus: "error",
       lastError: effectiveProxy.blockedReason,
       lastErrorAt: new Date().toISOString(),
-    });
+    }, isKeyAuth ? undefined : { refreshTokenUsed: connection.refreshToken ?? null });
     return { valid: false, error: effectiveProxy.blockedReason, latencyMs: 0, testedAt: new Date().toISOString() };
   }
 

@@ -26,6 +26,9 @@ on:
       - "tests/unit/proxy-routing*.test.js"
       - "tests/unit/oauth-probe-refresh-persistence.test.js"
       - "tests/unit/perplexity-web.test.js"
+      - "tests/unit/settings-route.test.js"
+      - "tests/unit/dashboard-proxy-routing-card.test.js"
+      - "tests/helpers/dashboardComponent.js"
       - "tests/unit/selection-lock-benchmark.test.js"
       - "open-sse/services/tokenRefresh/**"
       - ".github/workflows/proxy-routing.yml"
@@ -54,6 +57,8 @@ jobs:
           unit/proxy-routing-auth.test.js
           unit/proxy-routing-chat-block.test.js
           unit/proxy-routing-routes.test.js
+          unit/dashboard-proxy-routing-card.test.js
+          unit/settings-route.test.js
           unit/perplexity-web.test.js
           unit/background-token-refresh.test.js
           unit/oauth-probe-refresh-persistence.test.js
