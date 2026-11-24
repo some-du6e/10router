@@ -6,7 +6,8 @@ import SharedProviderIcon from "@/shared/components/ProviderIcon.js";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails.js";
 import { AI_PROVIDERS } from "@/shared/constants/providers.js";
 import { useNotificationStore } from "@/store/notificationStore.js";
-import { PROXY_DIRECT, normalizeLayerSetting, oneEachAssignments, proxyExit, resolveProxyChain, type ProxyPoolLike, type ResolvedProxy } from "@/lib/network/proxyRouting.js";
+import api from "@/shared/utils/api.js";
+import { PROXY_DIRECT, normalizeLayerSetting, oneEachAssignments, oneEachPools, proxyExit, resolveProxyChain, type ProxyPoolLike, type ResolvedProxy } from "@/lib/network/proxyRouting.js";
 
 // The shared components are untyped JavaScript; these are the props used here.
 const Badge = Shared.Badge as unknown as ComponentType<{ variant?: string; size?: string; icon?: string; className?: string; children?: ReactNode }>;
@@ -90,7 +91,7 @@ const TONE = {
   muted: "text-text-muted",
 };
 
-export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxyPools: ProxyPoolLike[]; onPoolsChanged: () => unknown }) {
+export default function ProxyRoutingCard({ proxyPools, poolsLoaded, onPoolsChanged }: { proxyPools: ProxyPoolLike[]; poolsLoaded: boolean; onPoolsChanged: () => unknown }) {
   const notify = useNotificationStore();
   const { blurClass } = useBlurEmails();
   const [connections, setConnections] = useState<Connection[]>([]);
@@ -98,21 +99,24 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
   const [selected, setSelected] = useState<Selection | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const [confirmOneEach, setConfirmOneEach] = useState<string | null>(null);
   const [testState, setTest] = useState<TestState>(null);
   const testRun = useRef(0);
 
   const load = useCallback(async () => {
     try {
-      const [connRes, settingsRes] = await Promise.all([
-        fetch("/api/providers", { cache: "no-store" }),
-        fetch("/api/settings", { cache: "no-store" }),
+      const [connData, settingsData] = await Promise.all([
+        api.get("/api/providers", { cache: "no-store" }) as Promise<{ connections?: (Connection & { isActive?: boolean })[] }>,
+        api.get("/api/settings", { cache: "no-store" }) as Promise<Settings>,
       ]);
       // Turned-off accounts send nothing, so they have no route to show.
-      if (connRes.ok) setConnections(((await connRes.json()).connections || []).filter((c: Connection & { isActive?: boolean }) => c.isActive !== false));
-      if (settingsRes.ok) setSettings(await settingsRes.json());
+      setConnections((connData?.connections || []).filter((c) => c.isActive !== false));
+      setSettings(settingsData);
+      setLoadError("");
     } catch (error) {
-      console.log("Error loading proxy routing:", error);
+      // Keep what loaded last; editing stays off until both reads succeed.
+      setLoadError(error instanceof Error ? error.message : "Request failed");
     }
   }, []);
 
@@ -219,55 +223,40 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
   );
 
   // ─── Saving ──────────────────────────────────────────────────────
-  async function save(run: () => Promise<Response>) {
+  // Writes go through api.js, which throws on any non-2xx, so every failure reaches the user.
+  async function save(run: () => Promise<unknown>) {
     setSaving(true);
     setTest(null);
     try {
-      const res = await run();
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        notify.error(data.error || "Failed to update proxy");
-      }
-      await load();
+      await run();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : "Failed to update proxy");
     } finally {
+      await Promise.all([load(), onPoolsChanged()]);
       setSaving(false);
     }
   }
 
-  const saveAccount = (c: Connection, value: string) => save(() => fetch(`/api/providers/${c.id}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
+  const saveAccount = (c: Connection, value: string) => save(() => api.put(`/api/providers/${c.id}`, {
     // Picking anything replaces a legacy per-account URL.
-    body: JSON.stringify({ proxyPoolId: value === INHERIT ? null : value, ...(hasLegacy(c) ? { connectionProxyEnabled: false, connectionProxyUrl: "" } : {}) }),
+    proxyPoolId: value === INHERIT ? null : value, ...(hasLegacy(c) ? { connectionProxyEnabled: false, connectionProxyUrl: "" } : {}),
   }));
 
   const saveProvider = (pid: string, value: string) => save(async () => {
-    const res = await fetch("/api/settings", { cache: "no-store" });
-    // The PATCH replaces the whole map, so saving on a failed read would drop every other provider's entry.
-    if (!res.ok) return res;
-    const current = ((await res.json()) as Settings).providerStrategies || {};
+    // A failed read throws, so no PATCH replaces the map without every other provider's entry.
+    const current = ((await api.get("/api/settings", { cache: "no-store" })) as Settings).providerStrategies || {};
     const override = { ...(current[pid] || {}) };
     if (value === INHERIT) delete override.proxyPoolId;
     else override.proxyPoolId = value;
     const updated = { ...current };
     if (Object.keys(override).length === 0) delete updated[pid];
     else updated[pid] = override;
-    return fetch("/api/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerStrategies: updated }) });
+    return api.patch("/api/settings", { providerStrategies: updated });
   });
 
-  const saveGlobal = (value: string) => save(() => fetch("/api/settings", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ globalProxyPoolId: value === INHERIT ? null : value }),
-  }));
+  const saveGlobal = (value: string) => save(() => api.patch("/api/settings", { globalProxyPoolId: value === INHERIT ? null : value }));
 
-  const makeStrict = (poolId: string) => save(async () => {
-    const res = await fetch(`/api/proxy-pools/${poolId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ strictProxy: true }) });
-    await onPoolsChanged();
-    return res;
-  });
+  const makeStrict = (poolId: string) => save(() => api.put(`/api/proxy-pools/${poolId}`, { strictProxy: true }));
 
   async function runTest(c: Connection) {
     const run = ++testRun.current;
@@ -362,7 +351,7 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
     const distinct = new Set(exits.filter(Boolean)).size;
     const allOwn = distinct === accounts.length;
     const plan = oneEachAssignments(accounts.map((c) => c.id), proxyPools);
-    const usable = proxyPools.filter((p) => p.isActive === true && p.proxyUrl).length;
+    const usable = oneEachPools(proxyPools).length;
     return (
       <div className="flex flex-col gap-2 rounded-[8px] bg-surface-2 p-2.5">
         <p className={`flex items-center gap-1.5 text-xs ${allOwn ? TONE.ok : TONE.muted}`}>
@@ -386,19 +375,14 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
     let failed = 0;
     for (const { id, poolId } of plan) {
       try {
-        const res = await fetch(`/api/providers/${id}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ proxyPoolId: poolId, connectionProxyEnabled: false, connectionProxyUrl: "" }),
-        });
-        if (!res.ok) failed += 1;
+        await api.put(`/api/providers/${id}`, { proxyPoolId: poolId, connectionProxyEnabled: false, connectionProxyUrl: "" });
       } catch {
         failed += 1;
       }
     }
     if (failed) notify.error(`${failed} of ${plan.length} accounts couldn't be updated`);
     else notify.success(`Each ${providerName(pid, connections)} account now has its own pool`);
-    await load();
+    await Promise.all([load(), onPoolsChanged()]);
     setSaving(false);
   }
 
@@ -473,7 +457,15 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
     );
   }
 
-  if (!settings) return null;
+  // Editing needs the pools, settings and accounts all loaded, so nothing is written over values that never arrived.
+  const ready = !!settings && poolsLoaded && !loadError;
+  if (!settings) {
+    return loadError ? (
+      <Card title="Proxy routing" icon="layers">
+        <Note icon="error" tone={TONE.error}>Couldn&apos;t load proxy routing: {loadError}</Note>
+      </Card>
+    ) : null;
+  }
 
   return (
     <Card title="Proxy routing" subtitle="Accounts inherit from their provider, and providers from Global. Click any block to change it." icon="layers">
@@ -530,7 +522,13 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
             </div>
           ))}
         </div>
-        {sidePanel(sel)}
+        {ready ? sidePanel(sel) : (
+          <div className="self-start rounded-[10px] border border-border-subtle bg-bg p-4">
+            <Note icon="error" tone={TONE.error}>
+              {loadError ? `Couldn't load proxy routing: ${loadError}` : "Couldn't load the proxy pools, so routes can't be changed here."}
+            </Note>
+          </div>
+        )}
       </div>
       <ConfirmModal
         isOpen={!!confirmOneEach}

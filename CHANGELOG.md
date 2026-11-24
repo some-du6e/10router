@@ -1,6 +1,10 @@
 # Unreleased
 
 ## Breaking Changes
+- **Proxy settings that used to fall back to no proxy now refuse the request.**
+  - An account, a provider or Global bound to a proxy pool that's turned off or deleted is blocked, with the reason, instead of going out without a proxy. Requests from such an account fail until you pick another pool, Direct or Inherit. The Proxy Pools page's routing card shows which accounts are affected.
+  - A pool marked Strict is now strict for chat requests too: if its proxy is down, the request fails instead of going direct. Usage checks, quota auto-ping and quota notifications follow the pool's setting instead of always falling back to direct.
+  - Deleting a pool that a provider or Global still uses is refused (409); change that layer first.
 - **A reverse proxy or tunnel on the same machine is now treated as remote.** A loopback connection counts as a client on this machine only when it carries no forwarding header (`X-Forwarded-For`, `X-Real-IP`, `Forwarded`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `True-Client-IP`, `CF-Connecting-IP`, `Cf-Ray`, `Tailscale-Funnel-Request`), `TRUST_PROXY` isn't `true`, and its `Host` (if any) is `localhost`, `127.0.0.1`, `[::1]` or `0.0.0.0`. Before, only `X-Forwarded-For` and `X-Real-IP` counted, so a same-host nginx, Caddy, cloudflared or Tailscale proxy that sent neither made every remote caller look local. Requests through such a proxy now lose what only this machine gets:
   - `/v1` (and the other inference routes) without an API key;
   - the local-only routes (MCP servers, `/api/tunnel/*` enable/disable/install, Cursor/Kiro auto-import, Reset Password), which answer 403;

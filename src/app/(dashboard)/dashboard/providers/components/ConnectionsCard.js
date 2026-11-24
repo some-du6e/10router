@@ -11,6 +11,7 @@ import { providerRoutingOptions, SOONEST_RESET_HINT } from "@/shared/constants/a
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
 import { fetchKeyLifespans, withLifespans, withToggledActive } from "../utils";
 import { PROXY_DIRECT } from "@/lib/network/proxyRouting.js";
+import { useNotificationStore } from "@/store/notificationStore.js";
 
 // ── CooldownTimer ──────────────────────────────────────────────
 function CooldownTimer({ until }) {
@@ -424,8 +425,14 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
   const handleUpdateProxy = async (connId, proxyPoolId) => {
     try {
       const res = await fetch(`/api/providers/${connId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ proxyPoolId: proxyPoolId || null, connectionProxyEnabled: false, connectionProxyUrl: "" }) });
-      if (res.ok) setConnections((prev) => prev.map((c) => c.id === connId ? { ...c, providerSpecificData: { ...c.providerSpecificData, proxyPoolId: proxyPoolId || null, connectionProxyEnabled: false, connectionProxyUrl: "" } } : c));
-    } catch (e) { console.log("proxy error:", e); }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Request failed (${res.status})`);
+      }
+      setConnections((prev) => prev.map((c) => c.id === connId ? { ...c, providerSpecificData: { ...c.providerSpecificData, proxyPoolId: proxyPoolId || null, connectionProxyEnabled: false, connectionProxyUrl: "" } } : c));
+    } catch (e) {
+      useNotificationStore.getState().error(`Couldn't change the proxy: ${e.message}`);
+    }
   };
 
   const handleSaveApiKey = async (formData) => {

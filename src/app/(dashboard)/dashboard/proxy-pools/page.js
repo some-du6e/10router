@@ -32,6 +32,7 @@ function normalizeFormData(data = { strictProxy: true }) {
 export default function ProxyPoolsPage() {
   const [proxyPools, setProxyPools] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [poolsLoaded, setPoolsLoaded] = useState(false);
   const [showFormModal, setShowFormModal] = useState(false);
   const [showBatchImportModal, setShowBatchImportModal] = useState(false);
   const [showVercelModal, setShowVercelModal] = useState(false);
@@ -78,6 +79,7 @@ export default function ProxyPoolsPage() {
         if (requestId !== latestFetchProxyPoolsRequestRef.current) return;
         const nextPools = data.proxyPools || [];
         setProxyPools(nextPools);
+        setPoolsLoaded(true);
         setSelectedIds((prev) => prev.filter((id) => nextPools.some((pool) => pool.id === id)));
       }
     } catch (error) {
@@ -650,7 +652,7 @@ export default function ProxyPoolsPage() {
         </p>
       </div>
 
-      <ProxyRoutingCard proxyPools={proxyPools} onPoolsChanged={fetchProxyPools} />
+      <ProxyRoutingCard proxyPools={proxyPools} poolsLoaded={poolsLoaded} onPoolsChanged={fetchProxyPools} />
 
       <Card>
         <div className="mb-4 flex flex-wrap items-center gap-2">

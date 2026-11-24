@@ -136,12 +136,19 @@ export function proxyExit(r: ResolvedProxy): string | null {
   return str(r.connectionProxyUrl || r.vercelRelayUrl) || null;
 }
 
+// Active pools with a URL, one per proxy URL so no two accounts end up on the
+// same proxy, in name order.
+export function oneEachPools(pools: ProxyPoolLike[]): ProxyPoolLike[] {
+  const seen = new Set<string>();
+  return pools
+    .filter((p) => p.isActive === true && str(p.proxyUrl) && !seen.has(str(p.proxyUrl)) && seen.add(str(p.proxyUrl)))
+    .sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)));
+}
+
 // The pool each account gets from "Give each its own pool": active pools with a
 // URL, in name order, one per account, or null when there aren't enough.
 export function oneEachAssignments(accountIds: string[], pools: ProxyPoolLike[]): { id: string; poolId: string }[] | null {
-  const seen = new Set<string>();
-  // One pool per proxy URL, so no two accounts end up on the same proxy.
-  const usable = pools.filter((p) => p.isActive === true && str(p.proxyUrl) && !seen.has(str(p.proxyUrl)) && seen.add(str(p.proxyUrl))).sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)));
+  const usable = oneEachPools(pools);
   if (usable.length < accountIds.length) return null;
   return accountIds.map((id, i) => ({ id, poolId: usable[i].id }));
 }

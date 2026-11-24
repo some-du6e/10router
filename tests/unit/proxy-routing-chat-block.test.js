@@ -1,7 +1,7 @@
 // A chat request for an account whose proxy is blocked is refused before any
 // executor runs, so even an executor that doesn't send through proxyAwareFetch
 // (Devin CLI's subprocess) never sends it.
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
 vi.mock("../../open-sse/utils/proxyFetch.js", () => ({ proxyAwareFetch: (...a) => fetchMock(...a) }));
@@ -41,5 +41,30 @@ describe("handleChatCore with a blocked proxy", () => {
     expect(String(result.error)).toContain("Old office VPN");
     expect(fetchMock).not.toHaveBeenCalled();
     expect(appendRequestLog).toHaveBeenCalledWith(expect.objectContaining({ status: "FAILED 502" }));
+  });
+});
+
+describe("handleChatCore with a usable proxy", () => {
+  beforeEach(() => fetchMock.mockClear());
+
+  const send = (psd) => {
+    const body = { model: `${PROVIDER}/${MODEL}`, stream: false, messages: [{ role: "user", content: "hi" }] };
+    return handleChatCore({
+      body,
+      modelInfo: { provider: PROVIDER, model: MODEL },
+      credentials: { apiKey: "sk-test", connectionId: "acct-b", providerSpecificData: { baseUrl: "https://gateway.example.test/v1", ...psd } },
+      clientRawRequest: { endpoint: "/v1/chat/completions", body, headers: {} },
+      connectionId: "acct-b",
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+  };
+
+  it("hands the pool, its strictness and Direct to the executor's fetch", async () => {
+    await send({ connectionProxyEnabled: true, connectionProxyUrl: "http://pool.proxy.test:3128", strictProxy: true });
+    expect(fetchMock.mock.calls[0][2]).toMatchObject({ connectionProxyEnabled: true, connectionProxyUrl: "http://pool.proxy.test:3128", strictProxy: true, direct: false });
+
+    fetchMock.mockClear();
+    await send({ direct: true });
+    expect(fetchMock.mock.calls[0][2]).toMatchObject({ direct: true, connectionProxyEnabled: false });
   });
 });

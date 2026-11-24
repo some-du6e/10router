@@ -14,7 +14,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // The executor sends through proxyAwareFetch, which keeps the fetch it saw at
 // import time; route it to whatever global.fetch each test installs.
-vi.mock("../../open-sse/utils/proxyFetch.js", () => ({ proxyAwareFetch: (...args) => globalThis.fetch(...args) }));
+const { proxyCalls } = vi.hoisted(() => ({ proxyCalls: [] }));
+vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
+  proxyAwareFetch: (url, opts, proxyOptions) => { proxyCalls.push(proxyOptions); return globalThis.fetch(url, opts); },
+}));
 import {
   parseOpenAIMessages,
   buildQuery,
@@ -214,6 +217,19 @@ describe("PerplexityWebExecutor.execute", () => {
     });
     expect(capturedBody.params.mode).toBe("concise");
     expect(capturedBody.params.model_preference).toBe("pplx_pro");
+  });
+
+  it("sends through the account's proxy options", async () => {
+    proxyCalls.length = 0;
+    const proxyOptions = { connectionProxyEnabled: true, connectionProxyUrl: "http://pool.proxy.test:3128", strictProxy: true };
+    await new PerplexityWebExecutor().execute({
+      model: "pplx-auto",
+      body: { messages: [{ role: "user", content: "hi" }], stream: false },
+      stream: false,
+      credentials: { apiKey: "cookie-abc" },
+      proxyOptions,
+    });
+    expect(proxyCalls).toEqual([proxyOptions]);
   });
 
   it("applies THINKING_MAP when reasoning_effort is set", async () => {
