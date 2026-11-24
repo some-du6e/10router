@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -325,8 +326,11 @@ func TestHealthWithAnUnsentBodyEndsTheConnection(t *testing.T) {
 	}
 	_, _ = io.Copy(io.Discard, res.Body)
 	res.Body.Close()
-	// The server hangs up rather than waiting for the body.
-	if _, err := br.ReadByte(); err != io.EOF {
+	// The server hangs up (EOF or reset) rather than waiting for the body,
+	// which would leave this read to time out.
+	_, err = br.ReadByte()
+	var ne net.Error
+	if err == nil || (errors.As(err, &ne) && ne.Timeout()) {
 		t.Fatalf("connection still open after the health reply: %v", err)
 	}
 	g.signals <- syscall.SIGTERM
