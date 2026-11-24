@@ -102,9 +102,10 @@ export function chainPoolIds({ account, provider, global }: Omit<ProxyChainInput
  * an inherited pool's URL as the account's own legacy URL and drop its
  * strictness, so a resolved route is returned as it is.
  */
-export function alreadyResolved(account: Record<string, unknown> | null | undefined): ResolvedProxy | null {
-  if (!account || typeof account.direct !== "boolean" || typeof account.blockedReason !== "string") return null;
+export function alreadyResolved(account: Record<string | symbol, unknown> | null | undefined): ResolvedProxy | null {
+  if (!account || account[RESOLVED_ROUTE] !== true) return null;
   const blockedReason = str(account.blockedReason);
+  // (direct and blockedReason were written by toProxyOptions alongside the marker.)
   const direct = account.direct === true;
   const vercelRelayUrl = str(account.vercelRelayUrl);
   const connectionProxyEnabled = account.connectionProxyEnabled === true;
@@ -140,9 +141,17 @@ export function resolveProxyChain({ account, provider, global, pools }: ProxyCha
   return base("system");
 }
 
+/**
+ * Marks proxy options built by toProxyOptions. Object spread copies it, but JSON
+ * can't carry a symbol, so a stored row or an API body can never claim to be a
+ * resolved route.
+ */
+export const RESOLVED_ROUTE: unique symbol = Symbol("10router.resolvedRoute");
+
 /** The fields proxyAwareFetch reads, from a resolved config. */
 export function toProxyOptions(cfg: Partial<ResolvedProxy> | null | undefined) {
   return {
+    [RESOLVED_ROUTE]: true as const,
     connectionProxyEnabled: cfg?.connectionProxyEnabled === true,
     connectionProxyUrl: cfg?.connectionProxyUrl || "",
     connectionNoProxy: cfg?.connectionNoProxy || "",

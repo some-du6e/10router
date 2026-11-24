@@ -38,7 +38,7 @@ export async function resolveConnectionProxyConfig(
   providerSpecificData: AccountProxyFields | null | undefined = {},
   provider?: string,
 ): Promise<ResolvedProxy> {
-  const resolved = alreadyResolved(providerSpecificData as Record<string, unknown> | null);
+  const resolved = alreadyResolved(providerSpecificData as Record<string | symbol, unknown> | null);
   if (resolved) return resolved;
   try {
     const settings = await getSettings();

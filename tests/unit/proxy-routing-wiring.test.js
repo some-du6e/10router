@@ -61,9 +61,18 @@ describe("resolving request credentials again", () => {
     });
   });
 
-  it("keeps a block", async () => {
+  it("keeps a block even where resolving again wouldn't find one", async () => {
     const route = await resolveConnectionProxyConfig({}, "codex");
-    expect((await resolveConnectionProxyConfig({ ...toProxyOptions(route) }, "codex")).blockedReason).toContain("Old office VPN");
+    // claude has no layer of its own, so a fresh resolve would fall to Global.
+    expect((await resolveConnectionProxyConfig({ ...toProxyOptions(route) }, "claude")).blockedReason).toContain("Old office VPN");
+  });
+
+  it("ignores route fields stored on the account itself, so a saved row can't skip resolution", async () => {
+    const stored = JSON.parse(JSON.stringify({ proxyPoolId: "off", ...toProxyOptions({ direct: true }) }));
+    expect(stored).toMatchObject({ direct: true, blockedReason: "" });
+    const r = await resolveConnectionProxyConfig(stored, "claude");
+    expect(r.direct).toBe(false);
+    expect(r.blockedReason).toContain("Old office VPN");
   });
 });
 
