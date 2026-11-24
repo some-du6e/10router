@@ -22,8 +22,9 @@ WORKDIR /app
 
 FROM base AS builder
 
-# Git commit injected by CI as the `SOURCE_COMMIT` build arg
-# (.github/workflows/deploy-image.yml). `.git` is stripped from the build
+# Git commit, as the `SOURCE_COMMIT` build arg: .github/workflows/deploy-image.yml
+# passes it, and so does Coolify when it builds this file with
+# `include_source_commit_in_build` on. `.git` is stripped from the build
 # context by `.dockerignore`, so `git rev-parse` in next.config.mjs falls back
 # to this. Declared here (before `RUN npm run build`) so Docker surfaces it to
 # the build step as an env var.

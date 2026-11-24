@@ -5,11 +5,16 @@ name: Deploy image
 # pushed here for that commit, and `deploy` moves only after the image passed
 # the gateway E2E and an anonymous pull. See DOCKER.md, "Master builds".
 #
+# The write token never shares a runner with dependency code. `build` compiles
+# inside BuildKit and hashes the image; `e2e` runs the E2E, and with it the
+# seed's dependencies, on a read-only token; only `publish` can write, and it
+# runs no repository code: it pushes the tarball `build` hashed, then moves
+# `deploy`. No layer cache, since any job on master could write one.
+#
 # A master run builds master as it is when the run starts, so re-running an old
 # run or starting one by hand deploys the newest commit (a re-run stops instead
 # if master has changed this file since). Runs go one at a time: a commit that
-# lands mid-run waits, and of several waiting only the newest runs. Tags are
-# written once. No layer cache: any job on master could write one.
+# lands mid-run waits, and of several waiting only the newest runs.
 on:
   push:
     branches: [master]
@@ -32,30 +37,34 @@ concurrency:
   group: deploy-image-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+
+env:
+  PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
+
 jobs:
-  image:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      contents: write # move the deploy branch
-      packages: write # push to GHCR
-    env:
-      PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
+    timeout-minutes: 30
+    outputs:
+      commit: ${{ steps.name.outputs.commit }}
+      image: ${{ steps.name.outputs.image }}
+      sha256: ${{ steps.hash.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.PUBLISH == 'true' && 'master' || '' }}
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-      - uses: oven-sh/setup-bun@v2
-      - name: Install dependencies (for the E2E seed)
-        run: bun install --ignore-scripts
+          persist-credentials: false
       - name: Image name
+        id: name
         run: |
           commit="$(git rev-parse HEAD)"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:$commit"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
           echo "COMMIT=$commit" >> "$GITHUB_ENV"
-          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}:$commit" >> "$GITHUB_ENV"
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
       # A re-run keeps the workflow file it started with, so it must not build
       # a master whose copy of this file differs.
       - name: This run's workflow is master's
@@ -71,14 +80,50 @@ jobs:
         with:
           context: .
           platforms: linux/amd64
-          load: true
           tags: ${{ env.IMAGE }}
           build-args: SOURCE_COMMIT=${{ env.COMMIT }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ env.COMMIT }}
+          outputs: type=docker,dest=${{ runner.temp }}/image.tar
           provenance: false
           sbom: false
+      - name: Hash the image
+        id: hash
+        run: echo "sha256=$(sha256sum "$RUNNER_TEMP/image.tar" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image
+          path: ${{ runner.temp }}/image.tar
+          retention-days: 1
+          compression-level: 1
+
+  e2e:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      IMAGE: ${{ needs.build.outputs.image }}
+      COMMIT: ${{ needs.build.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          no-cache: true
+      - name: Install dependencies (for the E2E seed)
+        run: bun install --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: image
+          path: ${{ runner.temp }}
+      - name: Load the image
+        run: docker load -i "$RUNNER_TEMP/image.tar"
       - name: E2E (GATEWAY_MODE unset, then proxy)
         env:
           OUT_DIR: ${{ github.workspace }}/e2e-out
@@ -96,48 +141,6 @@ jobs:
             --build-arg SOURCE_COMMIT="$COMMIT" -t deploy-check .
           got="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' deploy-check)"
           [ "$got" = "$COMMIT" ] || { echo "Dockerfile.deploy built revision '$got', want $COMMIT"; exit 1; }
-      - name: Log in to GHCR
-        if: env.PUBLISH == 'true'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Push the image
-        if: env.PUBLISH == 'true'
-        run: |
-          if docker buildx imagetools inspect "$IMAGE" > /dev/null 2>&1; then
-            echo "$IMAGE is already pushed, and tags are written once"
-          else
-            docker push "$IMAGE"
-            echo "Pushed \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
-          fi
-      # The server builds Dockerfile.deploy with `docker build --pull` and no
-      # registry login, so the package has to be public.
-      - name: The server can pull it
-        if: env.PUBLISH == 'true'
-        run: |
-          docker logout ghcr.io
-          docker buildx build --builder default --pull --load -f Dockerfile.deploy \
-            --build-arg SOURCE_COMMIT="$COMMIT" -t deploy-pulled .
-          got="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' deploy-pulled)"
-          [ "$got" = "$COMMIT" ] || { echo "pulled revision '$got', want $COMMIT"; exit 1; }
-      # Through the refs API, so GitHub refuses anything but a fast-forward.
-      - name: Move deploy to this commit
-        if: env.PUBLISH == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          current="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/deploy" --jq .object.sha 2> /dev/null || true)"
-          if [ "$current" = "$COMMIT" ]; then
-            echo "deploy is already at $COMMIT"
-          elif [[ "$current" =~ ^[0-9a-f]{40}$ ]]; then
-            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/deploy" -f sha="$COMMIT" -F force=false > /dev/null
-            echo "deploy: $current -> $COMMIT"
-          else
-            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref=refs/heads/deploy -f sha="$COMMIT" > /dev/null
-            echo "deploy created at $COMMIT"
-          fi
       - name: Summary
         if: always()
         run: |
@@ -158,3 +161,86 @@ jobs:
             e2e-out/*.norm
             e2e-out/*.raw
             e2e-out/*.dashboard
+
+  publish:
+    needs: [build, e2e]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # move the deploy branch
+      packages: write # push to GHCR
+    env:
+      IMAGE: ${{ needs.build.outputs.image }}
+      COMMIT: ${{ needs.build.outputs.commit }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # When deploy is already here, pushing would only swap the image under a
+      # tag production already runs.
+      - name: Where deploy is
+        id: deploy
+        run: |
+          current="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/deploy" --jq .object.sha 2> /dev/null || true)"
+          [[ "$current" =~ ^[0-9a-f]{40}$ ]] || current=""
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          if [ "$current" = "$COMMIT" ]; then
+            echo "deploy is already at $COMMIT, so there is nothing to publish"
+            echo "todo=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "todo=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v4
+        if: steps.deploy.outputs.todo == 'true'
+        with:
+          name: image
+          path: ${{ runner.temp }}
+      - name: Load the image build hashed
+        if: steps.deploy.outputs.todo == 'true'
+        env:
+          SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          echo "$SHA256  $RUNNER_TEMP/image.tar" | sha256sum -c -
+          docker load -i "$RUNNER_TEMP/image.tar"
+      - name: Log in to GHCR
+        if: steps.deploy.outputs.todo == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push the image
+        if: steps.deploy.outputs.todo == 'true'
+        run: |
+          docker push "$IMAGE"
+          echo "Pushed \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+      # The server builds Dockerfile.deploy with `docker build --pull` and no
+      # registry login, so the package has to be public. Only that file is
+      # checked out; nothing from the repository runs here.
+      - uses: actions/checkout@v5
+        if: steps.deploy.outputs.todo == 'true'
+        with:
+          ref: ${{ env.COMMIT }}
+          persist-credentials: false
+          sparse-checkout: Dockerfile.deploy
+          sparse-checkout-cone-mode: false
+      - name: The server can pull it
+        if: steps.deploy.outputs.todo == 'true'
+        run: |
+          docker logout ghcr.io
+          docker buildx build --builder default --pull --load -f Dockerfile.deploy \
+            --build-arg SOURCE_COMMIT="$COMMIT" -t deploy-pulled .
+          got="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' deploy-pulled)"
+          [ "$got" = "$COMMIT" ] || { echo "pulled revision '$got', want $COMMIT"; exit 1; }
+      # Through the refs API, so GitHub refuses anything but a fast-forward.
+      - name: Move deploy to this commit
+        if: steps.deploy.outputs.todo == 'true'
+        env:
+          CURRENT: ${{ steps.deploy.outputs.current }}
+        run: |
+          if [ -n "$CURRENT" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/deploy" -f sha="$COMMIT" -F force=false > /dev/null
+            echo "deploy: $CURRENT -> $COMMIT"
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref=refs/heads/deploy -f sha="$COMMIT" > /dev/null
+            echo "deploy created at $COMMIT"
+          fi
