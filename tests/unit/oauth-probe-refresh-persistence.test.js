@@ -66,6 +66,14 @@ describe("connection tests save a token refresh as soon as it succeeds", () => {
       expect(refresh).toHaveBeenCalledTimes(1);
     });
 
+  it("reports a blocked proxy without refreshing or probing", async () => {
+    const fetch = stubFetch(status(200, "ok"));
+    proxyConfig.mockResolvedValue({ blockedReason: 'Proxy pool "Old office VPN" is turned off' });
+    expect(await testSingleConnection("account-a")).toMatchObject({ valid: false, error: 'Proxy pool "Old office VPN" is turned off' });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
   it("saves the tokens before the retry probe runs", async () => {
     let writesBeforeRetry = null;
     stubFetch(status(401), () => {

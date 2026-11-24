@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "src/lib/network/**"
+      - "src/lib/db/repos/settingsRepo.js"
+      - "src/shared/components/NoAuthProxyCard.js"
       - "open-sse/utils/proxyFetch.js"
       - "open-sse/handlers/chatCore.js"
       - "open-sse/executors/cursor.js"
@@ -18,7 +20,8 @@ on:
       - "src/app/api/v1/models/**"
       - "src/app/(dashboard)/dashboard/proxy-pools/**"
       - "src/app/(dashboard)/dashboard/providers/**"
-      - "tests/unit/proxy-routing.test.js"
+      - "tests/unit/proxy-routing*.test.js"
+      - "tests/unit/oauth-probe-refresh-persistence.test.js"
       - ".github/workflows/proxy-routing.yml"
   workflow_dispatch:
 
@@ -41,6 +44,12 @@ jobs:
         run: >
           ./node_modules/.bin/vitest run
           unit/proxy-routing.test.js
+          unit/proxy-routing-wiring.test.js
+          unit/oauth-probe-refresh-persistence.test.js
+          unit/soonest-reset.test.js
+          unit/quota-notification-scheduler.test.js
+          unit/codex-pooled-usage-reset.test.js
+          unit/proxy-fetch-headers-timeout.test.js
           unit/quota-auto-ping.test.js
           unit/codex-reset-credits.test.js
           unit/usage-hub.test.js
@@ -57,6 +66,8 @@ jobs:
           src/app/api/settings/route.js
           "src/app/api/proxy-pools/[id]/route.js"
           src/app/api/proxy-pools/route.js
+          src/sse/services/tokenRefresh.js
+          src/shared/components/NoAuthProxyCard.js
 
   no-new-failures:
     runs-on: ubuntu-latest

@@ -19,7 +19,7 @@ import {
 import { clearSetupToken } from "@/lib/auth/setupToken";
 import { sanitizeAutoComboSetting } from "@/sse/services/autoCombo.js";
 import { clearRequestDetailFullData, getProxyPoolById } from "@/lib/db/index.js";
-import { normalizeLayerSetting, PROXY_DIRECT } from "@/lib/network/proxyRouting";
+import { normalizeLayerSetting, PROXY_DIRECT } from "@/lib/network/proxyRouting.js";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;

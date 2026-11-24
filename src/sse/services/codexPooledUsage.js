@@ -25,7 +25,7 @@ import { getProviderConnections } from "@/lib/localDb";
 import { getCodexUsage } from "open-sse/services/usage/codex.js";
 import { refreshCodexToken, updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
-import { toProxyOptions } from "@/lib/network/proxyRouting";
+import { toProxyOptions } from "@/lib/network/proxyRouting.js";
 import { buildRateLimitHeaders } from "./codexUsagePool.js";
 
 const CACHE_TTL_MS = 60_000;

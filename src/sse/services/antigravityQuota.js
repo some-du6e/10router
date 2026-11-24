@@ -5,7 +5,7 @@
  */
 
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
-import { toProxyOptions } from "@/lib/network/proxyRouting";
+import { toProxyOptions } from "@/lib/network/proxyRouting.js";
 import { getAntigravityUsage } from "open-sse/services/usage/google.js";
 import * as log from "../utils/logger.js";
 

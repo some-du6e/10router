@@ -1,12 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type ComponentType, type CSSProperties, type ReactNode } from "react";
-import * as Shared from "@/shared/components";
-import SharedProviderIcon from "@/shared/components/ProviderIcon";
-import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
-import { AI_PROVIDERS } from "@/shared/constants/providers";
-import { useNotificationStore } from "@/store/notificationStore";
-import { PROXY_DIRECT, normalizeLayerSetting, resolveProxyChain, type ProxyPoolLike, type ResolvedProxy } from "@/lib/network/proxyRouting";
+import * as Shared from "@/shared/components/index.js";
+import SharedProviderIcon from "@/shared/components/ProviderIcon.js";
+import { useBlurEmails } from "@/shared/hooks/useBlurEmails.js";
+import { AI_PROVIDERS } from "@/shared/constants/providers.js";
+import { useNotificationStore } from "@/store/notificationStore.js";
+import { PROXY_DIRECT, normalizeLayerSetting, resolveProxyChain, type ProxyPoolLike, type ResolvedProxy } from "@/lib/network/proxyRouting.js";
 
 // The shared components are untyped JavaScript; these are the props used here.
 const Badge = Shared.Badge as unknown as ComponentType<{ variant?: string; size?: string; icon?: string; className?: string; children?: ReactNode }>;

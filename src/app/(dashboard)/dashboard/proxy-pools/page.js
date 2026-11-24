@@ -18,14 +18,14 @@ function formatDateTime(value) {
   return date.toLocaleString();
 }
 
-function normalizeFormData(data = {}) {
+// A new pool starts strict; an existing one shows what it was saved with.
+function normalizeFormData(data = { strictProxy: true }) {
   return {
     name: data.name || "",
     proxyUrl: data.proxyUrl || "",
     noProxy: data.noProxy || "",
     isActive: data.isActive !== false,
-    // New pools start strict; existing ones keep what they were saved with.
-    strictProxy: data.strictProxy !== false,
+    strictProxy: data.strictProxy === true,
   };
 }
 

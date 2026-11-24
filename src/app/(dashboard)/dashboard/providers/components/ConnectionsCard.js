@@ -10,6 +10,7 @@ import { useSecretInputProps } from "@/shared/components/Input";
 import { providerRoutingOptions, SOONEST_RESET_HINT } from "@/shared/constants/accountRouting";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
 import { fetchKeyLifespans, withLifespans, withToggledActive } from "../utils";
+import { PROXY_DIRECT } from "@/lib/network/proxyRouting.js";
 
 // ── CooldownTimer ──────────────────────────────────────────────
 function CooldownTimer({ until }) {
@@ -47,14 +48,14 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
   const lifespan = lifespanLabel(connection);
   const proxyPoolMap = new Map((proxyPools || []).map((p) => [p.id, p]));
   const boundProxyPoolId = connection.providerSpecificData?.proxyPoolId || null;
-  const isDirectProxy = boundProxyPoolId === "__direct__";
+  const isDirectProxy = boundProxyPoolId === PROXY_DIRECT;
   const boundProxyPool = boundProxyPoolId && !isDirectProxy ? proxyPoolMap.get(boundProxyPoolId) : null;
   const hasLegacyProxy = connection.providerSpecificData?.connectionProxyEnabled === true && !!connection.providerSpecificData?.connectionProxyUrl;
   const hasAnyProxy = !!boundProxyPoolId || hasLegacyProxy;
 
   const proxyDisplayText = isDirectProxy ? "Direct (no proxy)"
     : boundProxyPool ? `Pool: ${boundProxyPool.name}`
-    : boundProxyPoolId ? `Pool: ${boundProxyPoolId} (inactive/missing)`
+    : boundProxyPoolId ? `Pool: ${boundProxyPoolId} (off or missing: requests blocked)`
     : hasLegacyProxy ? `Legacy: ${connection.providerSpecificData?.connectionProxyUrl}` : "";
 
   let maskedProxyUrl = "";
@@ -178,7 +179,7 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
               {showProxyDropdown && (
                 <div className="absolute right-0 top-full mt-1 z-50 bg-bg border border-border rounded-lg shadow-lg py-1 min-w-[160px]">
                   <button onClick={() => handleSelectProxy("__none__")} className={`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${!boundProxyPoolId ? "text-primary font-medium" : "text-text-main"}`}>Inherit</button>
-                  <button onClick={() => handleSelectProxy("__direct__")} className={`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${isDirectProxy ? "text-primary font-medium" : "text-text-main"}`}>Direct (no proxy)</button>
+                  <button onClick={() => handleSelectProxy(PROXY_DIRECT)} className={`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${isDirectProxy ? "text-primary font-medium" : "text-text-main"}`}>Direct (no proxy)</button>
                   {(proxyPools || []).map((pool) => (
                     <button key={pool.id} onClick={() => handleSelectProxy(pool.id)} className={`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${boundProxyPoolId === pool.id ? "text-primary font-medium" : "text-text-main"}`}>{pool.name}</button>
                   ))}
@@ -310,7 +311,7 @@ function AddApiKeyModal({ isOpen, provider, providerName, proxyPools, onSave, on
           <input type="number" className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary" value={formData.priority} onChange={(e) => setFormData({ ...formData, priority: Number.parseInt(e.target.value) || 1 })} />
         </div>
         <Select label="Proxy Pool" value={formData.proxyPoolId} onChange={(e) => setFormData({ ...formData, proxyPoolId: e.target.value })}
-          options={[{ value: NONE, label: "None" }, ...(proxyPools || []).map((p) => ({ value: p.id, label: p.name }))]} />
+          options={[{ value: NONE, label: "Inherit" }, { value: PROXY_DIRECT, label: "Direct (no proxy)" }, ...(proxyPools || []).map((p) => ({ value: p.id, label: p.name }))]} />
         {saveError && <p role="alert" className="text-sm text-red-500">{saveError}</p>}
         <div className="flex gap-2">
           <Button onClick={handleSubmit} fullWidth disabled={!formData.name || !formData.apiKey || saving}>

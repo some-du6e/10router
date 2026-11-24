@@ -1723,7 +1723,7 @@ export default function ProfilePage() {
             <div className="flex items-start sm:items-center justify-between gap-4">
               <div className="flex-1 min-w-0">
                 <p className="font-medium text-sm sm:text-base">Outbound Proxy</p>
-                <p className="text-xs sm:text-sm text-text-muted">Enable proxy for OAuth + provider outbound requests.</p>
+                <p className="text-xs sm:text-sm text-text-muted">Proxy for outbound requests that no account, provider or Global proxy covers. Set those on the Proxy Pools page.</p>
                 <p className="mt-2 flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-300">
                   <span className="material-symbols-outlined mt-px text-[16px]">warning</span>
                   Proxying paid or subscription accounts, such as Claude Code/Claude OAuth, may violate provider terms and lead to account suspension or a ban.

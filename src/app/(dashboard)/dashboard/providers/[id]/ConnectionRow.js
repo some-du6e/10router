@@ -8,6 +8,7 @@ import PropTypes from "prop-types";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
 import CooldownTimer from "./CooldownTimer";
+import { PROXY_DIRECT } from "@/lib/network/proxyRouting.js";
 
 export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onReauth, onDelete, oneByOneStatus = null, autoPing = null }) {
   const { blurClass } = useBlurEmails();
@@ -17,7 +18,7 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
 
   const proxyPoolMap = new Map((proxyPools || []).map((pool) => [pool.id, pool]));
   const boundProxyPoolId = connection.providerSpecificData?.proxyPoolId || null;
-  const isDirectProxy = boundProxyPoolId === "__direct__";
+  const isDirectProxy = boundProxyPoolId === PROXY_DIRECT;
   const boundProxyPool = boundProxyPoolId && !isDirectProxy ? proxyPoolMap.get(boundProxyPoolId) : null;
   const hasLegacyProxy = connection.providerSpecificData?.connectionProxyEnabled === true && !!connection.providerSpecificData?.connectionProxyUrl;
   const hasAnyProxy = !!boundProxyPoolId || hasLegacyProxy;
@@ -26,7 +27,7 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
     : boundProxyPool
     ? `Pool: ${boundProxyPool.name}`
     : boundProxyPoolId
-      ? `Pool: ${boundProxyPoolId} (inactive/missing)`
+      ? `Pool: ${boundProxyPoolId} (off or missing: requests blocked)`
       : hasLegacyProxy
         ? `Legacy: ${connection.providerSpecificData?.connectionProxyUrl}`
         : "";
@@ -285,7 +286,7 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
                     Inherit
                   </button>
                   <button
-                    onClick={() => handleSelectProxy("__direct__")}
+                    onClick={() => handleSelectProxy(PROXY_DIRECT)}
                     className={`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${isDirectProxy ? "text-primary font-medium" : "text-text-main"}`}
                   >
                     Direct (no proxy)

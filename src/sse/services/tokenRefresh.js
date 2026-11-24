@@ -147,6 +147,9 @@ function _refreshProjectId(provider, connectionId, accessToken) {
  * @returns {Promise<object>} updated credentials object
  */
 export async function checkAndRefreshToken(provider, credentials, options = {}) {
+  // The account's proxy is off or gone, so its request will be refused; a
+  // refresh now would reach the provider from this machine's IP.
+  if (credentials?.providerSpecificData?.blockedReason) return credentials;
   let creds = { ...credentials };
   if (!creds.connectionId && creds.id) {
     creds.connectionId = creds.id;

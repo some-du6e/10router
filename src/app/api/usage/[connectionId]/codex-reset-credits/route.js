@@ -6,7 +6,7 @@ import { updateProviderConnection } from "@/lib/db/index.js";
 import { invalidatePooledCodexUsage } from "@/sse/services/codexPooledUsage.js";
 import { consumeCodexRateLimitResetCredit, getCodexRateLimitResetCredits } from "open-sse/services/usage.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
-import { toProxyOptions } from "@/lib/network/proxyRouting";
+import { toProxyOptions } from "@/lib/network/proxyRouting.js";
 import { refreshAndUpdateCredentials } from "../route.js";
 
 const AUTH_EXPIRED_PATTERNS = ["expired", "authentication", "unauthorized", "401", "re-authorize"];

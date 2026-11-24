@@ -480,9 +480,9 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     connectionProxyUrl: credentials?.providerSpecificData?.connectionProxyUrl || "",
     connectionNoProxy: credentials?.providerSpecificData?.connectionNoProxy || "",
     vercelRelayUrl: credentials?.providerSpecificData?.vercelRelayUrl || "",
-    strictProxy: credentials?.providerSpecificData?.connectionStrictProxy === true,
-    direct: credentials?.providerSpecificData?.connectionProxyDirect === true,
-    blockedReason: credentials?.providerSpecificData?.connectionProxyBlocked || "",
+    strictProxy: credentials?.providerSpecificData?.strictProxy === true,
+    direct: credentials?.providerSpecificData?.direct === true,
+    blockedReason: credentials?.providerSpecificData?.blockedReason || "",
   };
 
   if (proxyOptions.vercelRelayUrl) {
@@ -575,7 +575,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
       // refreshWithRetry's 2nd/3rd attempt reuses the already-consumed RT →
       // invalid_grant → auth_failed retryable=false.
       const newCredentials = await refreshWithRetry(async () => {
-        const result = await executor.refreshCredentials(credentials, log);
+        const result = await executor.refreshCredentials(credentials, log, proxyOptions);
         if (result?.refreshToken && result.refreshToken !== credentials.refreshToken) {
           if (result.accessToken) credentials.accessToken = result.accessToken;
           credentials.refreshToken = result.refreshToken;

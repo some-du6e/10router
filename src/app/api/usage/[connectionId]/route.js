@@ -7,7 +7,7 @@ import { getUsageForProvider } from "open-sse/services/usage.js";
 import { isUnrecoverableRefreshError } from "open-sse/services/tokenRefresh.js";
 import { getExecutor } from "open-sse/executors/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
-import { toProxyOptions } from "@/lib/network/proxyRouting";
+import { toProxyOptions } from "@/lib/network/proxyRouting.js";
 import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
 
 // Detect auth-expired messages returned by usage providers instead of throwing

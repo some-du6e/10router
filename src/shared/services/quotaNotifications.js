@@ -8,7 +8,7 @@ import {
 } from "@/lib/db/index.js";
 import { getUsageForProvider } from "open-sse/services/usage.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
-import { toProxyOptions } from "@/lib/network/proxyRouting";
+import { toProxyOptions } from "@/lib/network/proxyRouting.js";
 import { refreshAndUpdateCredentials } from "@/app/api/usage/[connectionId]/route.js";
 import { USAGE_APIKEY_PROVIDERS, USAGE_SUPPORTED_PROVIDERS } from "@/shared/constants/providers";
 import { NOTIFICATION_CONFIG, NOTIFICATION_EVENTS } from "@/lib/notifications/constants.js";

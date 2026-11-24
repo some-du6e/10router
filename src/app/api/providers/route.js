@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { withoutProviderDataSecrets } from "open-sse/utils/redact.js";
-import { PROXY_DIRECT } from "@/lib/network/proxyRouting";
+import { PROXY_DIRECT } from "@/lib/network/proxyRouting.js";
 import { QUIRK_KEYS } from "@/shared/utils/nodeQuirks";
 import {
   getProviderConnections,
