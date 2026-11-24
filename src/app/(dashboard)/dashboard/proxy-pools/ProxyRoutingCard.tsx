@@ -100,7 +100,8 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
         fetch("/api/providers", { cache: "no-store" }),
         fetch("/api/settings", { cache: "no-store" }),
       ]);
-      if (connRes.ok) setConnections((await connRes.json()).connections || []);
+      // Turned-off accounts send nothing, so they have no route to show.
+      if (connRes.ok) setConnections(((await connRes.json()).connections || []).filter((c: Connection & { isActive?: boolean }) => c.isActive !== false));
       if (settingsRes.ok) setSettings(await settingsRes.json());
     } catch (error) {
       console.log("Error loading proxy routing:", error);
