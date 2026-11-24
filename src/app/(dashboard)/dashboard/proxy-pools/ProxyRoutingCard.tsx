@@ -393,7 +393,10 @@ export default function ProxyRoutingCard({ proxyPools, poolsLoaded, poolsError =
   function reachPanel(s: Selection) {
     const decided = governed(s);
     const scope = s.type === "global" ? connections : connections.filter((c) => s.type === "provider" && c.provider === s.id);
-    const own = scope.filter((c) => !decided.includes(c));
+    // Of the rest: accounts with a setting of their own, and (for a provider) ones
+    // that fall through to Global.
+    const own = scope.filter((c) => !decided.includes(c) && resolveAccount(c).layer === "account");
+    const below = scope.filter((c) => !decided.includes(c) && !own.includes(c));
     const row = (c: Connection) => (
       <li key={c.id} className="flex items-center justify-between gap-2 py-1.5 text-xs">
         <span className="flex min-w-0 items-center gap-2">
@@ -414,6 +417,12 @@ export default function ProxyRoutingCard({ proxyPools, poolsLoaded, poolsError =
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Set their own</p>
             <ul className="max-h-40 divide-y divide-border-subtle overflow-y-auto opacity-70">{own.map(row)}</ul>
+          </div>
+        )}
+        {below.length > 0 && (
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Use Global</p>
+            <ul className="max-h-40 divide-y divide-border-subtle overflow-y-auto opacity-70">{below.map(row)}</ul>
           </div>
         )}
         <p className="text-xs text-text-muted">Click an account to send a test request.</p>

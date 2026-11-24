@@ -71,3 +71,23 @@ describe("Proxy routing card", () => {
     expect(props.onPoolsChanged).toHaveBeenCalled();
   });
 });
+
+describe("Proxy routing card provider panel", () => {
+  it("lists accounts that fall through to Global apart from those with their own setting", async () => {
+    responses["/api/providers"] = () => Response.json({ connections: [
+      { id: "own", provider: "codex", name: "Own pool", providerSpecificData: { proxyPoolId: "eu" } },
+      { id: "inh", provider: "codex", name: "Inheriting", providerSpecificData: {} },
+    ] });
+    responses["/api/settings"] = () => Response.json({ providerStrategies: {}, globalProxyPoolId: "eu" });
+    const card = dashboardComponent(path, imports);
+    const props = { proxyPools: pools, poolsLoaded: true, onPoolsChanged: vi.fn() };
+    card.render(props);
+    await vi.waitFor(() => expect(selects(card.render(props))).toHaveLength(1));
+    const providerBlock = elements(card.render(props), (el) => el.type === "button" && textContent(el).startsWith("Codex"))[0];
+    providerBlock.props.onClick();
+    const text = textContent(card.render(props));
+    expect(text).toMatch(/Set their own.*Own pool/);
+    expect(text).toMatch(/Use Global.*Inheriting/);
+    expect(text).not.toMatch(/Set their own[^]*Inheriting[^]*Use Global/);
+  });
+});
