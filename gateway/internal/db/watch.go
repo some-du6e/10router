@@ -16,6 +16,8 @@ const (
 	// SnapshotTTL caps how stale a snapshot gets even with no generation
 	// change: Node's own settings cache lives 5 s.
 	SnapshotTTL = 5 * time.Second
+	// reloadRetry spaces the retries of a reload that failed.
+	reloadRetry = time.Second
 )
 
 // WatchOptions configure Watch.
@@ -76,7 +78,7 @@ func (d *DB) Snapshot() *Snapshot {
 	if !d.Status().Ready {
 		return nil
 	}
-	if at, ttl := d.loadedAt.Load(), d.ttl.Load(); ttl > 0 && time.Since(time.Unix(0, at)) > 2*time.Duration(ttl) {
+	if at, ttl := d.loadedAt.Load(), d.ttl.Load(); at != nil && ttl > 0 && time.Since(*at) > 2*time.Duration(ttl) {
 		return nil
 	}
 	return d.snapshot.Load()
@@ -157,6 +159,7 @@ type watcher struct {
 	loadedAt      time.Time
 	checkedAt     time.Time
 	reloadPending bool
+	attemptedAt   time.Time
 	lastStatus    *Status
 }
 
@@ -195,15 +198,13 @@ func (w *watcher) poll(ctx context.Context, first bool) error {
 		return err
 	}
 	changed := first || dv != w.dataVersion
-	w.dataVersion = dv
 	// Wall time, not Options.Now (which only stamps what the gateway writes).
 	stale := time.Since(w.loadedAt) >= w.o.TTL
-	// A reload that failed is tried again on the next poll, even with nothing new.
-	if !changed && !stale && !w.reloadPending {
+	// A reload that failed is tried again, at most once a second, even with
+	// nothing new.
+	retry := w.reloadPending && time.Since(w.attemptedAt) >= reloadRetry
+	if !changed && !stale && !retry {
 		return nil
-	}
-	if changed {
-		d.stats.changes.Add(1)
 	}
 
 	var sv int64
@@ -213,6 +214,12 @@ func (w *watcher) poll(ctx context.Context, first bool) error {
 	meta, err := readMeta(ctx, w.conn)
 	if err != nil {
 		return err
+	}
+	// Seen only once what it changed has been read: a failed read above
+	// leaves the change for the next poll.
+	w.dataVersion = dv
+	if changed {
+		d.stats.changes.Add(1)
 	}
 	generation := jsParseInt(meta["configGeneration"])
 	// The guard reads two plain rows as well as the schema: Node records its
@@ -236,13 +243,14 @@ func (w *watcher) poll(ctx context.Context, first bool) error {
 	if !first && !stale && !w.reloadPending && generation == w.generation && d.snapshot.Load() != nil {
 		return nil
 	}
-	w.reloadPending = true
+	w.reloadPending, w.attemptedAt = true, time.Now()
 	snap, err := d.LoadSnapshot(ctx)
 	if err != nil {
 		return err
 	}
 	d.snapshot.Store(snap)
-	d.loadedAt.Store(time.Now().UnixNano())
+	loaded := time.Now()
+	d.loadedAt.Store(&loaded)
 	d.stats.reloads.Add(1)
 	w.generation, w.loadedAt, w.reloadPending = snap.Generation, time.Now(), false
 	if w.o.OnReload != nil {

@@ -65,8 +65,9 @@ type DB struct {
 	stopWatch context.CancelFunc
 	watchDone chan struct{}
 	stats     watchStats
-	// loadedAt is when the last snapshot loaded (UnixNano), ttl Watch's TTL.
-	loadedAt atomic.Int64
+	// loadedAt is when the last snapshot loaded, a time.Time so its age is
+	// measured on the monotonic clock; ttl is Watch's TTL.
+	loadedAt atomic.Pointer[time.Time]
 	ttl      atomic.Int64
 }
 

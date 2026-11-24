@@ -330,6 +330,7 @@ type UsageWriter struct {
 
 	mu       sync.Mutex
 	queue    []UsageEntry
+	closed   bool
 	dropped  int64
 	written  int64
 	rejected int64
@@ -363,6 +364,12 @@ func (w *UsageWriter) Add(e UsageEntry) {
 		e.Timestamp = ISOTime(w.d.now())
 	}
 	w.mu.Lock()
+	if w.closed {
+		// Nothing would flush it: count it as dropped instead of holding it.
+		w.dropped++
+		w.mu.Unlock()
+		return
+	}
 	w.queue = append(w.queue, e)
 	if over := len(w.queue) - w.opts.MaxQueued; over > 0 {
 		// Re-slicing, not copying: the backing array is let go on the next
@@ -497,9 +504,13 @@ func (w *UsageWriter) Rejected() int64 {
 	return w.rejected
 }
 
-// Close stops the timer and writes what is left. Later calls only flush.
+// Close stops the timer and writes what is left. Rows added after it are
+// dropped and counted (Stats). Later calls only flush.
 func (w *UsageWriter) Close(ctx context.Context) error {
 	w.closeOnce.Do(func() {
+		w.mu.Lock()
+		w.closed = true
+		w.mu.Unlock()
 		close(w.stop)
 		<-w.done
 	})

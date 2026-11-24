@@ -249,9 +249,10 @@ func runStress(args []string) error {
 	})
 
 	<-ctx.Done()
-	wg.Wait()
-	// Before Close flushes the backlog: what the writer kept up with.
+	// At the window's end, before the last flush or Close drains the backlog:
+	// what the writer kept up with.
 	inWindow, _, _ := usage.Stats()
+	wg.Wait()
 	errs.add(usage.Close(context.Background()))
 	written, dropped, _ := usage.Stats()
 

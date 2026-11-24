@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -280,9 +281,11 @@ func TestAnIsolateCutShortWritesNoRowTwice(t *testing.T) {
 	w := d.NewUsageWriter(UsageWriterOptions{Interval: time.Hour, OnError: func(error) { cancel() }})
 	bad := jsjson.NewObject()
 	bad.Set("input_tokens", map[string]any{})
+	// A good row lands before the bad one, so a regression that left landed
+	// rows queued would write it twice.
 	for i := 0; i < 5; i++ {
 		e := UsageEntry{Timestamp: ISOTime(fixedNow), Model: "m"}
-		if i == 0 {
+		if i == 1 {
 			e.Tokens = bad
 		}
 		w.Add(e)
@@ -290,8 +293,8 @@ func TestAnIsolateCutShortWritesNoRowTwice(t *testing.T) {
 	if err := w.Flush(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("flush: %v", err)
 	}
-	if _, _, queued := w.Stats(); queued != 4 {
-		t.Fatalf("queued %d, want the 4 good rows", queued)
+	if _, _, queued := w.Stats(); queued != 3 {
+		t.Fatalf("queued %d, want the 3 rows after the bad one", queued)
 	}
 	if err := w.Close(context.Background()); err != nil {
 		t.Fatal(err)
@@ -393,7 +396,8 @@ func TestASnapshotOlderThanTwoTTLsIsNotServed(t *testing.T) {
 	if d.Snapshot() == nil {
 		t.Fatal("no first snapshot")
 	}
-	d.loadedAt.Store(time.Now().Add(-3 * time.Minute).UnixNano())
+	old := time.Now().Add(-3 * time.Minute)
+	d.loadedAt.Store(&old)
 	if d.Snapshot() != nil {
 		t.Fatal("a snapshot no reload has refreshed for 3 TTLs was served")
 	}
@@ -408,11 +412,19 @@ func TestRequestDetailDefaultsAreNodes(t *testing.T) {
 	if !regexp.MustCompile(`^2026-03-01T12:00:00\.123Z-[0-9a-z]{6}-vendor-model-3-5-x$`).MatchString(rows[0].ID) || rows[0].Timestamp != fixedISO {
 		t.Fatalf("id %q timestamp %q", rows[0].ID, rows[0].Timestamp)
 	}
+	// The id is made from now, not from a timestamp the row brings.
+	dated := []RequestDetail{{Timestamp: "2020-01-01T00:00:00.000Z", Model: "m"}}
+	if err := d.SaveRequestDetails(context.Background(), dated, 10); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(dated[0].ID, fixedISO+"-") || dated[0].Timestamp != "2020-01-01T00:00:00.000Z" {
+		t.Fatalf("id %q timestamp %q", dated[0].ID, dated[0].Timestamp)
+	}
 	// The ids stay in the caller's rows, so saving them again upserts.
 	if err := d.SaveRequestDetails(context.Background(), rows, 10); err != nil {
 		t.Fatal(err)
 	}
-	if n := dbtest.QueryString(t, node, `SELECT COUNT(*) FROM requestDetails`); n != "1" {
+	if n := dbtest.QueryString(t, node, `SELECT COUNT(*) FROM requestDetails`); n != "2" {
 		t.Fatalf("rows %s", n)
 	}
 }
@@ -443,15 +455,68 @@ func TestACounterWithoutAFieldGetsNullThenCounts(t *testing.T) {
 }
 
 func TestUsageWriterStampsARowWhenItIsAdded(t *testing.T) {
-	d, node, _ := open(t, dbtest.Options{})
+	path, node := dbtest.New(t, dbtest.Options{})
+	var clock atomic.Int64
+	clock.Store(fixedNow.UnixNano())
+	d, err := Open(path, Options{Now: func() time.Time { return time.Unix(0, clock.Load()) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
 	w := d.NewUsageWriter(UsageWriterOptions{Interval: time.Hour})
 	w.Add(UsageEntry{Model: "m"})
+	clock.Add(int64(time.Hour)) // the flush comes later
 	if err := w.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if ts := dbtest.QueryString(t, node, `SELECT timestamp FROM usageHistory`); ts != fixedISO {
-		t.Fatalf("timestamp %s", ts)
+		t.Fatalf("timestamp %s: stamped at the flush, not at Add", ts)
 	}
+	// A row added after Close would never be flushed: it is counted, not held.
+	w.Add(UsageEntry{Model: "late"})
+	if _, dropped, queued := w.Stats(); dropped != 1 || queued != 0 {
+		t.Fatalf("after Close: dropped %d queued %d", dropped, queued)
+	}
+}
+
+func TestACancelledWriteCostsNoGap(t *testing.T) {
+	d, node, _ := open(t, dbtest.Options{})
+	d.w.gap = 300 * time.Millisecond
+	// A held write keeps the next two queued: a write whose caller then
+	// goes, and a real one. After the held write commits, the real one
+	// waits out one gap, not one for the cancelled write and one of its own.
+	hold := make(chan struct{})
+	first := submitAsync(d, insertMeta("w_a", hold))
+	time.Sleep(20 * time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	gone := submitAsyncCtx(d, ctx, insertMeta("w_b", nil))
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+	live := submitAsync(d, insertMeta("w_c", nil))
+	time.Sleep(10 * time.Millisecond)
+	start := time.Now()
+	close(hold) // held past MaxWriteHold, so its transaction takes neither
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-live; err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Fatalf("the real write took %v: the cancelled one cost a gap", took)
+	}
+	if err := <-gone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled: %v", err)
+	}
+	if got := metaKeys(t, node); got != "w_a,w_c" {
+		t.Fatalf("rows %q", got)
+	}
+}
+
+func submitAsyncCtx(d *DB, ctx context.Context, fn func(context.Context, *sql.Tx) error) <-chan error {
+	out := make(chan error, 1)
+	go func() { out <- d.writeTx(ctx, fn) }()
+	return out
 }
 
 func TestCloseRunsQueuedWritesThenRefuses(t *testing.T) {
