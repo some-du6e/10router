@@ -121,9 +121,11 @@ func (d *DB) Watch(ctx context.Context, o WatchOptions) error {
 		return err
 	}
 	w := &watcher{d: d, o: o, conn: conn}
+	// The last error stays until a poll goes through with nothing pending:
+	// a poll skipped while a failed reload waits for its retry proves nothing.
 	if err := w.poll(ctx, true); err != nil {
 		w.fail(err)
-	} else {
+	} else if !w.reloadPending {
 		d.lastErr.Store("")
 	}
 	go func() {
@@ -138,7 +140,7 @@ func (d *DB) Watch(ctx context.Context, o WatchOptions) error {
 			case <-t.C:
 				if err := w.poll(ctx, false); err != nil && ctx.Err() == nil {
 					w.fail(err)
-				} else if err == nil {
+				} else if err == nil && !w.reloadPending {
 					d.lastErr.Store("")
 				}
 			}
@@ -238,6 +240,11 @@ func (w *watcher) poll(ctx context.Context, first bool) error {
 		w.publishStatus(st)
 	}
 	if !d.Status().Ready {
+		return nil
+	}
+	// A reload that failed waits for its retry slot, whatever else is due:
+	// with the file busy, data_version moves on every poll.
+	if !first && w.reloadPending && !retry {
 		return nil
 	}
 	if !first && !stale && !w.reloadPending && generation == w.generation && d.snapshot.Load() != nil {

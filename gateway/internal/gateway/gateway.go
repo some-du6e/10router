@@ -172,6 +172,12 @@ func (g *Gateway) nativeStatus() (ready bool, reason string) {
 		return false, openErr
 	}
 	st := d.Status()
+	if !st.Ready && st.CheckedAt.IsZero() {
+		// The first poll failed before the guard ran: say why.
+		if e := d.LastError(); e != "" {
+			return false, st.Reason + ": " + e
+		}
+	}
 	if st.Ready && d.Snapshot() == nil {
 		reason := "the config snapshot has not loaded"
 		if e := d.LastError(); e != "" {

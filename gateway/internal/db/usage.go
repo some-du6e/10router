@@ -328,12 +328,13 @@ type UsageWriter struct {
 	d    *DB
 	opts UsageWriterOptions
 
-	mu       sync.Mutex
-	queue    []UsageEntry
-	closed   bool
-	dropped  int64
-	written  int64
-	rejected int64
+	mu          sync.Mutex
+	queue       []UsageEntry
+	closed      bool
+	lateDropped int64 // added after Close
+	dropped     int64
+	written     int64
+	rejected    int64
 
 	flushMu   sync.Mutex
 	stop      chan struct{}
@@ -366,7 +367,9 @@ func (w *UsageWriter) Add(e UsageEntry) {
 	w.mu.Lock()
 	if w.closed {
 		// Nothing would flush it: count it as dropped instead of holding it.
-		w.dropped++
+		// Apart from dropped, which Flush and isolate read as rows trimmed
+		// off the queue's front.
+		w.lateDropped++
 		w.mu.Unlock()
 		return
 	}
@@ -384,7 +387,7 @@ func (w *UsageWriter) Add(e UsageEntry) {
 func (w *UsageWriter) Stats() (written, dropped int64, queued int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.written, w.dropped, len(w.queue)
+	return w.written, w.dropped + w.lateDropped, len(w.queue)
 }
 
 func (w *UsageWriter) loop() {

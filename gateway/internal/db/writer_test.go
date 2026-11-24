@@ -479,6 +479,43 @@ func TestUsageWriterStampsARowWhenItIsAdded(t *testing.T) {
 	}
 }
 
+func TestAddDuringCloseWritesNoRowTwice(t *testing.T) {
+	d, node, _ := open(t, dbtest.Options{})
+	w := d.NewUsageWriter(UsageWriterOptions{Interval: time.Hour, MaxBatch: 50})
+	for i := 0; i < 600; i++ {
+		w.Add(UsageEntry{Timestamp: ISOTime(fixedNow), Model: fmt.Sprintf("m-%d", i)})
+	}
+	// Handlers finishing while Close drains keep adding.
+	stop := make(chan struct{})
+	adding := make(chan struct{})
+	go func() {
+		defer close(adding)
+		for i := 600; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+				w.Add(UsageEntry{Timestamp: ISOTime(fixedNow), Model: fmt.Sprintf("m-%d", i)})
+			}
+		}
+	}()
+	if err := w.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	close(stop)
+	<-adding
+	if err := w.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if dup := dbtest.QueryString(t, node, `SELECT COUNT(*) - COUNT(DISTINCT model) FROM usageHistory`); dup != "0" {
+		t.Fatalf("%s rows written twice", dup)
+	}
+	written, _, queued := w.Stats()
+	if n := dbtest.QueryString(t, node, `SELECT COUNT(*) FROM usageHistory`); n != fmt.Sprint(written) || queued != 0 {
+		t.Fatalf("rows %s, written %d, queued %d", n, written, queued)
+	}
+}
+
 func TestACancelledWriteCostsNoGap(t *testing.T) {
 	d, node, _ := open(t, dbtest.Options{})
 	d.w.gap = 300 * time.Millisecond
@@ -494,6 +531,7 @@ func TestACancelledWriteCostsNoGap(t *testing.T) {
 	cancel()
 	live := submitAsync(d, insertMeta("w_c", nil))
 	time.Sleep(10 * time.Millisecond)
+	before := d.LockStats().Transactions
 	start := time.Now()
 	close(hold) // held past MaxWriteHold, so its transaction takes neither
 	if err := <-first; err != nil {
@@ -507,6 +545,11 @@ func TestACancelledWriteCostsNoGap(t *testing.T) {
 	}
 	if err := <-gone; !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled: %v", err)
+	}
+	// The real write had its own transaction, after a gap (it didn't ride along
+	// in the held write's, which would prove nothing).
+	if n := d.LockStats().Transactions - before; n != 2 {
+		t.Fatalf("%d transactions, want the held write's and the real write's", n)
 	}
 	if got := metaKeys(t, node); got != "w_a,w_c" {
 		t.Fatalf("rows %q", got)
