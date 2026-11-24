@@ -263,6 +263,17 @@ describe("PATCH /api/settings OIDC issuer", () => {
     expect((await PATCH(request({ oidcIssuerUrl: "https://other.example", oidcClientSecret: "new-secret" }))).status).toBe(200);
   });
 
+  it("refuses a private issuer from a remote session, since sign-in fetches from it", async () => {
+    caller.local = false;
+    const res = await PATCH(request({ oidcIssuerUrl: "http://10.0.0.5:8080/realms/r", oidcClientSecret: "new-secret" }));
+    expect(res.status).toBe(400);
+    expect(res.body.field).toBe("oidcIssuerUrl");
+    expect((await PATCH(request({ oidcIssuerUrl: "https://203.0.113.20/realms/r", oidcClientSecret: "new-secret" }))).status).toBe(200);
+    // The saved issuer, wherever it is, passes.
+    mocks.getSettings.mockResolvedValue({ oidcIssuerUrl: "http://10.0.0.5:8080/realms/r", oidcClientSecret: "saved-secret" });
+    expect((await PATCH(request({ oidcIssuerUrl: "http://10.0.0.5:8080/realms/r", oidcLoginLabel: "SSO" }))).status).toBe(200);
+  });
+
   it("keeps the saved secret for the same issuer, and lets the issuer be cleared", async () => {
     expect((await PATCH(request({ oidcIssuerUrl: "https://idp.example.com/", oidcClientId: "c2" }))).status).toBe(200);
     expect((await PATCH(request({ oidcIssuerUrl: "" }))).status).toBe(200);

@@ -130,6 +130,17 @@ describe("relay templates", () => {
 });
 
 describe("relay key in use", () => {
+  it("refuses a relay name or Deno organization that would move the pool URL to another host", async () => {
+    for (const projectName of ["localhost#", "relay/x", "a?b", "x.y", "-x"]) {
+      const res = await cloudflareDeploy.POST(req({ accountId: "a", apiToken: "t", projectName }));
+      expect(res.status, projectName).toBe(400);
+    }
+    const deno = await denoDeploy.POST(req({ denoToken: "t", orgDomain: "localhost:1/?.deno.net", projectName: "relay-d" }));
+    expect(deno.status).toBe(400);
+    expect(directFetch).not.toHaveBeenCalled();
+    expect(state.pools).toHaveLength(0);
+  });
+
   it("survives the pool → connection proxy → proxyFetch path and isn't forwarded to the upstream", async () => {
     const key = newRelayKey();
     state.pools = [{ id: "p1", type: "cloudflare", isActive: true, proxyUrl: withRelayKey("https://relay-c.acct.workers.dev", key) }];

@@ -3,6 +3,9 @@ import { cookies } from "next/headers";
 import { getSettings } from "@/lib/localDb";
 import { fetchOidcDiscovery, getPublicOrigin, probeOidcClientSecret, sameOidcIssuer } from "@/lib/auth/oidc";
 import { dashboardSessionAllowed } from "@/lib/auth/dashboardAccess.js";
+import { blocksPrivateUrls, PRIVATE_URL_ERROR } from "@/lib/network/privateUrls.js";
+import { makeProbeFetch } from "@/lib/probeFetch.js";
+import { isBlockedUrlError } from "@/shared/utils/ssrfGuard.js";
 
 export async function POST(request) {
   try {
@@ -36,13 +39,17 @@ export async function POST(request) {
       return NextResponse.json({ error: "Client ID is required" }, { status: 400 });
     }
 
-    const discovery = await fetchOidcDiscovery(issuerUrl);
+    // A session that may not reach internal hosts gets the issuer and the token
+    // endpoint its discovery document names fetched through the checked probe.
+    const fetchImpl = (await blocksPrivateUrls(request)) ? makeProbeFetch(true) : undefined;
+    const discovery = await fetchOidcDiscovery(issuerUrl, { fetchImpl });
     const redirectUri = `${getPublicOrigin(request)}/api/auth/oidc/callback`;
     const secretProbe = await probeOidcClientSecret({
       tokenEndpoint: discovery.token_endpoint,
       clientId,
       clientSecret,
       redirectUri,
+      fetchImpl,
     });
 
     if (secretProbe.tested && secretProbe.valid === false) {
@@ -77,6 +84,7 @@ export async function POST(request) {
       message: secretProbe.message,
     });
   } catch (error) {
+    if (isBlockedUrlError(error)) return NextResponse.json({ error: PRIVATE_URL_ERROR }, { status: 400 });
     return NextResponse.json({ error: error.message || "OIDC test failed" }, { status: 500 });
   }
 }

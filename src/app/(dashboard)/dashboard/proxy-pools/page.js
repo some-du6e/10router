@@ -215,7 +215,8 @@ export default function ProxyPoolsPage() {
       });
       if (!res.ok) {
         setProxyPools((prev) => prev.map((p) => p.id === pool.id ? { ...p, isActive: pool.isActive } : p));
-        notify.error("Failed to update active state");
+        const data = await res.json().catch(() => ({}));
+        notify.error(data.error || "Failed to update active state");
       }
     } catch (error) {
       console.log("Error toggling active:", error);
@@ -233,7 +234,7 @@ export default function ProxyPoolsPage() {
     if (targets.length === 0) return;
     setBulkBusy(true);
     try {
-      let ok = 0; let failed = 0;
+      let ok = 0; let failed = 0; let lastError = "";
       for (const id of targets) {
         try {
           const res = await fetch(`/api/proxy-pools/${id}`, {
@@ -241,11 +242,16 @@ export default function ProxyPoolsPage() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ isActive }),
           });
-          if (res.ok) ok += 1; else failed += 1;
+          if (res.ok) ok += 1;
+          else {
+            failed += 1;
+            lastError = (await res.json().catch(() => ({}))).error || lastError;
+          }
         } catch { failed += 1; }
       }
       await fetchProxyPools();
       notify.success(`${isActive ? "Activated" : "Deactivated"} ${ok}${failed ? `, failed ${failed}` : ""}`);
+      if (lastError) notify.error(lastError);
     } finally {
       setBulkBusy(false);
     }

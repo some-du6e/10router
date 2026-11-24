@@ -91,6 +91,7 @@ const providers = await import("../../src/app/api/providers/route.js");
 const kiroApiKey = await import("../../src/app/api/oauth/kiro/api-key/route.js");
 const redetect = await import("../../src/app/api/providers/[id]/redetect/route.js");
 const proxyTestRoute = await import("../../src/app/api/settings/proxy-test/route.js");
+const keyCheck = await import("../../src/app/api/providers/validate/route.js");
 const { classifyPoolTest, healthCheckSummary } = await import("../../src/shared/utils/proxyHealth.js");
 
 const req = (body, url = "http://gw.example/api") => ({ url, json: async () => body, headers: new Headers() });
@@ -418,6 +419,25 @@ describe("proxy pools", () => {
     expect(mocks.testProxyUrl).not.toHaveBeenCalled();
     state.local = true;
     expect((await proxyTestRoute.POST(req({ proxyUrl: "http://10.0.0.8:3128" }))).status).toBe(200);
+  });
+});
+
+describe("provider key check", () => {
+  it("gives the URLs it sends the key to the saving rule, and pins a remote caller's probe", async () => {
+    const azure = await keyCheck.POST(req({ provider: "azure", apiKey: "k", providerSpecificData: { azureEndpoint: "http://10.0.0.6" } }));
+    expect(azure.status).toBe(400);
+    expect(azure.body).toEqual({ valid: false, error: PRIVATE_URL_ERROR, field: "azureEndpoint" });
+    const ollama = await keyCheck.POST(req({ provider: "ollama-local", providerSpecificData: { baseUrl: "http://10.0.0.7:11434" } }));
+    expect(ollama.body).toMatchObject({ valid: false, field: "baseUrl" });
+    const proxied = await keyCheck.POST(req({ provider: "opencode-zen", apiKey: "k", providerSpecificData: { connectionProxyEnabled: true, connectionProxyUrl: "http://10.0.0.8:3128" } }));
+    expect(proxied.body).toMatchObject({ valid: false, field: "connectionProxyUrl" });
+    expect(mocks.makeProbeFetch).not.toHaveBeenCalled();
+
+    mocks.probeFetch.mockResolvedValue(new Response("{}", { status: 200 }));
+    const ok = await keyCheck.POST(req({ provider: "azure", apiKey: "k", providerSpecificData: { azureEndpoint: "https://203.0.113.9" } }));
+    expect(ok.body).toMatchObject({ valid: true });
+    expect(mocks.makeProbeFetch).toHaveBeenCalledWith(true);
+    expect(mocks.probeFetch.mock.calls[0][0]).toMatch(/^https:\/\/203\.0\.113\.9\/openai\/deployments\//);
   });
 });
 

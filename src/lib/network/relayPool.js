@@ -1,6 +1,15 @@
 import { createProxyPool, getProxyPools, updateProxyPool } from "@/models";
 import { withRelayKey } from "./relayKey.js";
 
+// A relay's name (and a Deno organization) becomes a label of its hostname,
+// <name>.<subdomain>.workers.dev or <name>.<org>.deno.net, so each must be one
+// DNS label: a "#", "?" or "/" would move the stored pool URL to another host.
+export function isRelayHostLabel(value) {
+  return typeof value === "string" && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(value);
+}
+
+export const RELAY_NAME_ERROR = "Use only letters, digits and dashes (up to 63, not at the start or end) for the relay name and organization.";
+
 const originOf = (url) => {
   try { return new URL(url).origin; } catch { return null; }
 };

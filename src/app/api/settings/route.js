@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSettings, updateSettings } from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
-import { proxyUrlProblem } from "@/lib/network/privateUrls.js";
+import { privateUrlRejected, proxyUrlProblem } from "@/lib/network/privateUrls.js";
 import { sameOidcIssuer } from "@/lib/auth/oidc";
 import { resetComboRotation } from "open-sse/services/combo.js";
 import bcrypt from "bcryptjs";
@@ -136,12 +136,17 @@ export async function PATCH(request) {
       }
     }
 
-    // Moving OIDC to another issuer needs the client secret sent again: the
-    // saved one would otherwise go to the new issuer's token endpoint.
-    if (body.oidcIssuerUrl && !body.oidcClientSecret) {
+    // Moving OIDC to another issuer: sign-in fetches from the issuer, so it gets
+    // the private URL rule, and the client secret has to come again, or the
+    // saved one would go to the new issuer's token endpoint.
+    if (body.oidcIssuerUrl) {
       const current = await getSettings();
-      if (current.oidcClientSecret && !sameOidcIssuer(body.oidcIssuerUrl, current.oidcIssuerUrl)) {
-        return NextResponse.json({ error: "Enter the client secret again to change the issuer URL.", field: "oidcClientSecret" }, { status: 400 });
+      if (!sameOidcIssuer(body.oidcIssuerUrl, current.oidcIssuerUrl)) {
+        const problem = await privateUrlRejected(request, String(body.oidcIssuerUrl).trim());
+        if (problem) return NextResponse.json({ error: problem, field: "oidcIssuerUrl" }, { status: 400 });
+        if (current.oidcClientSecret && !body.oidcClientSecret) {
+          return NextResponse.json({ error: "Enter the client secret again to change the issuer URL.", field: "oidcClientSecret" }, { status: 400 });
+        }
       }
     }
 

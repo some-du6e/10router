@@ -39,7 +39,7 @@
 
 - A fresh install prints a one-time setup token to the console. 9router fell back to the dashboard password `123456`.
 - Search, MCP probing, webhooks, and observability block requests to private addresses. Webhooks go out through pinned DNS.
-- A remote dashboard session can't point custom endpoints, key URLs, an Ollama Local or self-hosted provider's base URL, an Azure endpoint, proxies (the global outbound proxy too), GitLab or notification channels at private hosts unless the operator sets `ALLOW_PRIVATE_ENDPOINT_URLS=true`. Image downloads and endpoint probes connect to the address they checked. A `/v1/search` client can't redirect the stored search key to its own host, and deployed relays answer only this gateway.
+- A remote dashboard session can't point custom endpoints, key URLs, an Ollama Local or self-hosted provider's base URL, an Azure endpoint, proxies (the global outbound proxy too), GitLab or an OIDC issuer at private hosts, or let a notification channel deliver to one, unless the operator sets `ALLOW_PRIVATE_ENDPOINT_URLS=true`. Image downloads and endpoint probes connect to the address they checked. A `/v1/search` client can't redirect the stored search key to its own host, and deployed relays answer only this gateway.
 - The dashboard offers a re-auth action for invalid OAuth tokens and cleans up the dead credentials.
 - The IDE MITM traffic interception is gone, along with its startup code.
 - 9router loaded its own Google Analytics tag on every page, the OAuth callback page included, where some providers put tokens in the URL. 10router loads analytics only when built with `NEXT_PUBLIC_GA_ID`, and never on the callback page.

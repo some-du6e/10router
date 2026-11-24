@@ -11,10 +11,11 @@ beforeEach(() => vi.resetAllMocks());
 describe("System One API-key validation", () => {
   it.each([200, 400, 401, 403])("checks the native Zen endpoint for HTTP %i", async (status) => {
     mocks.fetch.mockResolvedValue(new Response("{}", { status }));
-    const proxy = { proxyUrl: "http://localhost:8080" };
+    // Only the connection proxy fields, which the private URL rule checks, reach the fetch.
+    const proxy = { connectionProxyEnabled: true, connectionProxyUrl: "http://203.0.113.5:8080" };
     const response = await POST(new Request("http://localhost/api/providers/validate", {
       method: "POST",
-      body: JSON.stringify({ provider: "opencode-zen", apiKey: "test-key", providerSpecificData: proxy }),
+      body: JSON.stringify({ provider: "opencode-zen", apiKey: "test-key", providerSpecificData: { ...proxy, vercelRelayUrl: "https://relay.example.test", url: "http://10.0.0.5:3128" } }),
     }));
     expect(response.status).toBe(200);
     expect((await response.json()).valid).toBe(status !== 401 && status !== 403);

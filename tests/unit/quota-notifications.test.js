@@ -108,12 +108,23 @@ describe("notification channels", () => {
     };
     const samePlace = normalizeNotificationChannelInput({ type: "webhook", config: { url: "https://hooks.example.com/b" } }, existing);
     expect(samePlace.config).toMatchObject({ bearerToken: "saved-token", headers: { "X-Webhook-Secret": "v" } });
-    const moved = normalizeNotificationChannelInput({ type: "webhook", config: { url: "https://elsewhere.example/hook" } }, existing);
-    expect(moved.config).toMatchObject({ url: "https://elsewhere.example/hook", bearerToken: "", headers: {} });
+    expect(() => normalizeNotificationChannelInput({ type: "webhook", config: { url: "https://elsewhere.example/hook" } }, existing))
+      .toThrow("Enter the bearer token and headers again to send this channel to another host");
+    const resent = normalizeNotificationChannelInput({ type: "webhook", config: { url: "https://elsewhere.example/hook", bearerToken: "new-token" } }, { ...existing, config: { ...existing.config, headers: {} } });
+    expect(resent.config).toMatchObject({ url: "https://elsewhere.example/hook", bearerToken: "new-token" });
 
     const ntfy = { name: "ntfy", type: "ntfy", isActive: true, events: [NOTIFICATION_EVENTS.QUOTA_RESET], config: { serverUrl: "https://ntfy.sh/", topic: "t", token: "tk" } };
     expect(normalizeNotificationChannelInput({ type: "ntfy", config: { topic: "t2" } }, ntfy).config.token).toBe("tk");
-    expect(normalizeNotificationChannelInput({ type: "ntfy", config: { serverUrl: "https://ntfy.example", topic: "t" } }, ntfy).config.token).toBe("");
+    expect(() => normalizeNotificationChannelInput({ type: "ntfy", config: { serverUrl: "https://ntfy.example", topic: "t" } }, ntfy))
+      .toThrow("Enter the access token again");
+  });
+
+  it("refuses private, CGNAT and IPv4-mapped destinations without the private-network option", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    for (const url of ["http://100.101.102.103/hook", "http://[::ffff:127.0.0.1]/hook", "http://[::]/hook", "http://192.0.0.8/hook", "http://printer.internal/hook"]) {
+      await expect(notificationFetch(url, {}, { fetch: fetchMock }), url).rejects.toThrow(/private-network option/);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("a caller that may not use internal hosts can't turn on private network delivery or move a channel that has it", () => {

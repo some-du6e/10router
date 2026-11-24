@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { newRelayKey, relayKeyCheck } from "@/lib/network/relayKey.js";
-import { saveRelayPool } from "@/lib/network/relayPool.js";
+import { isRelayHostLabel, RELAY_NAME_ERROR, saveRelayPool } from "@/lib/network/relayPool.js";
 
 // Relay worker source code deployed to Cloudflare
 const relayWorkerCode = (key) => `
@@ -58,6 +58,9 @@ export async function POST(request) {
 
     if (!accountId || !apiToken) {
       return NextResponse.json({ error: "Cloudflare Account ID and API Token are required" }, { status: 400 });
+    }
+    if (!isRelayHostLabel(projectName)) {
+      return NextResponse.json({ error: RELAY_NAME_ERROR }, { status: 400 });
     }
 
     // 1. Upload Worker Script

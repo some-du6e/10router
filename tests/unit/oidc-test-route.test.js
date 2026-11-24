@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { PRIVATE_URL_ERROR } from "../../src/shared/constants/privateUrl.js";
 
 const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
@@ -13,6 +14,9 @@ vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => (mocks.token
 vi.mock("@/lib/localDb", () => ({ getSettings: mocks.getSettings }));
 vi.mock("@/lib/db/helpers/metaStore.js", () => ({ getMeta: mocks.getMeta, setMeta: vi.fn() }));
 vi.mock("@/lib/auth/dashboardSession", () => ({ getDashboardAuthSession: mocks.getDashboardAuthSession }));
+// Who is calling: a local caller may test an issuer on a private host.
+const caller = vi.hoisted(() => ({ local: true }));
+vi.mock("@/dashboardGuard", () => ({ isLocalRequest: () => caller.local, hasSignedInDashboardSession: async () => false }));
 vi.mock("@/lib/auth/oidc", async (orig) => ({
   ...(await orig()),
   fetchOidcDiscovery: mocks.fetchOidcDiscovery,
@@ -33,6 +37,7 @@ const post = (body) => POST(new Request("https://dash.example.test/api/auth/oidc
 
 beforeEach(() => {
   vi.clearAllMocks();
+  caller.local = true;
   vi.stubEnv("INITIAL_PASSWORD", "");
   mocks.token = "session";
   mocks.getMeta.mockResolvedValue("0");
@@ -85,5 +90,26 @@ describe("OIDC settings test route", () => {
     mocks.getSettings.mockResolvedValue({ ...saved, requireLogin: false });
     mocks.getDashboardAuthSession.mockResolvedValue(null);
     expect((await post({})).status).toBe(200);
+  });
+
+  it("from a remote session, fetches the issuer and its token endpoint through the checked probe", async () => {
+    const real = await vi.importActual("@/lib/auth/oidc");
+    mocks.fetchOidcDiscovery.mockImplementation(real.fetchOidcDiscovery);
+    mocks.probeOidcClientSecret.mockImplementation(real.probeOidcClientSecret);
+    caller.local = false;
+    const issuer = await post({ issuerUrl: "http://10.0.0.5", clientSecret: "typed-secret" });
+    expect(issuer.status).toBe(400);
+    expect(issuer.body.error).toBe(PRIVATE_URL_ERROR);
+
+    // A public issuer whose discovery document names an internal token endpoint.
+    mocks.fetchOidcDiscovery.mockResolvedValue({ token_endpoint: "http://169.254.169.254/token" });
+    const token = await post({ issuerUrl: "https://203.0.113.20", clientSecret: "typed-secret" });
+    expect(token.status).toBe(400);
+    expect(token.body.error).toBe(PRIVATE_URL_ERROR);
+  });
+
+  it("a local caller tests with the plain fetch", async () => {
+    await post({ issuerUrl: "https://idp.example.test" });
+    expect(mocks.fetchOidcDiscovery).toHaveBeenCalledWith("https://idp.example.test", { fetchImpl: undefined });
   });
 });

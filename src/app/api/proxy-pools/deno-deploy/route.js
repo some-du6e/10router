@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { newRelayKey, relayKeyCheck } from "@/lib/network/relayKey.js";
-import { saveRelayPool } from "@/lib/network/relayPool.js";
+import { isRelayHostLabel, RELAY_NAME_ERROR, saveRelayPool } from "@/lib/network/relayPool.js";
 
 const DENO_V2_API = "https://api.deno.com/v2";
 
@@ -55,6 +55,9 @@ export async function POST(request) {
 
     if (!orgDomain) {
       return NextResponse.json({ error: "Organization domain is required" }, { status: 400 });
+    }
+    if (!isRelayHostLabel(projectName) || !isRelayHostLabel(orgDomain.split(".")[0])) {
+      return NextResponse.json({ error: RELAY_NAME_ERROR }, { status: 400 });
     }
 
     if (!denoToken) {

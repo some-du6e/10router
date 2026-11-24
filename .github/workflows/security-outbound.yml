@@ -59,6 +59,8 @@ on:
       - "tests/unit/notification-channel-routes.test.js"
       - "tests/unit/kimchi-models-endpoint.test.js"
       - "tests/unit/oidc-test-route.test.js"
+      - "tests/unit/dashboard-save-and-reauth.test.js"
+      - "tests/unit/systemone-key-validation.test.js"
       - "tests/unit/image-generation.test.js"
       - "tests/unit/provider-nodes-routes.test.js"
       - "tests/unit/codex-image-fetch.test.js"
@@ -111,6 +113,8 @@ jobs:
           unit/notification-channel-routes.test.js
           unit/kimchi-models-endpoint.test.js
           unit/oidc-test-route.test.js
+          unit/dashboard-save-and-reauth.test.js
+          unit/systemone-key-validation.test.js
           unit/endpoint-detect-hardening.test.js
           unit/dashboard-guard.test.js
           unit/local-request-peer-trust-3294.test.js

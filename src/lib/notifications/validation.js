@@ -1,4 +1,3 @@
-import { isIP } from "node:net";
 import {
   NOTIFICATION_EVENTS,
   NOTIFICATION_TYPES,
@@ -147,7 +146,21 @@ function urlOrigin(value) {
 }
 
 export const PRIVATE_NETWORK_NOT_ALLOWED =
-  "Private network delivery can only be turned on from the dashboard on this machine or, with login on, with ALLOW_PRIVATE_ENDPOINT_URLS=true.";
+  "Private network delivery can only be turned on, or kept for a new URL, from the dashboard on this machine or, with login on, by a signed-in session with ALLOW_PRIVATE_ENDPOINT_URLS=true.";
+
+const SECRET_LABELS = {
+  token: "access token",
+  password: "password",
+  bearerToken: "bearer token",
+  headers: "headers",
+  serviceUrls: "service URLs",
+};
+
+function hasValue(value) {
+  if (typeof value === "string") return value.length > 0;
+  if (value && typeof value === "object") return Object.keys(value).length > 0;
+  return Boolean(value);
+}
 
 // blocksPrivateNetwork: the caller may not point the server at internal hosts
 // (see blocksPrivateUrls in src/lib/network/privateUrls.ts).
@@ -166,14 +179,14 @@ export function normalizeNotificationChannelInput(body = {}, existing = null, { 
   // moves the channel to another host has to send it again.
   const sameHost = urlFields.every((field) =>
     secretFields.includes(field) || urlOrigin(config[field]) === urlOrigin(previousConfig[field]));
+  const resend = [];
   for (const field of secretFields) {
-    const provided = providedConfig[field];
-    const hasProvidedValue = typeof provided === "string"
-      ? provided.length > 0
-      : provided && typeof provided === "object"
-        ? Object.keys(provided).length > 0
-        : Boolean(provided);
-    if (!hasProvidedValue && previousConfig[field] && sameHost) config[field] = previousConfig[field];
+    if (hasValue(providedConfig[field]) || !hasValue(previousConfig[field])) continue;
+    if (sameHost) config[field] = previousConfig[field];
+    else resend.push(SECRET_LABELS[field] || field);
+  }
+  if (resend.length) {
+    throw new Error(`Enter the ${resend.join(" and ")} again to send this channel to another host`);
   }
   validateConfig(type, config);
   // The private-network option skips the public-address check on every send,
@@ -208,25 +221,4 @@ export function redactNotificationChannel(channel) {
     delete config[field];
   }
   return { ...channel, config, configuredSecrets };
-}
-
-function isPrivateIpv4(hostname) {
-  const parts = hostname.split(".").map(Number);
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part))) return false;
-  return parts[0] === 10
-    || parts[0] === 127
-    || (parts[0] === 169 && parts[1] === 254)
-    || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
-    || (parts[0] === 192 && parts[1] === 168)
-    || parts[0] === 0;
-}
-
-export function isPrivateNotificationHost(hostname) {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return true;
-  if (isIP(host) === 4) return isPrivateIpv4(host);
-  if (isIP(host) === 6) {
-    return host === "::1" || host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd");
-  }
-  return false;
 }
