@@ -169,8 +169,9 @@ export const MEMORY_ADMISSION = {
   heapHighWaterPct: envInt("MEMORY_HEAP_HIGH_WATER_PCT", 85, { max: 100 }),
   liveHeapMaxAgeMs: envInt("MEMORY_LIVE_HEAP_MAX_AGE_MS", 60 * 1000),
   // Percent of the heap limit that used_heap_size, garbage included, plus the
-  // bodies coming may reach whatever the last collection left: a backstop for
-  // a heap that fills faster than V8 collects. Env: MEMORY_HEAP_HARD_STOP_PCT.
+  // bodies coming may reach whatever the last collection left. A last guard
+  // only: V8 collects before the old generation fills, so in practice what
+  // the last collection left is what trips the gate. Env: MEMORY_HEAP_HARD_STOP_PCT.
   heapHardStopPct: envInt("MEMORY_HEAP_HARD_STOP_PCT", 97, { max: 100 }),
   // A heap limit over this fraction of the container's memory gets a warning
   // on the first chat request: resident memory follows the heap's peak plus
