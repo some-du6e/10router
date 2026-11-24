@@ -41,7 +41,8 @@ interface Settings {
 }
 
 type Selection = { type: "account"; id: string } | { type: "provider"; id: string } | { type: "global" };
-type TestState = null | { status: "running" } | { status: "done"; ok: boolean; text: string };
+// `id` is the account tested, so a result that lands after you moved on stays with it.
+type TestState = null | { id: string; status: "running" } | { id: string; status: "done"; ok: boolean; text: string };
 type Role = "selected" | "winner" | "path" | "dim";
 
 const ROLE_CLASS: Record<Role, string> = {
@@ -92,7 +93,7 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
   const [selected, setSelected] = useState<Selection | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);
-  const [test, setTest] = useState<TestState>(null);
+  const [testState, setTest] = useState<TestState>(null);
 
   const load = useCallback(async () => {
     try {
@@ -254,16 +255,18 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
   });
 
   async function runTest(c: Connection) {
-    setTest({ status: "running" });
+    setTest({ id: c.id, status: "running" });
     try {
       const res = await fetch(`/api/providers/${c.id}/test`, { method: "POST" });
       const data = await res.json().catch(() => ({}));
       const ms = Number.isFinite(data.latencyMs) && data.latencyMs > 0 ? ` in ${data.latencyMs} ms` : "";
-      setTest(data.valid
-        ? { status: "done", ok: true, text: `Works${ms}.${data.error ? ` ${data.error}` : ""}` }
-        : { status: "done", ok: false, text: data.error || "Test failed" });
+      const result: TestState = data.valid
+        ? { id: c.id, status: "done", ok: true, text: `Works${ms}.${data.error ? ` ${data.error}` : ""}` }
+        : { id: c.id, status: "done", ok: false, text: data.error || "Test failed" };
+      setTest((cur) => (cur?.id === c.id ? result : cur));
     } catch (error) {
-      setTest({ status: "done", ok: false, text: error instanceof Error ? error.message : "Test failed" });
+      const text = error instanceof Error ? error.message : "Test failed";
+      setTest((cur) => (cur?.id === c.id ? { id: c.id, status: "done", ok: false, text } : cur));
     }
   }
 
@@ -277,6 +280,7 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
   ];
 
   function routePanel(account: Connection, route: ResolvedProxy) {
+    const test = testState?.id === account.id ? testState : null;
     const done = test?.status === "done" ? test : null;
     const chipFx = (n: number): { cls: string; style?: CSSProperties } => {
       if (test?.status === "running") return { cls: "px-hop", style: delay(n * 250) };
