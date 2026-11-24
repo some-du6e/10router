@@ -363,6 +363,12 @@ func TestAcceptEncodingIsTheClients(t *testing.T) {
 }
 
 func TestTooManyHeaderLinesIs431(t *testing.T) {
+	// What reaches Node: the client's lines, Host, at most two the transport
+	// adds (Transfer-Encoding and Trailer, or Content-Length), the three peer
+	// headers. All of it must fit Node's default 1000.
+	if MaxHeaderLines+1+2+3 > 1000 {
+		t.Fatalf("MaxHeaderLines %d leaves Node's 1000-line cap no room for the peer headers", MaxHeaderLines)
+	}
 	s := newStack(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("a request padded past Node's header count reached the app")
 	}), Options{PeerToken: strings.Repeat("t", 32)})

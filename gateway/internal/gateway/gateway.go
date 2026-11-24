@@ -35,7 +35,7 @@ const HealthPath = "/_gateway/health"
 // Timings from server-drain.js.
 const (
 	// DuplicateSignalWindow: a repeat of the signal this soon is the same stop
-	// arriving twice (a process-group kill reaches both processes).
+	// arriving twice (npm, a supervisor and a kill can each send one).
 	DuplicateSignalWindow = 1500 * time.Millisecond
 	// ExitFlush: grace after the last request ends, so its final bytes leave.
 	ExitFlush = 200 * time.Millisecond
@@ -62,29 +62,44 @@ type Options struct {
 }
 
 // maxHeaderBytes caps a client's headers at about Node's --max-http-header-size
-// (16 KiB unless NODE_OPTIONS sets it): net/http allows MaxHeaderBytes plus
-// 4096 bytes of slack. custom-server.js gives its server 4 KiB more than that
-// behind the gateway, room for the peer headers, so the gateway is the one
-// that answers 431.
-func maxHeaderBytes(nodeOptions string) int {
-	size := nodeHeaderSize(nodeOptions)
+// (16 KiB unless NODE_OPTIONS or the node command line sets it): net/http
+// allows MaxHeaderBytes plus 4096 bytes of slack. custom-server.js gives its
+// server 4 KiB more than that behind the gateway, room for the peer headers,
+// so the gateway is the one that answers 431.
+func maxHeaderBytes(nodeOptions string, command []string) int {
+	size := nodeHeaderSize(strings.Fields(nodeOptions), 16<<10)
+	// Node's own flags, between "node" and the script, win over NODE_OPTIONS.
+	if len(command) > 1 {
+		flags := command[1:]
+		for i, a := range flags {
+			if !strings.HasPrefix(a, "-") {
+				flags = flags[:i]
+				break
+			}
+		}
+		size = nodeHeaderSize(flags, size)
+	}
 	if size <= 8<<10 {
 		return 4 << 10
 	}
 	return size - 4<<10
 }
 
-// nodeHeaderSize is the --max-http-header-size in NODE_OPTIONS, or Node's
-// default; the last one given wins, as in Node.
-func nodeHeaderSize(nodeOptions string) int {
-	size := 16 << 10
-	fields := strings.Fields(nodeOptions)
-	for i, f := range fields {
-		value, ok := strings.CutPrefix(f, "--max-http-header-size=")
-		if !ok && f == "--max-http-header-size" && i+1 < len(fields) {
-			value, ok = fields[i+1], true
+// nodeHeaderSize is the last --max-http-header-size in args, spelled any way
+// Node accepts (underscores, "=" or a separate value, quotes), else size.
+func nodeHeaderSize(args []string, size int) int {
+	for i, a := range args {
+		name, value, hasValue := strings.Cut(a, "=")
+		if strings.ReplaceAll(name, "_", "-") != "--max-http-header-size" {
+			continue
 		}
-		if n, err := strconv.Atoi(value); ok && err == nil && n > 0 {
+		if !hasValue {
+			if i+1 >= len(args) {
+				continue
+			}
+			value = args[i+1]
+		}
+		if n, err := strconv.Atoi(strings.Trim(value, `"'`)); err == nil && n > 0 {
 			size = n
 		}
 	}
@@ -221,10 +236,10 @@ func randomToken() string {
 
 func seconds(d time.Duration) int { return int((d + 500*time.Millisecond) / time.Second) }
 
-// passOn hands SIGUSR1/SIGUSR2 to the app server (SIGUSR1 opens Node's
-// inspector) and reports true; the shutdown signals are the gateway's own.
+// passOn hands SIGUSR1 (which opens Node's inspector) to the app server and
+// reports true; the shutdown signals are the gateway's own.
 func passOn(sig os.Signal, child *supervisor.Child) bool {
-	if sig != syscall.SIGUSR1 && sig != syscall.SIGUSR2 {
+	if sig != syscall.SIGUSR1 {
 		return false
 	}
 	if child != nil {
@@ -319,7 +334,7 @@ func Run(o Options) int {
 		Handler:           g,
 		ReadHeaderTimeout: cfg.HeadersTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
-		MaxHeaderBytes:    maxHeaderBytes(envValue(o.Env, "NODE_OPTIONS")),
+		MaxHeaderBytes:    maxHeaderBytes(envValue(o.Env, "NODE_OPTIONS"), o.Command),
 		ErrorLog:          log.New(logger.Writer(), "[Gateway] http: ", 0),
 	}
 	serveErr := make(chan error, 1)

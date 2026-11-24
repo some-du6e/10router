@@ -718,10 +718,9 @@ const GATEWAY_HEADERS = ["x-9r-gw-token", "x-9r-gw-peer-ip", "x-9r-gw-peer-port"
 // as before. One that carries them but can't prove them is a relayed client
 // nobody can place, so it is "unknown": never this machine.
 const UNPROVEN_PEER = { ip: "unknown", port: "" };
-// Node takes maxHeadersCount header lines (1000 by default). Current versions
-// refuse a request with more; older ones kept the first ones and dropped the
-// rest, so a request at the cap may have lost the gateway's headers. The
-// gateway itself never sends that many.
+// Node takes maxHeadersCount header lines (1000 by default) and can drop the
+// rest without a word, so a request at the cap may have lost the gateway's
+// headers. The gateway itself never sends that many.
 const DEFAULT_MAX_HEADERS_COUNT = 1000;
 function mayHaveLostHeaders(req) {
   const limit = (req.socket && req.socket.server && req.socket.server.maxHeadersCount) || DEFAULT_MAX_HEADERS_COUNT;

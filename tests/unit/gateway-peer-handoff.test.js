@@ -56,6 +56,10 @@ describe("custom-server behind the Go gateway", () => {
     expect(process.env.GATEWAY_PEER_TOKEN).toBeUndefined();
   });
 
+  it("gives the server room for the peer headers on top of a client's full header size", () => {
+    expect(server.maxHeaderSize).toBe(http.maxHeaderSize + 4096);
+  });
+
   it("uses the handed peer for a remote client", async () => {
     const h = await get(handed("203.0.113.7"));
     expect(h["x-9r-real-ip"]).toBe("203.0.113.7");
@@ -114,9 +118,9 @@ describe("custom-server behind the Go gateway", () => {
   });
 
   it("fails closed when a request reached Node's header count cap without the gateway's headers", async () => {
-    // 998 + Host + Connection = 1000 lines, the default cap. An older Node
-    // that dropped lines past it could have dropped the gateway's (they sort
-    // near the end), so such a request can't count as this machine's.
+    // 998 + Host + Connection = 1000 lines, the default cap. Node can drop
+    // lines past it without a word, the gateway's among them (they sort near
+    // the end), so such a request can't count as this machine's.
     const padding = Object.fromEntries(Array.from({ length: 998 }, (_, i) => [`a${i}`, "1"]));
     const h = await get(padding);
     expect(h["x-9r-real-ip"]).toBe("unknown");

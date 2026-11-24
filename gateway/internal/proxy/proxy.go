@@ -180,12 +180,12 @@ func PeerOf(remoteAddr string, listenIPv6 bool) (ip, port string) {
 }
 
 // MaxHeaderLines caps how many header lines (Host aside) a client may send.
-// Node takes 1000 by default: past that, current versions refuse the request
-// and older ones kept the first 1000 and dropped the rest without a word. And
+// Node takes 1000 by default, and past that it can keep the first 1000 and
+// drop the rest without a word (versions differ; don't count on a refusal).
 // net/http writes headers sorted by name, so the peer headers go out near the
 // end, where a dropping Node would lose them to a client's padding and fall
-// back to its loopback socket. 990 leaves room for Host and the three the
-// gateway adds.
+// back to its loopback socket. 990 leaves room for Host, what the transport
+// adds and the three peer headers.
 const MaxHeaderLines = 990
 
 // ServeHTTP relays one request.

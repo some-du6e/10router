@@ -81,10 +81,15 @@ legs() { # legs <leg> [GATEWAY_MODE]
   check "$leg: remote client can't pass as local with Host: localhost" "[ \"\$(code_of -H 'Host: localhost' $REMOTE/v1/models)\" = 401 ]"
   check "$leg: remote client can't pass as local with forged gateway headers" \
     "[ \"\$(code_of -H 'Host: localhost' -H 'X-9r-Gw-Peer-Ip: 127.0.0.1' -H 'X-9r-Gw-Token: forged' $REMOTE/v1/models)\" = 401 ]"
-  # Padding past Node's header-count cap, in case it drops the gateway's.
+  # Padding past Node's header-count cap, in case it drops the gateway's: the
+  # gateway refuses it outright (431). Node alone either refuses it (400/431)
+  # or drops the extra lines and keeps the remote socket (401).
   printf 'D%d: 1\n' $(seq 1 1100) > "$o.padding"
-  check "$leg: remote client can't pass as local by padding headers" \
-    "[ \"\$(code_of -H 'Host: localhost' -H @'$o.padding' $REMOTE/v1/models)\" != 200 ]"
+  local padded_want='400|401|431'
+  [ -n "$mode" ] && padded_want=431
+  code_of -H 'Host: localhost' -H @"$o.padding" "$REMOTE/v1/models" > "$o.padded"
+  check "$leg: remote client can't pass as local by padding headers ($(cat "$o.padded"), want $padded_want)" \
+    "grep -Eqx '$padded_want' '$o.padded'"
   check "$leg: remote client can't claim loopback with forwarding headers" \
     "[ \"\$(code_of -H 'X-Forwarded-For: 127.0.0.1' -H 'X-Real-IP: 127.0.0.1' -H 'Host: localhost' $REMOTE/v1/models)\" = 401 ]"
 

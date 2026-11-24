@@ -298,9 +298,30 @@ func TestHeaderCapFollowsNode(t *testing.T) {
 		"--max-http-header-size=8192":      4 << 10,
 		"--max-http-header-size=1 --max-http-header-size=20480": 16 << 10,
 		"--max-http-header-size=abc":                            12 << 10,
+		"--max_http_header_size=32768":                          28 << 10,
+		`--max-http-header-size="32768"`:                        28 << 10,
 	} {
-		if got := maxHeaderBytes(opts); got != want {
+		if got := maxHeaderBytes(opts, []string{"node", "custom-server.js"}); got != want {
 			t.Errorf("maxHeaderBytes(%q) = %d, want %d", opts, got, want)
+		}
+	}
+	// Node's own flags win over NODE_OPTIONS; the script's arguments don't count.
+	if got := maxHeaderBytes("--max-http-header-size=32768", []string{"node", "--max-http-header-size=65536", "custom-server.js"}); got != 60<<10 {
+		t.Errorf("command-line flag: %d", got)
+	}
+	if got := maxHeaderBytes("", []string{"node", "custom-server.js", "--max-http-header-size=65536"}); got != 12<<10 {
+		t.Errorf("script argument taken for a node flag: %d", got)
+	}
+}
+
+func TestOnlySIGUSR1GoesOnToNode(t *testing.T) {
+	if !passOn(syscall.SIGUSR1, nil) {
+		t.Error("SIGUSR1 is not passed on")
+	}
+	// SIGUSR2's default action would kill Node; the shutdown signals drain.
+	for _, sig := range []os.Signal{syscall.SIGUSR2, syscall.SIGTERM, syscall.SIGINT} {
+		if passOn(sig, nil) {
+			t.Errorf("%v passed on", sig)
 		}
 	}
 }
