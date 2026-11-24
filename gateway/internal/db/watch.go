@@ -118,6 +118,10 @@ func (d *DB) Watch(ctx context.Context, o WatchOptions) error {
 	if err != nil {
 		cancel()
 		close(done)
+		// The caller may try again.
+		d.watchMu.Lock()
+		d.watching, d.stopWatch, d.watchDone = false, nil, nil
+		d.watchMu.Unlock()
 		return err
 	}
 	w := &watcher{d: d, o: o, conn: conn}

@@ -213,6 +213,11 @@ func loadKV(ctx context.Context, tx *sql.Tx, s *Snapshot) error {
 			// parseJson(r.value): unreadable is null.
 			target.Set(key, parseJSONOr(value, nil))
 		}
+		// A scan cut short by an error must not pass as the whole scope.
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
 		if err := rows.Close(); err != nil {
 			return err
 		}

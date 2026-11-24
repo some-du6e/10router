@@ -563,7 +563,10 @@ func Run(o Options) int {
 		// Deferred in this order so the watcher stops before the database closes.
 		defer g.closeNative()
 		defer stopNative()
-		g.openNative(nativeCtx, o.Env)
+		// In the background: a busy file can hold the first check for seconds,
+		// and the relay doesn't wait on it. A database that opens after
+		// shutdown began is closed again (nativeClosed).
+		go g.openNative(nativeCtx, o.Env)
 	}
 
 	ln := o.Listener

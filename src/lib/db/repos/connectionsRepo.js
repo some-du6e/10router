@@ -369,8 +369,9 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
     releaseOwnerIfKeyReplaced(db, existing, data);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     // Dashboard edits move the config generation; the request path's lock,
-    // error and rotation writes don't.
-    if (connectionConfigChanged(existing, merged)) bumpConfigGenerationSync(db);
+    // error and rotation writes don't. A priority write renumbers the other
+    // connections too, so it counts even when this row's priority stays.
+    if (data.priority !== undefined || connectionConfigChanged(existing, merged)) bumpConfigGenerationSync(db);
     result = merged;
     // Token refreshes and rate-limit stamps write here constantly; only a
     // change to what the connection serves counts.

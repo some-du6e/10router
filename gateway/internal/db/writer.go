@@ -160,10 +160,10 @@ func (w *writer) batch(first *writeOp) {
 				drained = true
 			}
 		}
+		w.record(time.Since(asked), 0, len(failed), len(failed))
 		for _, op := range failed {
 			op.done <- err
 		}
-		w.record(time.Since(asked), 0, len(failed), len(failed))
 		return
 	}
 	began := time.Now()
@@ -198,13 +198,17 @@ func (w *writer) batch(first *writeOp) {
 		}
 	}
 	failed := 0
-	for i, op := range ops {
+	for i := range ops {
 		if errs[i] != nil {
 			failed++
 		}
+	}
+	// Recorded before any caller hears back, so LockStats read after a write
+	// returns counts its transaction.
+	w.record(began.Sub(asked), time.Since(began), len(ops), failed)
+	for i, op := range ops {
 		op.done <- errs[i]
 	}
-	w.record(began.Sub(asked), time.Since(began), len(ops), failed)
 }
 
 // errTxLost marks a write whose transaction SQLite rolled back as a whole.

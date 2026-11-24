@@ -31,7 +31,8 @@ var localZone = func() *time.Location { return time.Local }
 // parseJSDate reads the timestamps Node writes (toISOString) and the other
 // ISO forms Date.parse takes for them.
 func parseJSDate(s string) (time.Time, error) {
-	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05.000Z07:00", "2006-01-02T15:04:05Z07:00"} {
+	// A date alone is UTC midnight in Date.parse.
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05.000Z07:00", "2006-01-02T15:04:05Z07:00", "2006-01-02"} {
 		if t, err := time.Parse(layout, s); err == nil {
 			return t, nil
 		}

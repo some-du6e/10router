@@ -148,7 +148,12 @@ function runGateway(file, durationMs) {
   let err = "";
   child.stdout.on("data", (d) => { out += d; });
   child.stderr.on("data", (d) => { err += d; });
-  return new Promise((resolve) => child.on("exit", (code) => resolve({ code, out, err })));
+  return new Promise((resolve) => {
+    // A tool that can't start (a bad path) fails the run instead of hanging it.
+    child.on("error", (e) => resolve({ code: -1, out, err: `${err}${e.message}` }));
+    // "close", not "exit": stdout is complete only once its stream has closed.
+    child.on("close", (code) => resolve({ code, out, err }));
+  });
 }
 
 function report(driver, baseline, shared, gateway) {
@@ -230,7 +235,9 @@ for (const driver of ["better-sqlite3", "node:sqlite"]) {
       const conns = await repos.getProviderConnections({ provider: PROVIDER });
       expect(conns).toHaveLength(20);
       for (const row of adapter.all(`SELECT data FROM providerConnections`)) expect(() => JSON.parse(row.data)).not.toThrow();
-      for (const row of adapter.all(`SELECT data FROM usageDaily`)) expect(JSON.parse(row.data).requests).toBeGreaterThan(0);
+      // Both sides read-modify-write the daily rows: their totals add up to the history.
+      const dailyRequests = adapter.all(`SELECT data FROM usageDaily`).reduce((sum, row) => sum + JSON.parse(row.data).requests, 0);
+      expect(dailyRequests).toBe(nodeRows + goRows);
     }, BASELINE_MS + SHARED_MS + 120_000);
   });
 }
