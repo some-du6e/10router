@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { bumpConfigGenerationSync, writeConfig } from "../helpers/configGeneration.js";
 import { roundUsd } from "@/shared/utils/apiKeyLimits.js";
 
 export function numberOrNull(value) {
@@ -76,10 +77,10 @@ export async function createApiKey(name, machineId) {
     isActive: true,
     createdAt: new Date().toISOString(),
   };
-  db.run(
+  writeConfig(db, () => db.run(
     `INSERT INTO apiKeys(id, key, name, machineId, isActive, createdAt) VALUES(?, ?, ?, ?, ?, ?)`,
     [apiKey.id, apiKey.key, apiKey.name, apiKey.machineId, 1, apiKey.createdAt]
-  );
+  ));
   return apiKey;
 }
 
@@ -105,6 +106,7 @@ export function updateApiKeyInTx(db, id, data) {
         numberOrNull(merged.budgetUsd), toAllowedModelsColumn(merged.allowedModels),
         merged.expiresAt || null, offset, resetAt, id]
     );
+    bumpConfigGenerationSync(db);
     result = rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
   });
   return result;
@@ -117,7 +119,7 @@ export async function updateApiKey(id, data) {
 
 export async function deleteApiKey(id) {
   const db = await getAdapter();
-  const res = db.run(`DELETE FROM apiKeys WHERE id = ?`, [id]);
+  const res = writeConfig(db, () => db.run(`DELETE FROM apiKeys WHERE id = ?`, [id]));
   return (res?.changes ?? 0) > 0;
 }
 

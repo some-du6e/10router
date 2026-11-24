@@ -25,6 +25,7 @@ import (
 
 	"github.com/some-du6e/10router/gateway/internal/clientip"
 	"github.com/some-du6e/10router/gateway/internal/config"
+	"github.com/some-du6e/10router/gateway/internal/db"
 	"github.com/some-du6e/10router/gateway/internal/drain"
 	"github.com/some-du6e/10router/gateway/internal/proxy"
 	"github.com/some-du6e/10router/gateway/internal/supervisor"
@@ -150,6 +151,74 @@ type Gateway struct {
 	healthMu    sync.Mutex
 	healthAt    time.Time
 	healthAppUp bool
+
+	// native is the database the native routes would read, in native mode
+	// only (nil until it opens). nativeErr is why it didn't open.
+	nativeMu  sync.Mutex
+	native    *db.DB
+	nativeErr string
+}
+
+// nativeStatus is what health reports for the native routes: ready, or why not.
+func (g *Gateway) nativeStatus() (ready bool, reason string) {
+	g.nativeMu.Lock()
+	d, openErr := g.native, g.nativeErr
+	g.nativeMu.Unlock()
+	if d == nil {
+		if openErr == "" {
+			openErr = "the database has not been opened yet"
+		}
+		return false, openErr
+	}
+	st := d.Status()
+	return st.Ready, st.Reason
+}
+
+// openNative opens the app server's database once it listens (it migrates
+// before that), checks the schema and keeps the config snapshot current.
+// Native mode serves no route yet, so this only feeds health and the log.
+func (g *Gateway) openNative(ctx context.Context, env []string) {
+	getenv := os.Getenv
+	if env != nil {
+		getenv = func(k string) string { return envValue(env, k) }
+	}
+	path, err := db.DataFile(getenv)
+	if err == nil {
+		var d *db.DB
+		if d, err = db.Open(path, db.Options{}); err == nil {
+			err = d.Watch(ctx, db.WatchOptions{
+				OnStatus: func(st db.Status) {
+					if st.Ready {
+						g.logger.Printf("[Gateway] native: database ready (schema %d, %s)", st.SchemaVersion, st.Driver)
+					} else {
+						g.logger.Printf("[Gateway] native routes off: %s", st.Reason)
+					}
+				},
+			})
+			if err == nil {
+				g.nativeMu.Lock()
+				g.native = d
+				g.nativeMu.Unlock()
+				return
+			}
+			_ = d.Close()
+		}
+	}
+	reason := "cannot open the database: " + err.Error()
+	g.logger.Printf("[Gateway] native routes off: %s", reason)
+	g.nativeMu.Lock()
+	g.nativeErr = reason
+	g.nativeMu.Unlock()
+}
+
+func (g *Gateway) closeNative() {
+	g.nativeMu.Lock()
+	d := g.native
+	g.native = nil
+	g.nativeMu.Unlock()
+	if d != nil {
+		_ = d.Close()
+	}
 }
 
 // New builds the handler for cfg.
@@ -231,6 +300,14 @@ func (g *Gateway) health(w http.ResponseWriter, r *http.Request) {
 		body["status"], code = "draining", http.StatusServiceUnavailable
 	case !appUp:
 		body["status"], code = "app_down", http.StatusServiceUnavailable
+	}
+	if g.cfg.Mode == config.ModeNative {
+		// Native routes off never fails the check: everything is proxied.
+		ready, reason := g.nativeStatus()
+		body["native"] = map[bool]string{true: "ready", false: "off"}[ready]
+		if !ready {
+			body["nativeReason"] = reason
+		}
 	}
 	peer, _ := proxy.PeerOf(r.RemoteAddr, g.listenIPv6)
 	if g.rule.IsOnThisMachine(clientip.FromRequest(r), peer) {
@@ -416,6 +493,15 @@ func Run(o Options) int {
 		if code, stop := waitForApp(g.appAddr, child, o.Signals, g.pass, logger, childDeadline); stop {
 			return code
 		}
+	}
+
+	// Node has migrated the database by the time it listens.
+	if cfg.Mode == config.ModeNative {
+		nativeCtx, stopNative := context.WithCancel(context.Background())
+		// Deferred in this order so the watcher stops before the database closes.
+		defer g.closeNative()
+		defer stopNative()
+		g.openNative(nativeCtx, o.Env)
 	}
 
 	ln := o.Listener

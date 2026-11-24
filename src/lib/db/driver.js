@@ -78,7 +78,20 @@ async function initAdapter() {
     }
     throw error;
   }
+  recordDriver(adapter);
   return adapter;
+}
+
+// _meta.dbDriver: which driver has the file open. Another process that shares
+// it (the Go gateway, docs/GO_GATEWAY.md) refuses to when it is sql.js, which
+// holds the database in memory and rewrites the whole file. Written after the
+// migrations, which tell a fresh database by its empty _meta.
+export function recordDriver(adapter) {
+  try {
+    adapter.run(`INSERT INTO _meta(key, value) VALUES('dbDriver', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [adapter.driver]);
+  } catch (e) {
+    console.warn(`[DB] recording the driver failed: ${e.message}`);
+  }
 }
 
 // A failed init is not retried on every DB call: each attempt re-reads the

@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { bumpConfigGenerationSync, writeConfig } from "../helpers/configGeneration.js";
 
 // Changes on every combo write, for caches that list combos (the Codex
 // catalog's routed model list). Not connectionsVersion: auto-combo rebuilds on
@@ -54,10 +55,10 @@ export async function createCombo(data) {
     createdAt: now,
     updatedAt: now,
   };
-  db.run(
+  writeConfig(db, () => db.run(
     `INSERT INTO combos(id, name, kind, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
     [combo.id, combo.name, combo.kind, stringifyJson(combo.models), combo.createdAt, combo.updatedAt]
-  );
+  ));
   bumpCombosVersion();
   return combo;
 }
@@ -73,6 +74,7 @@ export async function updateCombo(id, data) {
       `UPDATE combos SET name = ?, kind = ?, models = ?, updatedAt = ? WHERE id = ?`,
       [merged.name, merged.kind, stringifyJson(merged.models || []), merged.updatedAt, id]
     );
+    bumpConfigGenerationSync(db);
     result = merged;
   });
   if (result) bumpCombosVersion();
@@ -81,7 +83,7 @@ export async function updateCombo(id, data) {
 
 export async function deleteCombo(id) {
   const db = await getAdapter();
-  const res = db.run(`DELETE FROM combos WHERE id = ?`, [id]);
+  const res = writeConfig(db, () => db.run(`DELETE FROM combos WHERE id = ?`, [id]));
   const deleted = (res?.changes ?? 0) > 0;
   if (deleted) bumpCombosVersion();
   return deleted;

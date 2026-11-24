@@ -1,0 +1,18 @@
+{
+  "comment": "What the gateway reads in Node's database (docs/GO_GATEWAY.md, Schema ownership). schemaVersion is the highest migration it knows (_meta.schemaVersion, the migration count in src/lib/db/migrations); tables lists the columns it uses. tests/unit/gateway-db-manifest.test.js holds this to src/lib/db/schema.js, so a migration fails CI until this file says the gateway can read its schema.",
+  "schemaVersion": 6,
+  "drivers": ["better-sqlite3", "bun:sqlite", "node:sqlite"],
+  "tables": {
+    "_meta": ["key", "value"],
+    "settings": ["id", "data"],
+    "apiKeys": ["id", "key", "name", "machineId", "isActive", "limitHold", "createdAt", "budgetUsd", "allowedModels", "expiresAt", "spentUsd", "spendOffsetUsd", "spendResetAt", "requestCount", "lastUsedAt", "ownerManagementKeyId", "disabledBy", "expiresAtSetBy"],
+    "combos": ["id", "name", "kind", "models", "createdAt", "updatedAt"],
+    "providerNodes": ["id", "type", "name", "data", "createdAt", "updatedAt"],
+    "providerConnections": ["id", "provider", "authType", "name", "email", "priority", "isActive", "data", "createdAt", "updatedAt"],
+    "proxyPools": ["id", "isActive", "testStatus", "data", "createdAt", "updatedAt"],
+    "kv": ["scope", "key", "value"],
+    "usageHistory": ["id", "timestamp", "provider", "model", "connectionId", "apiKey", "endpoint", "promptTokens", "completionTokens", "cost", "status", "tokens", "meta"],
+    "usageDaily": ["dateKey", "data"],
+    "requestDetails": ["id", "timestamp", "provider", "model", "connectionId", "status", "data", "fullData"]
+  }
+}
