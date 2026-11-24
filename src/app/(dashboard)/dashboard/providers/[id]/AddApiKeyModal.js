@@ -414,7 +414,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
         ))}
         {isOllamaLocal && (
           <p className="text-xs text-text-muted">
-            Leave blank to use <code>http://localhost:11434</code>. For remote Ollama, enter the full host URL (e.g. <code>http://192.168.1.10:11434</code>).
+            Leave blank to use <code>http://localhost:11434</code>. For remote Ollama, enter the full host URL (e.g. <code>http://192.168.1.10:11434</code>). From a dashboard on another machine, a LAN address needs <code>ALLOW_PRIVATE_ENDPOINT_URLS=true</code>.
           </p>
         )}
         {validationResult && (

@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
-import { createProxyPool } from "@/models";
+import { newRelayKey, relayKeyCheck } from "@/lib/network/relayKey.js";
+import { saveRelayPool } from "@/lib/network/relayPool.js";
 
 const VERCEL_API = "https://api.vercel.com";
 
 // Relay function source code deployed to Vercel
 // Forwards requests to target URL specified in x-relay-target header
-const RELAY_FUNCTION_CODE = `
+const relayFunctionCode = (key) => `
 export const config = { runtime: "edge" };
 
 export default async function handler(req) {
+  ${relayKeyCheck(key, "req")}
   const target = req.headers.get("x-relay-target");
   const relayPath = req.headers.get("x-relay-path") || "/";
   if (!target) {
@@ -66,6 +68,7 @@ export async function POST(request) {
       return NextResponse.json({ error: "Vercel API token is required" }, { status: 400 });
     }
 
+    const relayKey = newRelayKey();
     // Deploy relay function to Vercel
     const deployRes = await fetch(`${VERCEL_API}/v13/deployments`, {
       method: "POST",
@@ -78,7 +81,7 @@ export async function POST(request) {
         files: [
           {
             file: "api/relay.js",
-            data: RELAY_FUNCTION_CODE,
+            data: relayFunctionCode(relayKey),
           },
           {
             file: "package.json",
@@ -124,17 +127,9 @@ export async function POST(request) {
     const ready = await pollDeployment(deploymentId, vercelToken);
     const deployUrl = `https://${ready.url}`;
 
-    // Create proxy pool entry with type vercel
-    const proxyPool = await createProxyPool({
-      name: projectName,
-      proxyUrl: deployUrl,
-      type: "vercel",
-      noProxy: "",
-      isActive: true,
-      strictProxy: true,
-    });
+    const { proxyPool, created } = await saveRelayPool({ type: "vercel", name: projectName, deployUrl, relayKey });
 
-    return NextResponse.json({ proxyPool, deployUrl }, { status: 201 });
+    return NextResponse.json({ proxyPool, deployUrl, updated: !created }, { status: created ? 201 : 200 });
   } catch (error) {
     console.log("Error deploying Vercel relay:", error);
     return NextResponse.json({ error: error.message || "Deploy failed" }, { status: 500 });

@@ -12,40 +12,8 @@ export function parseDataUri(url) {
   return m ? { mimeType: m[1], base64: m[2] } : null;
 }
 
-import { lookup } from "node:dns/promises";
-import { Agent } from "undici";
-import { MAX_IMAGE_BYTES, FETCH_TIMEOUT_MS, IMAGE_SIGNATURES, BLOCKED_HOSTS } from "../../config/mediaConfig.js";
-
-// True if an IPv4/IPv6 address is private/reserved (SSRF target).
-function isPrivateIp(ip) {
-  if (!ip) return true;
-  // IPv6 loopback / unique-local / link-local
-  if (ip === "::1" || ip.startsWith("fc") || ip.startsWith("fd") || ip.startsWith("fe80")) return true;
-  // IPv4-mapped IPv6 (::ffff:a.b.c.d) -> extract tail
-  const v4 = ip.includes(".") ? ip.split(":").pop() : ip;
-  const parts = v4.split(".").map((n) => Number.parseInt(n, 10));
-  if (parts.length !== 4 || parts.some((n) => Number.isNaN(n))) return ip.includes(":") ? false : true;
-  const [a, b] = parts;
-  if (a === 10 || a === 127 || a === 0) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 169 && b === 254) return true; // link-local + cloud metadata
-  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
-  return false;
-}
-
-// Resolve host once and return only public IPs (SSRF guard).
-// Rejects if any resolved record is private/reserved (defeats multi-A tricks).
-async function resolvePinnedIps(hostname) {
-  if (!hostname || BLOCKED_HOSTS.has(hostname.toLowerCase())) return null;
-  try {
-    const records = await lookup(hostname, { all: true });
-    if (!records.length || records.some((r) => isPrivateIp(r.address))) return null;
-    return records;
-  } catch {
-    return null;
-  }
-}
+import { MAX_IMAGE_BYTES, FETCH_TIMEOUT_MS, IMAGE_SIGNATURES } from "../../config/mediaConfig.js";
+import { fetchPublicHop } from "../../utils/ssrfGuard.js";
 
 // Real image type of a base64 payload, from its first bytes (null if none matches).
 // Only the head is decoded, so a large screenshot costs nothing extra.
@@ -124,8 +92,8 @@ export function imageDimensions(base64) {
 }
 
 // Verify buffer magic bytes match a known image signature; return its mime or null.
-function detectImageMime(buf) {
-  for (const { sig, offset, mime, verifyWebp } of IMAGE_SIGNATURES) {
+function detectImageMime(buf, signatures = IMAGE_SIGNATURES) {
+  for (const { sig, offset, mime, verifyWebp } of signatures) {
     if (buf.length < offset + sig.length) continue;
     let match = true;
     for (let i = 0; i < sig.length; i++) {
@@ -139,39 +107,42 @@ function detectImageMime(buf) {
   return null;
 }
 
+const HTTP_URL_RE = /^https?:\/\//i;
+
 /**
  * Fetch a remote image URL and return it as a base64 data URI.
- * Hardened against SSRF (private/metadata IPs), memory DoS (size cap),
- * and disguised non-image payloads (magic-byte verification).
+ * Hardened against SSRF: every hop goes through fetchPublicHop (public
+ * addresses only, resolved once and pinned, or through the env proxy after the
+ * same check), memory DoS (size cap), and disguised non-image payloads
+ * (magic-byte verification against `signatures`).
+ * Redirects are refused unless `maxRedirects` allows them; each one followed
+ * is checked like the first URL.
  * Returns null on any failure or rejection.
  *
  * @param {string} imageUrl - HTTP(S) URL of the image
- * @param {object} options - { signal, timeoutMs, maxBytes }
+ * @param {object} options - { signal, timeoutMs, maxBytes, maxRedirects, signatures }
  * @returns {Promise<{url: string, mimeType: string}|null>}
  */
 export async function fetchImageAsBase64(imageUrl, options = {}) {
-  const { signal, timeoutMs = FETCH_TIMEOUT_MS, maxBytes = MAX_IMAGE_BYTES } = options;
-  if (!imageUrl || (!imageUrl.startsWith("http://") && !imageUrl.startsWith("https://"))) {
-    return null;
-  }
-
-  let url;
-  try { url = new URL(imageUrl); } catch { return null; }
-  const pinnedIps = await resolvePinnedIps(url.hostname);
-  if (!pinnedIps) return null;
+  const { signal, timeoutMs = FETCH_TIMEOUT_MS, maxBytes = MAX_IMAGE_BYTES, maxRedirects = 0, signatures = IMAGE_SIGNATURES } = options;
+  if (typeof imageUrl !== "string" || !HTTP_URL_RE.test(imageUrl)) return null;
 
   const controller = new AbortController();
   const timeout = signal ? null : setTimeout(() => controller.abort(), timeoutMs);
   const fetchSignal = signal || controller.signal;
 
-  // Pin connect to the validated IP so no second DNS resolution can rebind (TOCTOU fix).
-  const dispatcher = new Agent({
-    connect: { lookup: (_h, _o, cb) => cb(null, [{ address: pinnedIps[0].address, family: pinnedIps[0].family }]) },
-  });
-
   try {
-    // redirect:"manual" prevents a public URL redirecting to a private one (SSRF bypass).
-    const response = await fetch(imageUrl, { signal: fetchSignal, redirect: "manual", dispatcher });
+    let current = imageUrl;
+    let response;
+    for (let hop = 0; ; hop++) {
+      response = await fetchPublicHop(current, { signal: fetchSignal });
+      const location = response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
+      if (!location) break;
+      await response.body?.cancel().catch(() => {});
+      if (hop >= maxRedirects) return null;
+      current = new URL(location, current).toString();
+      if (!HTTP_URL_RE.test(current)) return null;
+    }
     if (!response.ok || !response.body) return null;
 
     // Stream-read with a hard byte cap to avoid loading huge payloads into memory.
@@ -187,7 +158,7 @@ export async function fetchImageAsBase64(imageUrl, options = {}) {
     }
 
     const buf = Buffer.concat(chunks.map((c) => Buffer.from(c)));
-    const mimeType = detectImageMime(buf);
+    const mimeType = detectImageMime(buf, signatures);
     if (!mimeType) return null; // not a recognized image — reject disguised payloads
 
     return { url: `data:${mimeType};base64,${buf.toString("base64")}`, mimeType };
@@ -195,6 +166,5 @@ export async function fetchImageAsBase64(imageUrl, options = {}) {
     return null;
   } finally {
     if (timeout) clearTimeout(timeout);
-    dispatcher.close().catch(() => {});
   }
 }

@@ -5,6 +5,7 @@ import {
   getProxyPoolById,
   updateProxyPool,
 } from "@/models";
+import { proxyUrlProblem } from "@/lib/network/privateUrls.js";
 import { getSettings } from "@/lib/db/index.js";
 import { normalizeLayerSetting } from "@/lib/network/proxyRouting.js";
 
@@ -83,6 +84,15 @@ export async function PUT(request, { params }) {
 
     if (normalized.error) {
       return NextResponse.json({ error: normalized.error }, { status: 400 });
+    }
+
+    // A new URL gets the same rule as on create, and so does a stored one
+    // switched back on; keeping the stored one as it is is fine.
+    const nextUrl = normalized.updates.proxyUrl || existing.proxyUrl;
+    const enabling = normalized.updates.isActive === true && existing.isActive !== true;
+    if (nextUrl && (nextUrl !== existing.proxyUrl || enabling)) {
+      const urlProblem = await proxyUrlProblem(request, nextUrl);
+      if (urlProblem) return NextResponse.json({ error: urlProblem, field: "proxyUrl" }, { status: 400 });
     }
 
     const updated = await updateProxyPool(id, normalized.updates);

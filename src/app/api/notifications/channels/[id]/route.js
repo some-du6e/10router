@@ -9,6 +9,7 @@ import {
   normalizeNotificationChannelInput,
   redactNotificationChannel,
 } from "@/lib/notifications/validation.js";
+import { blocksPrivateUrls } from "@/lib/network/privateUrls.js";
 
 function configureScheduler(channels) {
   import("@/shared/services/quotaNotifications")
@@ -36,7 +37,7 @@ export async function PUT(request, { params }) {
     if (!existing) return NextResponse.json({ error: "Notification channel not found" }, { status: 404 });
 
     const body = await request.json();
-    const input = normalizeNotificationChannelInput(body, existing);
+    const input = normalizeNotificationChannelInput(body, existing, { blocksPrivateNetwork: await blocksPrivateUrls(request) });
     const channel = await updateNotificationChannel(id, input);
     configureScheduler(await getNotificationChannels());
     return NextResponse.json({ channel: redactNotificationChannel(channel) });

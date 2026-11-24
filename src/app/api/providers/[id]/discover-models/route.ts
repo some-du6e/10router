@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { getProviderConnectionById, getProviderNodeById, updateProviderNode, getProviderConnections, updateProviderConnection } from "@/models";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
-import { isLocalRequest } from "@/dashboardGuard";
-import { assertPublicUrlResolved } from "@/shared/utils/ssrfGuard.js";
+import { blocksPrivateUrls, privateUrlRejected } from "@/lib/network/privateUrls.js";
 import { discoverModels } from "@/lib/endpointDetect.js";
 import { getEndpointCatalog } from "@/lib/endpointCatalog.js";
 import { makeProbeFetch } from "@/lib/probeFetch.js";
@@ -45,11 +44,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     const baseUrl = connection.providerSpecificData?.baseUrl;
     if (!baseUrl) return NextResponse.json({ error: "No base URL configured" }, { status: 400 });
 
-    const remote = !isLocalRequest(request);
-    if (remote) {
-      try { await assertPublicUrlResolved(baseUrl); }
-      catch { return NextResponse.json({ error: "URL not allowed" }, { status: 400 }); }
-    }
+    const problem = await privateUrlRejected(request, baseUrl);
+    if (problem) return NextResponse.json({ error: problem }, { status: 400 });
+    const remote = await blocksPrivateUrls(request);
 
     const protocol = anthropic ? "anthropic" : connection.providerSpecificData?.apiType === "responses" ? "openai-responses" : "openai-chat";
     // Two-path nodes: probe every path this endpoint already routes to.

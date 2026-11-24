@@ -1,8 +1,7 @@
 // Shared by the detect routes: the SSRF check on the target, and the NDJSON
 // stream the dashboard reads live progress from.
 import { NextResponse } from "next/server";
-import { assertPublicUrlResolved } from "@/shared/utils/ssrfGuard.js";
-import { isLocalRequest } from "@/dashboardGuard";
+import { blocksPrivateUrls, privateUrlRejected } from "@/lib/network/privateUrls.js";
 
 export const NDJSON = "application/x-ndjson";
 
@@ -13,14 +12,13 @@ export const wantsStream = (request: Request) =>
   (request.headers.get("accept") || "").includes(NDJSON) || new URL(request.url).searchParams.get("stream") === "1";
 
 // Remote callers may only reach public hosts; the local host keeps self-hosted
-// endpoints (ollama, LM Studio, vLLM). Returns { remote } or an error response.
+// endpoints (ollama, LM Studio, vLLM), and so does a signed-in dashboard
+// session with ALLOW_PRIVATE_ENDPOINT_URLS=true (see blocksPrivateUrls).
+// Returns { remote } or an error response.
 export async function guardTarget(request: Request, url: string): Promise<{ remote: boolean } | NextResponse> {
-  const remote = !isLocalRequest(request);
-  if (remote) {
-    try { await assertPublicUrlResolved(url); }
-    catch { return NextResponse.json({ ok: false, error: "URL not allowed", steps: [] }, { status: 400 }); }
-  }
-  return { remote };
+  const problem = await privateUrlRejected(request, url);
+  if (problem) return NextResponse.json({ ok: false, error: problem, steps: [] }, { status: 400 });
+  return { remote: await blocksPrivateUrls(request) };
 }
 
 // Run `work` and answer with its result: plain JSON, or NDJSON progress lines

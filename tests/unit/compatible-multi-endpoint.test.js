@@ -20,7 +20,7 @@ vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
 }));
 
 vi.mock("next/server", () => ({ NextResponse: { json: mocks.json } }));
-vi.mock("@/dashboardGuard", () => ({ isLocalRequest: () => db.local }));
+vi.mock("@/dashboardGuard", () => ({ isLocalRequest: () => db.local, hasSignedInDashboardSession: async () => db.session === true }));
 
 vi.mock("@/models", () => ({
   getProviderNodes: vi.fn(async () => db.nodes),
@@ -98,13 +98,31 @@ describe("per-key endpoint URL", () => {
     db.local = false;
     const res = await providersRoute.POST(req({ provider: NODE_ID, apiKey: "sk-b", name: "B", baseUrl: "http://169.254.169.254/latest" }));
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe("URL not allowed");
+    expect(res.body.error).toMatch(/^URL not allowed: it points at a private, LAN or loopback host/);
     expect(db.connections).toHaveLength(0);
 
     await providersRoute.POST(req({ provider: NODE_ID, apiKey: "sk-a", name: "A" }));
     const put = await connectionRoute.PUT(req({ baseUrl: "http://127.0.0.1:8080/v1" }), params("conn-1"));
     expect(put.status).toBe(400);
     expect(db.connections[0].providerSpecificData.baseUrl).toBe(URL_A);
+  });
+
+  it("ALLOW_PRIVATE_ENDPOINT_URLS lets a signed-in remote session give a key a LAN URL, and only that", async () => {
+    db.local = false;
+    vi.stubEnv("ALLOW_PRIVATE_ENDPOINT_URLS", "true");
+    try {
+      db.session = false;
+      expect((await providersRoute.POST(req({ provider: NODE_ID, apiKey: "sk-b", name: "B", baseUrl: "http://10.0.0.30/v1" }))).status).toBe(400);
+      db.session = true;
+      const res = await providersRoute.POST(req({ provider: NODE_ID, apiKey: "sk-b", name: "B", baseUrl: "http://10.0.0.30/v1" }));
+      expect(res.status).toBe(201);
+      expect(db.connections[0].providerSpecificData).toMatchObject({ baseUrl: "http://10.0.0.30/v1", ownBaseUrl: true });
+      const put = await connectionRoute.PUT(req({ baseUrl: "http://10.0.0.31/v1" }), params("conn-1"));
+      expect(put.status).toBe(200);
+    } finally {
+      db.session = false;
+      vi.unstubAllEnvs();
+    }
   });
 
   it("providerSpecificData can't set the key's URL", async () => {
@@ -202,6 +220,24 @@ describe("validating a key at its own URL", () => {
     expect(res.body.valid).toBe(true);
     expect(mocks.makeProbeFetch).toHaveBeenCalledWith(true);
     expect(mocks.probeFetch).toHaveBeenCalledWith(`${PUBLIC_URL}/models`, expect.objectContaining({ headers: { Authorization: "Bearer sk-b" } }));
+  });
+
+  it("with ALLOW_PRIVATE_ENDPOINT_URLS, a signed-in remote session's LAN key URL gets the plain fetch", async () => {
+    db.local = false;
+    db.session = true;
+    vi.stubEnv("ALLOW_PRIVATE_ENDPOINT_URLS", "true");
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => okRes());
+    try {
+      const res = await validateRoute.POST(req({ provider: NODE_ID, apiKey: "sk-b", baseUrl: "http://10.0.0.30/v1" }));
+      expect(res.body.valid).toBe(true);
+      expect(mocks.makeProbeFetch).not.toHaveBeenCalled();
+      expect(globalThis.fetch).toHaveBeenCalledWith("http://10.0.0.30/v1/models", expect.anything());
+    } finally {
+      globalThis.fetch = realFetch;
+      db.session = false;
+      vi.unstubAllEnvs();
+    }
   });
 
   it("an anthropic-compatible key does too", async () => {

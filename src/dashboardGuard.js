@@ -341,6 +341,17 @@ async function loadSettings() {
   }
 }
 
+// A signed-in dashboard session on a claimed instance with login required:
+// the only caller ALLOW_PRIVATE_ENDPOINT_URLS trusts. requireLogin=false, an
+// unclaimed instance (setup pending), a restricted session and a request with
+// no session cookie (the management API's internal requests) are not one.
+export async function hasSignedInDashboardSession(request) {
+  const settings = await loadSettings();
+  if (!settings || settings.requireLogin === false || await needsSetup(settings)) return false;
+  const session = await getDashboardAuthSession(request?.cookies?.get?.("auth_token")?.value);
+  return acceptsDashboardSession(session, settings, false);
+}
+
 async function isAuthenticated(request) {
   if (await hasValidToken(request)) return true;
   const settings = await loadSettings();

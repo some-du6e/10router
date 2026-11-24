@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Badge, Button, Card, CardSkeleton, Input, Modal, Toggle, ConfirmModal } from "@/shared/components";
 import { useNotificationStore } from "@/store/notificationStore";
+import { classifyPoolTest, healthCheckSummary } from "@/shared/utils/proxyHealth.js";
 import ProxyRoutingCard from "./ProxyRoutingCard";
 import { RELAY_TYPES } from "@/lib/network/proxyRouting.js";
 
@@ -196,6 +197,10 @@ export default function ProxyPoolsPage() {
       const res = await fetch(`/api/proxy-pools/${proxyPoolId}/test`, { method: "POST" });
       const data = await res.json();
 
+      if (classifyPoolTest(res.ok, data) === "skipped") {
+        notify.info(data.error);
+        return;
+      }
       if (!res.ok) {
         notify.error(data.error || "Failed to test proxy");
         return;
@@ -222,7 +227,8 @@ export default function ProxyPoolsPage() {
       });
       if (!res.ok) {
         setProxyPools((prev) => prev.map((p) => p.id === pool.id ? { ...p, isActive: pool.isActive } : p));
-        notify.error("Failed to update active state");
+        const data = await res.json().catch(() => ({}));
+        notify.error(data.error || "Failed to update active state");
       }
     } catch (error) {
       console.log("Error toggling active:", error);
@@ -240,7 +246,7 @@ export default function ProxyPoolsPage() {
     if (targets.length === 0) return;
     setBulkBusy(true);
     try {
-      let ok = 0; let failed = 0;
+      let ok = 0; let failed = 0; let lastError = "";
       for (const id of targets) {
         try {
           const res = await fetch(`/api/proxy-pools/${id}`, {
@@ -248,11 +254,16 @@ export default function ProxyPoolsPage() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ isActive }),
           });
-          if (res.ok) ok += 1; else failed += 1;
+          if (res.ok) ok += 1;
+          else {
+            failed += 1;
+            lastError = (await res.json().catch(() => ({}))).error || lastError;
+          }
         } catch { failed += 1; }
       }
       await fetchProxyPools();
       notify.success(`${isActive ? "Activated" : "Deactivated"} ${ok}${failed ? `, failed ${failed}` : ""}`);
+      if (lastError) notify.error(lastError);
     } finally {
       setBulkBusy(false);
     }
@@ -293,7 +304,7 @@ export default function ProxyPoolsPage() {
     if (targets.length === 0) return;
     setHealthChecking(true);
     setHealthProgress({ current: 0, total: targets.length });
-    let alive = 0; const deadIds = [];
+    let alive = 0; let skipped = 0; const deadIds = [];
     let done = 0;
     const CONCURRENCY = 10;
     const queue = [...targets];
@@ -305,7 +316,10 @@ export default function ProxyPoolsPage() {
         try {
           const res = await fetch(`/api/proxy-pools/${pool.id}/test`, { method: "POST" });
           const data = await res.json();
-          if (res.ok && data.ok) alive += 1; else deadIds.push(pool.id);
+          const verdict = classifyPoolTest(res.ok, data);
+          if (verdict === "alive") alive += 1;
+          else if (verdict === "skipped") skipped += 1;
+          else deadIds.push(pool.id);
         } catch {
           deadIds.push(pool.id);
         } finally {
@@ -323,7 +337,7 @@ export default function ProxyPoolsPage() {
     if (deadIds.length > 0) {
       setConfirmState({
         title: "Disable Dead Proxies",
-        message: `Alive: ${alive}, Dead: ${deadIds.length}.\n\nDisable ${deadIds.length} dead proxies?`,
+        message: `${healthCheckSummary({ alive, dead: deadIds.length, skipped })}.\n\nDisable ${deadIds.length} dead proxies?`,
         onConfirm: async () => {
           setConfirmState(null);
           setBulkBusy(true);
@@ -345,7 +359,7 @@ export default function ProxyPoolsPage() {
         }
       });
     } else {
-      notify.success(`Health check done. Alive: ${alive}, Dead: ${deadIds.length}`);
+      notify.success(`Health check done. ${healthCheckSummary({ alive, dead: deadIds.length, skipped })}`);
     }
   };
 

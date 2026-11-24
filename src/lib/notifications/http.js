@@ -2,15 +2,11 @@ import dns from "node:dns/promises";
 import { isIP } from "node:net";
 import { Agent } from "undici";
 import { NOTIFICATION_CONFIG } from "./constants.js";
-import { isPrivateNotificationHost } from "./validation.js";
-
-function isPrivateAddress(address) {
-  return isPrivateNotificationHost(address);
-}
+import { isBlockedIpAddress } from "open-sse/utils/ssrfGuard.js";
 
 async function assertPublicDestination(url, allowPrivateNetwork = false) {
   if (allowPrivateNetwork) return null;
-  if (isPrivateNotificationHost(url.hostname)) {
+  if (isBlockedIpAddress(url.hostname)) {
     throw new Error("Private or local notification destinations require the private-network option");
   }
 
@@ -19,7 +15,7 @@ async function assertPublicDestination(url, allowPrivateNetwork = false) {
 
   const results = await dns.lookup(url.hostname, { all: true, verbatim: true });
   if (!results.length) throw new Error("Notification destination did not resolve");
-  if (results.some(({ address }) => isPrivateAddress(address))) {
+  if (results.some(({ address }) => isBlockedIpAddress(address))) {
     throw new Error("Notification destination resolves to a private or local address");
   }
   return results;

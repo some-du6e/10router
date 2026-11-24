@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { createProviderConnection } from "@/models";
-
-const GITLAB_DEFAULT_BASE = "https://gitlab.com";
+import { describeRedirect, makeProbeFetch } from "@/lib/probeFetch.js";
+import { resolveGitlabBase } from "@/lib/oauth/gitlabBaseUrl.js";
+import { isBlockedUrlError } from "@/shared/utils/ssrfGuard.js";
+import { PRIVATE_URL_ERROR } from "@/lib/network/privateUrls.js";
 
 /**
  * POST /api/oauth/gitlab/pat
@@ -21,16 +23,27 @@ export async function POST(request) {
       return NextResponse.json({ error: "Personal Access Token is required" }, { status: 400 });
     }
 
-    const base = (baseUrl?.trim() || GITLAB_DEFAULT_BASE).replace(/\/$/, "");
+    const target = await resolveGitlabBase(request, baseUrl);
+    if ("error" in target) {
+      return NextResponse.json({ error: target.error }, { status: 400 });
+    }
+    const { base, remote } = target;
 
     // Verify token by fetching current user
-    const userRes = await fetch(`${base}/api/v4/user`, {
-      headers: { "Private-Token": token.trim(), Accept: "application/json" },
-    });
+    let userRes;
+    try {
+      userRes = await makeProbeFetch(remote)(`${base}/api/v4/user`, {
+        headers: { "Private-Token": token.trim(), Accept: "application/json" },
+      });
+    } catch (error) {
+      if (isBlockedUrlError(error)) {
+        return NextResponse.json({ error: PRIVATE_URL_ERROR }, { status: 400 });
+      }
+      return NextResponse.json({ error: "GitLab URL is not reachable" }, { status: 400 });
+    }
 
     if (!userRes.ok) {
-      const err = await userRes.text();
-      return NextResponse.json({ error: `GitLab token verification failed: ${err}` }, { status: 401 });
+      return NextResponse.json({ error: describeRedirect(userRes) || `GitLab token verification failed (${userRes.status})` }, { status: 401 });
     }
 
     const user = await userRes.json();

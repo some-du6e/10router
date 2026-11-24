@@ -7,6 +7,7 @@ import {
   normalizeNotificationChannelInput,
   redactNotificationChannel,
 } from "@/lib/notifications/validation.js";
+import { blocksPrivateUrls } from "@/lib/network/privateUrls.js";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -34,7 +35,7 @@ export async function GET() {
 export async function POST(request) {
   try {
     const body = await request.json();
-    const input = normalizeNotificationChannelInput(body);
+    const input = normalizeNotificationChannelInput(body, null, { blocksPrivateNetwork: await blocksPrivateUrls(request) });
     const channel = await createNotificationChannel(input);
     configureScheduler(await getNotificationChannels());
     return NextResponse.json({ channel: redactNotificationChannel(channel) }, { status: 201 });

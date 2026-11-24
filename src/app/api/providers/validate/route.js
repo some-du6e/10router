@@ -14,8 +14,9 @@ import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
 import { appendUrlPath, resolveCompatibleRoute } from "open-sse/services/provider.js";
 import { stripThinkingSuffix } from "open-sse/translator/concerns/thinkingUnified.js";
 import { getExecutor } from "open-sse/executors/index.js";
-import { resolveKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
-import { isLocalRequest } from "@/dashboardGuard";
+import { resolveKeyBaseUrl, withoutKeyBaseUrl } from "@/shared/utils/connectionBaseUrl";
+import { blocksPrivateUrls, PRIVATE_URL_ERROR, providerDataProblem } from "@/lib/network/privateUrls.js";
+import { isBlockedUrlError } from "@/shared/utils/ssrfGuard.js";
 import { makeProbeFetch } from "@/lib/probeFetch.js";
 import { discardBody } from "@/lib/endpointDetect.js";
 import { NO_API_ROUTE, UNVERIFIED, KEY_CHECK_ERRORS, INVALID_KEY, PROBE_TIMEOUT_MS } from "@/shared/constants/keyCheck.js";
@@ -28,7 +29,7 @@ import { NO_API_ROUTE, UNVERIFIED, KEY_CHECK_ERRORS, INVALID_KEY, PROBE_TIMEOUT_
 async function compatibleBaseUrl(request, body, node) {
   const plainFetch = (url, init) => fetch(url, init);
   if (typeof body.baseUrl !== "string" || !body.baseUrl.trim()) return { ok: true, baseUrl: node.baseUrl, fetch: plainFetch };
-  const remote = !isLocalRequest(request);
+  const remote = await blocksPrivateUrls(request);
   const keyUrl = await resolveKeyBaseUrl(body.baseUrl, node.baseUrl, { remote });
   if (!keyUrl.ok) return keyUrl;
   return { ...keyUrl, fetch: keyUrl.own && remote ? makeProbeFetch(true) : plainFetch };
@@ -144,7 +145,11 @@ async function probeMediaProvider(provider, apiKey, providerSpecificData) {
         questions: { probe: { type: "noul", instructions: "Is there a payment problem?" } },
       }),
       signal: AbortSignal.timeout(8000),
-    }, providerSpecificData);
+    }, providerSpecificData && {
+      connectionProxyEnabled: providerSpecificData.connectionProxyEnabled,
+      connectionProxyUrl: providerSpecificData.connectionProxyUrl,
+      connectionNoProxy: providerSpecificData.connectionNoProxy,
+    });
     return res.status !== 401 && res.status !== 403;
   }
   const cfg = p.ttsConfig || p.sttConfig || p.embeddingConfig || p.imageConfig || p.videoConfig || p.musicConfig;
@@ -188,6 +193,15 @@ export async function POST(request) {
     if (!provider || (!apiKey && provider !== "ollama-local" && !isNoAuth)) {
       return NextResponse.json({ error: "Provider and API key required" }, { status: 400 });
     }
+
+    // The URLs this check sends the key to (an Azure endpoint, a self-hosted
+    // baseUrl, a proxy) get the rule saving them gets; a custom node's own URL
+    // is the node's. A remote caller's probe of one is pinned to the checked
+    // address.
+    const isNodeBacked = isOpenAICompatibleProvider(provider) || isAnthropicCompatibleProvider(provider) || isCustomEmbeddingProvider(provider);
+    const dataProblem = await providerDataProblem(request, provider, isNodeBacked ? withoutKeyBaseUrl(providerSpecificData) : providerSpecificData, null);
+    if (dataProblem) return NextResponse.json({ valid: false, ...dataProblem }, { status: 400 });
+    const ownUrlFetch = (await blocksPrivateUrls(request)) ? makeProbeFetch(true) : fetch;
 
     let isValid = false;
     let error = null;
@@ -350,7 +364,7 @@ export async function POST(request) {
         };
         if (organization) headers["OpenAI-Organization"] = organization;
 
-        const azureRes = await fetch(url, {
+        const azureRes = await ownUrlFetch(url, {
           method: "POST",
           headers,
           body: JSON.stringify({
@@ -513,7 +527,9 @@ export async function POST(request) {
           };
           const headers = {};
           if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-          const res = await fetch(endpoints[provider], { headers, signal: AbortSignal.timeout(8000) });
+          // Ollama Local's default host is this machine's; only a URL the caller names is its own.
+          const callerUrl = provider === "ollama-local" && typeof providerSpecificData?.baseUrl === "string" && providerSpecificData.baseUrl.trim();
+          const res = await (callerUrl ? ownUrlFetch : fetch)(endpoints[provider], { headers, signal: AbortSignal.timeout(8000) });
           // xai returns 400 for bad key, 403 for valid-but-no-credit. Other providers use 401.
           if (provider === "xai") {
             isValid = res.status === 200 || res.status === 403;
@@ -766,7 +782,7 @@ export async function POST(request) {
         }
       }
     } catch (err) {
-      error = err.message;
+      error = isBlockedUrlError(err) ? PRIVATE_URL_ERROR : err.message;
       isValid = false;
     }
 

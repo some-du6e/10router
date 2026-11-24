@@ -65,6 +65,13 @@ vi.mock("@/lib/auth/setupToken", () => ({
   clearSetupToken: mocks.clearSetupToken,
 }));
 
+// The outbound proxy URL gets the private-host rule: who is calling.
+const caller = vi.hoisted(() => ({ local: true, session: false }));
+vi.mock("@/dashboardGuard", () => ({
+  isLocalRequest: () => caller.local,
+  hasSignedInDashboardSession: async () => caller.session,
+}));
+
 const { GET, PATCH } = await import("../../src/app/api/settings/route.js");
 
 function request(body) {
@@ -191,6 +198,93 @@ describe("PATCH /api/settings session revocation", () => {
     await PATCH(request({ theme: "dark" }));
     expect(mocks.revokeDashboardSessions).not.toHaveBeenCalled();
     expect(mocks.reissueDashboardSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("PATCH /api/settings outbound proxy", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    caller.local = false;
+    caller.session = false;
+    mocks.getSettings.mockResolvedValue({ outboundProxyEnabled: false, outboundProxyUrl: "" });
+    mocks.updateSettings.mockImplementation(async (body) => body);
+  });
+
+  it("refuses a private proxy URL from a remote session, saved on or off", async () => {
+    for (const body of [
+      { outboundProxyEnabled: true, outboundProxyUrl: "http://10.0.0.8:3128" },
+      { outboundProxyEnabled: false, outboundProxyUrl: "127.0.0.1:7890" },
+    ]) {
+      const res = await PATCH(request(body));
+      expect(res.status).toBe(400);
+      expect(res.body.field).toBe("outboundProxyUrl");
+    }
+    expect(mocks.updateSettings).not.toHaveBeenCalled();
+    expect(mocks.applyOutboundProxyEnv).not.toHaveBeenCalled();
+  });
+
+  it("checks a stored private URL when a remote session switches it on", async () => {
+    mocks.getSettings.mockResolvedValue({ outboundProxyEnabled: false, outboundProxyUrl: "http://10.0.0.8:3128" });
+    expect((await PATCH(request({ outboundProxyEnabled: true }))).status).toBe(400);
+  });
+
+  it("reads the switch and the URL the way the proxy does: any truthy switch, any URL value", async () => {
+    mocks.getSettings.mockResolvedValue({ outboundProxyEnabled: false, outboundProxyUrl: "http://10.0.0.8:3128" });
+    expect((await PATCH(request({ outboundProxyEnabled: 1 }))).status).toBe(400);
+    mocks.getSettings.mockResolvedValue({ outboundProxyEnabled: false, outboundProxyUrl: "" });
+    const array = await PATCH(request({ outboundProxyEnabled: true, outboundProxyUrl: ["http://10.0.0.5:3128"] }));
+    expect(array.status).toBe(400);
+    expect(array.body).toEqual({ error: "outboundProxyUrl must be a string", field: "outboundProxyUrl" });
+    expect(mocks.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("lets a local session, or a signed-in one with ALLOW_PRIVATE_ENDPOINT_URLS, use a LAN proxy", async () => {
+    caller.local = true;
+    expect((await PATCH(request({ outboundProxyEnabled: true, outboundProxyUrl: "http://10.0.0.8:3128" }))).status).toBe(200);
+    caller.local = false;
+    caller.session = true;
+    vi.stubEnv("ALLOW_PRIVATE_ENDPOINT_URLS", "true");
+    try {
+      expect((await PATCH(request({ outboundProxyEnabled: true, outboundProxyUrl: "http://10.0.0.9:3128" }))).status).toBe(200);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("PATCH /api/settings OIDC issuer", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    caller.local = true;
+    mocks.getSettings.mockResolvedValue({ oidcIssuerUrl: "https://idp.example.com", oidcClientId: "c", oidcClientSecret: "saved-secret" });
+    mocks.updateSettings.mockImplementation(async (body) => body);
+  });
+
+  it("needs the client secret again to point OIDC at another issuer", async () => {
+    for (const body of [{ oidcIssuerUrl: "https://other.example" }, { oidcIssuerUrl: "https://other.example", oidcClientSecret: "" }]) {
+      const res = await PATCH(request(body));
+      expect(res.status).toBe(400);
+      expect(res.body.field).toBe("oidcClientSecret");
+    }
+    expect(mocks.updateSettings).not.toHaveBeenCalled();
+    expect((await PATCH(request({ oidcIssuerUrl: "https://other.example", oidcClientSecret: "new-secret" }))).status).toBe(200);
+  });
+
+  it("refuses a private issuer from a remote session, since sign-in fetches from it", async () => {
+    caller.local = false;
+    const res = await PATCH(request({ oidcIssuerUrl: "http://10.0.0.5:8080/realms/r", oidcClientSecret: "new-secret" }));
+    expect(res.status).toBe(400);
+    expect(res.body.field).toBe("oidcIssuerUrl");
+    expect((await PATCH(request({ oidcIssuerUrl: "https://203.0.113.20/realms/r", oidcClientSecret: "new-secret" }))).status).toBe(200);
+    // The saved issuer, wherever it is, passes.
+    mocks.getSettings.mockResolvedValue({ oidcIssuerUrl: "http://10.0.0.5:8080/realms/r", oidcClientSecret: "saved-secret" });
+    expect((await PATCH(request({ oidcIssuerUrl: "http://10.0.0.5:8080/realms/r", oidcLoginLabel: "SSO" }))).status).toBe(200);
+  });
+
+  it("keeps the saved secret for the same issuer, and lets the issuer be cleared", async () => {
+    expect((await PATCH(request({ oidcIssuerUrl: "https://idp.example.com/", oidcClientId: "c2" }))).status).toBe(200);
+    expect((await PATCH(request({ oidcIssuerUrl: "" }))).status).toBe(200);
+    expect(mocks.updateSettings).toHaveBeenCalledTimes(2);
   });
 });
 

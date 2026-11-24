@@ -73,8 +73,6 @@ describe("assertPublicUrl: IPv6-embedded IPv4 and special-purpose ranges", () =>
     "http://[2002:c0a8:101::1]/",       // 6to4 of 192.168.1.1
     "http://[fec0::1]/",                // site-local
     "http://[feff::1]/",
-    "http://198.18.0.1/",               // benchmarking
-    "http://198.19.255.254/",
     "http://192.0.0.1/",                // IETF protocol assignments
     "http://192.0.0.170/",
   ])("blocks %s", (url) => expect(() => assertPublicUrl(url)).toThrow());
@@ -84,6 +82,8 @@ describe("assertPublicUrl: IPv6-embedded IPv4 and special-purpose ranges", () =>
     "http://[64:ff9b::8.8.8.8]/",
     "http://[2002:808:808::1]/",        // 6to4 of 8.8.8.8
     "http://198.17.255.255/",
+    "http://198.18.0.1/",               // benchmarking range: Clash/mihomo/sing-box/Surge TUN fake-IP answers
+    "http://198.19.255.254/",
     "http://198.20.0.1/",
     "http://192.0.1.1/",
     "http://192.0.2.1/",
@@ -95,8 +95,11 @@ describe("assertPublicUrl: IPv6-embedded IPv4 and special-purpose ranges", () =>
     lookupMock.mockReset();
     lookupMock.mockResolvedValue([{ address: "2002:a00:1::1", family: 6 }]);
     await expect(assertPublicUrlResolved("http://sixtofour.example.com/")).rejects.toThrow();
+    lookupMock.mockResolvedValue([{ address: "192.0.0.9", family: 4 }]);
+    await expect(assertPublicUrlResolved("http://ietf.example.com/")).rejects.toThrow();
+    // A fake-IP TUN resolves every name into 198.18.0.0/15: those still pass.
     lookupMock.mockResolvedValue([{ address: "198.18.5.5", family: 4 }]);
-    await expect(assertPublicUrlResolved("http://bench.example.com/")).rejects.toThrow();
+    await expect(assertPublicUrlResolved("http://fake-ip.example.com/")).resolves.toBeUndefined();
   });
 });
 

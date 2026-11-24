@@ -1,16 +1,9 @@
 import { NextResponse } from "next/server";
-import { assertPublicUrl } from "@/shared/utils/ssrfGuard.js";
-import { isLocalRequest } from "@/dashboardGuard";
+import { isBlockedUrlError } from "@/shared/utils/ssrfGuard.js";
+import { blocksPrivateUrls, PRIVATE_URL_ERROR } from "@/lib/network/privateUrls.js";
+import { describeRedirect, makeProbeFetch } from "@/lib/probeFetch.js";
 
-// Fetch with timeout wrapper
-const fetchWithTimeout = (url, options, timeout = 10000) => {
-  return Promise.race([
-    fetch(url, options),
-    new Promise((_, reject) => 
-      setTimeout(() => reject(new Error("Request timeout")), timeout)
-    )
-  ]);
-};
+const PROBE_TIMEOUT_MS = 10_000;
 
 // Validate URL format
 const isValidUrl = (url) => {
@@ -66,14 +59,9 @@ export async function POST(request) {
       return NextResponse.json({ error: "Invalid URL format" }, { status: 400 });
     }
 
-    // SSRF guard for remote callers; local host keeps self-hosted nodes (e.g. ollama-local)
-    if (!isLocalRequest(request)) {
-      try {
-        assertPublicUrl(baseUrl);
-      } catch {
-        return NextResponse.json({ error: "URL not allowed" }, { status: 400 });
-      }
-    }
+    // SSRF guard for remote callers, on every hop; local host keeps self-hosted nodes (e.g. ollama-local)
+    const probe = makeProbeFetch(await blocksPrivateUrls(request));
+    const fetchWithTimeout = (url, options) => probe(url, { ...options, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
 
     // Custom Embedding Validation - test POST /embeddings directly
     if (type === "custom-embedding") {
@@ -150,12 +138,12 @@ export async function POST(request) {
         }
         return NextResponse.json({
           valid: false,
-          error: getChatErrorMessage(chatRes.status),
+          error: describeRedirect(chatRes) || getChatErrorMessage(chatRes.status),
           method: "chat"
         });
       }
 
-      return NextResponse.json({ valid: false, error: getModelsErrorMessage(res.status) });
+      return NextResponse.json({ valid: false, error: describeRedirect(res) || getModelsErrorMessage(res.status) });
     }
 
     // OpenAI Compatible Validation (Default)
@@ -190,13 +178,16 @@ export async function POST(request) {
       }
       return NextResponse.json({
         valid: false,
-        error: getChatErrorMessage(chatRes.status),
+        error: describeRedirect(chatRes) || getChatErrorMessage(chatRes.status),
         method: "chat"
       });
     }
 
-    return NextResponse.json({ valid: false, error: getModelsErrorMessage(res.status) });
+    return NextResponse.json({ valid: false, error: describeRedirect(res) || getModelsErrorMessage(res.status) });
   } catch (error) {
+    if (isBlockedUrlError(error)) {
+      return NextResponse.json({ error: PRIVATE_URL_ERROR }, { status: 400 });
+    }
     const errorMessage = getErrorMessage(error);
     console.error("Error validating provider node:", {
       message: error.message,

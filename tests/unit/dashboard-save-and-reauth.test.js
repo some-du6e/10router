@@ -8,6 +8,8 @@ import PropTypes from "prop-types";
 const { createConnection } = vi.hoisted(() => ({ createConnection: vi.fn() }));
 vi.mock("@/models", () => ({ createProviderConnection: createConnection }));
 vi.mock("next/server", () => ({ NextResponse: { json: (body, init) => Response.json(body, init) } }));
+// A caller on this machine: the GitLab PAT check then uses the stubbed fetch.
+vi.mock("@/dashboardGuard", () => ({ isLocalRequest: () => true, hasSignedInDashboardSession: async () => false }));
 
 afterEach(() => {
   vi.unstubAllGlobals();
