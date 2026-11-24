@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type ComponentType, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ComponentType, type CSSProperties, type ReactNode } from "react";
 import * as Shared from "@/shared/components/index.js";
 import SharedProviderIcon from "@/shared/components/ProviderIcon.js";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails.js";
@@ -41,8 +41,8 @@ interface Settings {
 }
 
 type Selection = { type: "account"; id: string } | { type: "provider"; id: string } | { type: "global" };
-// `id` is the account tested, so a result that lands after you moved on stays with it.
-type TestState = null | { id: string; status: "running" } | { id: string; status: "done"; ok: boolean; text: string };
+// `id` is the account tested and `run` the test, so only the latest test's result is shown, and only for its account.
+type TestState = null | { id: string; run: number; status: "running" } | { id: string; run: number; status: "done"; ok: boolean; text: string };
 type Role = "selected" | "winner" | "path" | "dim";
 
 const ROLE_CLASS: Record<Role, string> = {
@@ -94,6 +94,7 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);
   const [testState, setTest] = useState<TestState>(null);
+  const testRun = useRef(0);
 
   const load = useCallback(async () => {
     try {
@@ -257,18 +258,19 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
   });
 
   async function runTest(c: Connection) {
-    setTest({ id: c.id, status: "running" });
+    const run = ++testRun.current;
+    setTest({ id: c.id, run, status: "running" });
     try {
       const res = await fetch(`/api/providers/${c.id}/test`, { method: "POST" });
       const data = await res.json().catch(() => ({}));
       const ms = Number.isFinite(data.latencyMs) && data.latencyMs > 0 ? ` in ${data.latencyMs} ms` : "";
       const result: TestState = data.valid
-        ? { id: c.id, status: "done", ok: true, text: `Works${ms}.${data.error ? ` ${data.error}` : ""}` }
-        : { id: c.id, status: "done", ok: false, text: data.error || "Test failed" };
-      setTest((cur) => (cur?.id === c.id ? result : cur));
+        ? { id: c.id, run, status: "done", ok: true, text: `Works${ms}.${data.error ? ` ${data.error}` : ""}` }
+        : { id: c.id, run, status: "done", ok: false, text: data.error || "Test failed" };
+      setTest((cur) => (cur?.run === run ? result : cur));
     } catch (error) {
       const text = error instanceof Error ? error.message : "Test failed";
-      setTest((cur) => (cur?.id === c.id ? { id: c.id, status: "done", ok: false, text } : cur));
+      setTest((cur) => (cur?.run === run ? { id: c.id, run, status: "done", ok: false, text } : cur));
     }
   }
 
