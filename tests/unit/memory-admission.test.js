@@ -23,7 +23,8 @@ function gate(overrides = {}) {
     budgetBytes: 100 * MB,
     highWaterBytes: 0,
     bodyCopies: 1,
-    pendingCopies: 1,
+    pendingHeapCopies: 1,
+    pendingRssCopies: 1,
     maxWaitMs: 1000,
     retryAfterSec: 7,
     recheckMs: 5,
@@ -233,7 +234,7 @@ describe("heap backstop", () => {
     expect(await g.acquire({ bodyLength: 1 * MB })).toEqual({ refused: "heap", retryAfterSec: 7 });
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(logger.warn.mock.calls[0][0]).toBe("MEMORY");
-    expect(logger.warn.mock.calls[0][1]).toMatch(/refusing new requests \(heap\): 1 in flight holding 1MB, 1MB more coming from requests not yet replying, heap 900MB \(high water 850MB of 1000MB\), 1 waiting/);
+    expect(logger.warn.mock.calls[0][1]).toMatch(/refusing new requests \(heap\): 1 in flight holding 1MB, 1MB of bodies not yet replying, heap 900MB \(high water 850MB of 1000MB\), 1 waiting/);
   });
 
   it("counts admitted requests that haven't started replying, which the heap doesn't show yet", async () => {
@@ -262,7 +263,7 @@ describe("heap backstop", () => {
   });
 
   it("counts the new request's own body copies against the heap", async () => {
-    const g = heapGate({ used: 700 * MB }, { pendingCopies: 3, maxWaitMs: 20 });
+    const g = heapGate({ used: 700 * MB }, { pendingHeapCopies: 3, maxWaitMs: 20 });
     const first = await g.acquire({ bodyLength: 10 * MB });
     first.ticket.replied();
     // 700 + 3 × 60 > 850, though the heap alone is under it.
@@ -311,7 +312,7 @@ describe("heap backstop", () => {
   });
 
   it("projects the bytes still coming onto resident memory too", async () => {
-    const g = gate({ budgetBytes: 0, highWaterBytes: 1600 * MB, rss: () => 1000 * MB, pendingCopies: 5, maxWaitMs: 20 });
+    const g = gate({ budgetBytes: 0, highWaterBytes: 1600 * MB, rss: () => 1000 * MB, pendingRssCopies: 5, maxWaitMs: 20 });
     const first = await g.acquire({ bodyLength: 60 * MB });
     // 1000 + 5 × 60 + 5 × 60 = 1600: fits exactly.
     expect((await g.acquire({ bodyLength: 60 * MB })).ticket).toBeTruthy();
@@ -339,7 +340,7 @@ describe("heap backstop", () => {
 
 describe("a body without Content-Length", () => {
   it("counts as unknownBodyBytes until it is read, then as its real length", async () => {
-    const g = gate({ budgetBytes: 200 * MB, bodyCopies: 3, pendingCopies: 3, unknownBodyBytes: 20 * MB });
+    const g = gate({ budgetBytes: 200 * MB, bodyCopies: 3, unknownBodyBytes: 20 * MB });
     const held = await g.acquire({ bodyLength: 40 * MB });
     const { ticket } = await g.acquire({ bodyLength: null });
     expect(ticket.bytes).toBe(60 * MB);
@@ -356,12 +357,13 @@ describe("a body without Content-Length", () => {
     // From then on it only grows, like a stated length.
     ticket.noteBodyLength(1);
     expect(ticket.bytes).toBe(3 * MB);
-    expect(g.stats()).toMatchObject({ heldBytes: (120 + 3 + 30) * MB, pendingBytes: (120 + 3 + 30) * MB });
+    // pendingBytes counts the bodies themselves.
+    expect(g.stats()).toMatchObject({ heldBytes: (120 + 3 + 30) * MB, pendingBytes: (40 + 1 + 10) * MB });
     held.ticket.release();
   });
 
   it("is admitted through withMemoryAdmission at the guess, and counted as not yet replying until its reply starts", async () => {
-    const g = gate({ budgetBytes: 1000 * MB, bodyCopies: 3, pendingCopies: 5, unknownBodyBytes: 4 * MB });
+    const g = gate({ budgetBytes: 1000 * MB, bodyCopies: 3, unknownBodyBytes: 4 * MB });
     const { response, controller } = openStream();
     const chunked = new Request("http://localhost/v1/messages", { method: "POST", body: "{}", headers: { "content-type": "application/json" } });
     expect(chunked.headers.get("content-length")).toBeNull();
@@ -370,7 +372,7 @@ describe("a body without Content-Length", () => {
       during = { bytes: ticket.bytes, ...g.stats() };
       return response;
     }, { gate: g });
-    expect(during).toMatchObject({ bytes: 12 * MB, pendingBytes: 20 * MB });
+    expect(during).toMatchObject({ bytes: 12 * MB, pendingBytes: 4 * MB });
     // Replying: still held until the reply ends, no longer pending.
     expect(g.stats()).toMatchObject({ inflight: 1, heldBytes: 12 * MB, pendingBytes: 0 });
     const reading = res.text();

@@ -24,15 +24,23 @@ is read.
   as `INFLIGHT_UNKNOWN_BODY_MB × 3` until its body is read, then as its real
   length × 3.
 - Until its reply starts (a non-streamed one: until it ends), a request is
-  also counted as *not yet replying*: it is still reading, parsing,
-  translating and serializing its body, so the heap doesn't show all of it yet.
-- A new request is admitted when its bytes fit the budget
-  (`INFLIGHT_BODY_BUDGET_MB`), the process's resident memory is under the
-  high-water mark (`MEMORY_HIGH_WATER_MB`), and the V8 heap in use plus the
-  not-yet-replying bytes plus its own stay under `MEMORY_HEAP_HIGH_WATER_PCT`
-  of the heap limit (`heap_size_limit`, set by `--max-old-space-size`).
+  also *not yet replying*: it is still reading, parsing, translating and
+  serializing its body (again on each 429 fallback), so neither the heap nor
+  resident memory shows all of it yet. A reply that went out early (early
+  headers) doesn't end that: the request stays not yet replying until its
+  routing settles. A limit hold's reply does end it, since a hold can last
+  hours.
+- A new request is admitted when, with it counted too:
+  - its `× 3` bytes fit the budget (`INFLIGHT_BODY_BUDGET_MB`);
+  - resident memory plus 5 × the bodies not yet replying stays under the
+    high-water mark (`MEMORY_HIGH_WATER_MB`);
+  - the V8 heap in use plus 3 × the bodies not yet replying stays under
+    `MEMORY_HEAP_HIGH_WATER_PCT` of the heap limit (`heap_size_limit`).
+
   V8 aborts the process ("JavaScript heap out of memory") when its heap fills,
-  which can happen with resident memory well under the container's limit.
+  which can happen with resident memory well under the container's limit; the
+  kernel kills it when resident memory reaches the container's limit, which
+  can happen with the heap under its own.
 - Otherwise it waits in a first-come, first-served queue for up to
   `INFLIGHT_QUEUE_WAIT_MS`. A client that hangs up while waiting leaves the
   queue (499).
@@ -57,7 +65,7 @@ The server logs one line when it starts refusing, with the reason (`budget`,
 | `INFLIGHT_QUEUE_WAIT_MS` | `15000` | Longest a request waits for room. `0` refuses at once. |
 | `INFLIGHT_RETRY_AFTER_S` | `10` | `Retry-After` on a refusal. |
 | `MEMORY_HIGH_WATER_MB` | 80% of the cgroup limit | Resident memory above which new requests wait. Read from `/sys/fs/cgroup/memory.max` (v2) or `memory.limit_in_bytes` (v1); off when there is no limit. `0` turns it off. |
-| `MEMORY_HEAP_HIGH_WATER_PCT` | `85` | Percent of the V8 heap limit that the heap in use plus the not-yet-replying bytes (and the new request's) may reach. `0` turns it off. |
+| `MEMORY_HEAP_HIGH_WATER_PCT` | `85` | Percent of the V8 heap limit that the heap in use plus 3 × the bodies not yet replying (the new request's too) may reach. `0` turns it off. |
 | `INFLIGHT_UNKNOWN_BODY_MB` | `4` | What a body without `Content-Length` counts as until it is read. |
 
 With `INFLIGHT_BODY_BUDGET_MB=0`, `MEMORY_HIGH_WATER_MB=0` and
@@ -71,12 +79,29 @@ Leave room for everything else the process holds: the runtime and caches
 waiting in the queue (one copy each). With a 2 GiB container, the defaults
 (900 MB budget, 1.6 GiB high water) leave that room.
 
-The heap check follows whatever heap limit the process has, so raising
-`--max-old-space-size` raises it too. The heap in use includes garbage not yet
-collected, so near the mark new requests can wait for the next collection
-(the queue rechecks every 250 ms). A request counts for its body three times
-over while it hasn't started replying, on top of whatever of it the heap
-already shows; that errs on the side of waiting. Measured on Node 22, a parsed
-1,000-message Claude Code body takes 1.1-1.2× its JSON length on the heap, and
-its text and the string sent upstream take 1× each (2× each when the body has
-any character outside Latin-1, as most do).
+**Leave `--max-old-space-size` unset, or keep it at most 60% of the
+container's memory.** V8 keeps the pages it has collected until a
+memory-reducing collection, so resident memory follows the heap's peak, plus
+Buffers, code and the runtime outside it. Node 22 picks about 1 GB by itself
+in a 2 GiB container. With 1400 MB in a 2 GiB container, resident memory
+reached the container's limit and the kernel killed the process, while the
+gate was already refusing; garbage from requests already admitted kept
+growing. The server logs a warning at startup when the heap limit is over
+60% of the container.
+
+The heap check follows whatever heap limit the process has. The heap in use
+includes garbage not yet collected, so near the mark new requests can wait
+for the next collection (the queue rechecks every 250 ms). The weights for
+bodies not yet replying come from
+`tests/bench/admission-herd-benchmark.test.js` (Node 22, Claude Code bodies
+with non-Latin-1 text, through the real route): a request in flight takes
+about 1.8-1.9× its body of live heap and 3.5-5.4× of resident memory. A parsed
+1,000-message body takes 1.1-1.2× its JSON length on the heap, and its text
+and the string sent upstream take 1× each (2× each when the body has any
+character outside Latin-1, as most do). They are counted on top of whatever
+of them the heap and resident memory already show, which errs on the side of
+waiting.
+
+A body without `Content-Length` larger than `INFLIGHT_UNKNOWN_BODY_MB` is
+undercounted until it has been read. Raise it if clients send big chunked
+bodies.

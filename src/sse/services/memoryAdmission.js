@@ -57,7 +57,8 @@ export function resolveHighWater({ highWaterMb = MEMORY_ADMISSION.highWaterMb, f
  * @param {number} options.highWaterBytes - 0: no resident-memory check
  * @param {number} [options.heapHighWaterPct] - 0: no heap check
  * @param {number} [options.bodyCopies]
- * @param {number} [options.pendingCopies]
+ * @param {number} [options.pendingHeapCopies]
+ * @param {number} [options.pendingRssCopies]
  * @param {number} [options.unknownBodyBytes]
  * @param {number} [options.maxWaitMs]
  * @param {number} [options.retryAfterSec]
@@ -71,7 +72,8 @@ export function createMemoryGate({
   highWaterBytes,
   heapHighWaterPct = MEMORY_ADMISSION.heapHighWaterPct,
   bodyCopies = MEMORY_ADMISSION.bodyCopies,
-  pendingCopies = MEMORY_ADMISSION.pendingCopies,
+  pendingHeapCopies = MEMORY_ADMISSION.pendingHeapCopies,
+  pendingRssCopies = MEMORY_ADMISSION.pendingRssCopies,
   unknownBodyBytes = MEMORY_ADMISSION.unknownBodyBytes,
   maxWaitMs = MEMORY_ADMISSION.maxWaitMs,
   retryAfterSec = MEMORY_ADMISSION.retryAfterSec,
@@ -84,10 +86,11 @@ export function createMemoryGate({
   const enabled = budgetBytes > 0 || highWaterBytes > 0 || heapFraction > 0;
   const lengthOf = (bodyLength) => Math.max(0, Number(bodyLength) || 0);
   let heldBytes = 0;
-  // pendingCopies × the bodies of admitted requests that haven't started
-  // replying: still reading, parsing, translating and serializing them (on
-  // every 429 fallback again), which the heap and resident memory don't show
-  // yet when a burst has just been let in.
+  // The bodies of admitted requests that haven't started replying: still
+  // reading, parsing, translating and serializing them (on every 429 fallback
+  // again), which the heap and resident memory don't show yet when a burst
+  // has just been let in. Weighed by pendingHeapCopies against the heap and
+  // pendingRssCopies against resident memory.
   let pendingBytes = 0;
   let inflight = 0;
   /** @type {{ length: number, admit: () => void }[]} */
@@ -104,11 +107,11 @@ export function createMemoryGate({
   function blocker(length) {
     if (inflight === 0) return null;
     if (budgetBytes > 0 && heldBytes + length * bodyCopies > budgetBytes) return "budget";
-    const coming = pendingBytes + length * pendingCopies;
-    if (highWaterBytes > 0 && rss() + coming > highWaterBytes) return "memory";
+    const coming = pendingBytes + length;
+    if (highWaterBytes > 0 && rss() + coming * pendingRssCopies > highWaterBytes) return "memory";
     if (heapFraction > 0) {
       const { used_heap_size: used, heap_size_limit: limit } = heapStats();
-      if (limit > 0 && used + coming > limit * heapFraction) return "heap";
+      if (limit > 0 && used + coming * pendingHeapCopies > limit * heapFraction) return "heap";
     }
     return null;
   }
@@ -116,7 +119,7 @@ export function createMemoryGate({
   function describe() {
     const parts = [`${inflight} in flight holding ${mb(heldBytes)}`];
     if (budgetBytes > 0) parts[0] += ` of ${mb(budgetBytes)}`;
-    parts.push(`${mb(pendingBytes)} more coming from requests not yet replying`);
+    parts.push(`${mb(pendingBytes)} of bodies not yet replying`);
     if (highWaterBytes > 0) parts.push(`rss ${mb(rss())} (high water ${mb(highWaterBytes)})`);
     if (heapFraction > 0) {
       const { used_heap_size: used, heap_size_limit: limit } = heapStats();
@@ -130,7 +133,7 @@ export function createMemoryGate({
   function grant(bodyLength, sized = true) {
     let length = bodyLength;
     heldBytes += length * bodyCopies;
-    pendingBytes += length * pendingCopies;
+    pendingBytes += length;
     inflight++;
     totals.admitted++;
     if (refusingSince) {
@@ -146,7 +149,7 @@ export function createMemoryGate({
     const settlePending = () => {
       if (released || !pending || !replyStarted || routing > 0) return;
       pending = false;
-      pendingBytes -= length * pendingCopies;
+      pendingBytes -= length;
       pump();
     };
     return {
@@ -157,7 +160,7 @@ export function createMemoryGate({
         if (released || (sized && next <= length)) return;
         sized = true;
         heldBytes += (next - length) * bodyCopies;
-        if (pending) pendingBytes += (next - length) * pendingCopies;
+        if (pending) pendingBytes += next - length;
         const shrank = next < length;
         length = next;
         if (shrank) pump();
@@ -179,7 +182,7 @@ export function createMemoryGate({
         if (released) return;
         released = true;
         heldBytes -= length * bodyCopies;
-        if (pending) pendingBytes -= length * pendingCopies;
+        if (pending) pendingBytes -= length;
         pending = false;
         inflight--;
         pump();

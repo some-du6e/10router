@@ -145,16 +145,19 @@ export const MEMORY_ADMISSION = {
   highWaterMb: envInt("MEMORY_HIGH_WATER_MB", -1),
   highWaterFraction: 0.8,
   // Copies of its body a request that hasn't started replying is about to add
-  // to the heap and resident memory: its text, parsed body, translated body
-  // and the bytes sent upstream, built again on each 429 fallback. A burst
-  // let in at once doesn't show in either yet. Measured through the real
-  // route (tests/bench/admission-herd-benchmark.test.js), a request in flight
-  // takes about 1.8× its body of live heap and 4-4.6× of resident memory.
-  pendingCopies: 5,
+  // to the heap and to resident memory: its text, parsed body, translated
+  // body and the bytes sent upstream, built again on each 429 fallback. A
+  // burst let in at once doesn't show in either yet. Measured through the
+  // real route (tests/bench/admission-herd-benchmark.test.js, Node 22, bodies
+  // with non-Latin-1 text), a request in flight takes about 1.8-1.9× its body
+  // of live heap and 3.5-5.4× of resident memory (Buffers, upstream bytes and
+  // heap pages V8 keeps).
+  pendingHeapCopies: 3,
+  pendingRssCopies: 5,
   // Percent of the V8 heap limit (heap_size_limit) that the heap in use plus
-  // pendingCopies × the bodies of admitted requests not yet replying (and of
-  // the new one) may reach; over it, new requests wait. The resident-memory
-  // high water counts those bytes the same way.
+  // pendingHeapCopies × the bodies of admitted requests not yet replying (and
+  // of the new one) may reach; over it, new requests wait. The resident-memory
+  // high water counts those bodies the same way, pendingRssCopies times.
   // Env: MEMORY_HEAP_HIGH_WATER_PCT (0 turns the check off).
   heapHighWaterPct: envInt("MEMORY_HEAP_HIGH_WATER_PCT", 85, { max: 100 }),
   // A heap limit over this fraction of the container's memory gets a warning
