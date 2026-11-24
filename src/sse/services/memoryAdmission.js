@@ -45,7 +45,8 @@ export function resolveHighWater({ highWaterMb = MEMORY_ADMISSION.highWaterMb, f
  * @typedef {object} AdmissionTicket
  * @property {number} bytes - bytes this request is counted as holding
  * @property {(bodyLength: number) => void} noteBodyLength - the body was read: count it at least this long (exactly this long when there was no Content-Length)
- * @property {() => void} replied - the reply has started (or, not streamed, ended): its body copies are on the heap now, if anywhere; idempotent
+ * @property {() => void} replied - the reply has started (or, not streamed, ended): what it holds shows in the heap and resident memory now; idempotent
+ * @property {(settled: Promise<unknown>) => void} pendUntil - the request keeps building upstream bodies until `settled` settles (a reply sent early, before routing is done): it counts as not yet replying until then, even once replied() is called
  * @property {() => void} release - the request is done; idempotent
  */
 
@@ -56,6 +57,7 @@ export function resolveHighWater({ highWaterMb = MEMORY_ADMISSION.highWaterMb, f
  * @param {number} options.highWaterBytes - 0: no resident-memory check
  * @param {number} [options.heapHighWaterPct] - 0: no heap check
  * @param {number} [options.bodyCopies]
+ * @param {number} [options.pendingCopies]
  * @param {number} [options.unknownBodyBytes]
  * @param {number} [options.maxWaitMs]
  * @param {number} [options.retryAfterSec]
@@ -69,6 +71,7 @@ export function createMemoryGate({
   highWaterBytes,
   heapHighWaterPct = MEMORY_ADMISSION.heapHighWaterPct,
   bodyCopies = MEMORY_ADMISSION.bodyCopies,
+  pendingCopies = MEMORY_ADMISSION.pendingCopies,
   unknownBodyBytes = MEMORY_ADMISSION.unknownBodyBytes,
   maxWaitMs = MEMORY_ADMISSION.maxWaitMs,
   retryAfterSec = MEMORY_ADMISSION.retryAfterSec,
@@ -79,13 +82,15 @@ export function createMemoryGate({
 }) {
   const heapFraction = heapHighWaterPct > 0 ? heapHighWaterPct / 100 : 0;
   const enabled = budgetBytes > 0 || highWaterBytes > 0 || heapFraction > 0;
-  const weigh = (bodyLength) => Math.max(0, Number(bodyLength) || 0) * bodyCopies;
+  const lengthOf = (bodyLength) => Math.max(0, Number(bodyLength) || 0);
   let heldBytes = 0;
-  // The part of heldBytes whose requests haven't started replying: still
-  // reading, parsing, translating or serializing, so not yet (all) on the heap.
+  // pendingCopies × the bodies of admitted requests that haven't started
+  // replying: still reading, parsing, translating and serializing them (on
+  // every 429 fallback again), which the heap and resident memory don't show
+  // yet when a burst has just been let in.
   let pendingBytes = 0;
   let inflight = 0;
-  /** @type {{ bytes: number, admit: () => void }[]} */
+  /** @type {{ length: number, admit: () => void }[]} */
   const queue = [];
   let recheck = null;
   // Set from the first refusal until the next admission, so each episode logs twice.
@@ -93,16 +98,17 @@ export function createMemoryGate({
   let refusedInEpisode = 0;
   const totals = { admitted: 0, queued: 0, refused: 0, aborted: 0 };
 
-  // Why a request of `bytes` can't go in now, or null. Nothing in flight: it
-  // goes in, so an oversized prompt isn't starved and a resident size that
-  // hasn't come down since the last requests ended can't wedge the gate.
-  function blocker(bytes) {
+  // Why a request with a body of `length` can't go in now, or null. Nothing in
+  // flight: it goes in, so an oversized prompt isn't starved and a resident
+  // size that hasn't come down since the last requests ended can't wedge the gate.
+  function blocker(length) {
     if (inflight === 0) return null;
-    if (budgetBytes > 0 && heldBytes + bytes > budgetBytes) return "budget";
-    if (highWaterBytes > 0 && rss() > highWaterBytes) return "memory";
+    if (budgetBytes > 0 && heldBytes + length * bodyCopies > budgetBytes) return "budget";
+    const coming = pendingBytes + length * pendingCopies;
+    if (highWaterBytes > 0 && rss() + coming > highWaterBytes) return "memory";
     if (heapFraction > 0) {
       const { used_heap_size: used, heap_size_limit: limit } = heapStats();
-      if (limit > 0 && used + pendingBytes + bytes > limit * heapFraction) return "heap";
+      if (limit > 0 && used + coming > limit * heapFraction) return "heap";
     }
     return null;
   }
@@ -110,19 +116,21 @@ export function createMemoryGate({
   function describe() {
     const parts = [`${inflight} in flight holding ${mb(heldBytes)}`];
     if (budgetBytes > 0) parts[0] += ` of ${mb(budgetBytes)}`;
+    parts.push(`${mb(pendingBytes)} more coming from requests not yet replying`);
     if (highWaterBytes > 0) parts.push(`rss ${mb(rss())} (high water ${mb(highWaterBytes)})`);
     if (heapFraction > 0) {
       const { used_heap_size: used, heap_size_limit: limit } = heapStats();
-      parts.push(`heap ${mb(used)} + ${mb(pendingBytes)} not yet replying (high water ${mb(limit * heapFraction)} of ${mb(limit)})`);
+      parts.push(`heap ${mb(used)} (high water ${mb(limit * heapFraction)} of ${mb(limit)})`);
     }
     parts.push(`${queue.length} waiting`);
     return parts.join(", ");
   }
 
   /** @returns {AdmissionTicket} */
-  function grant(bytes, sized = true) {
-    heldBytes += bytes;
-    pendingBytes += bytes;
+  function grant(bodyLength, sized = true) {
+    let length = bodyLength;
+    heldBytes += length * bodyCopies;
+    pendingBytes += length * pendingCopies;
     inflight++;
     totals.admitted++;
     if (refusingSince) {
@@ -130,33 +138,48 @@ export function createMemoryGate({
       refusingSince = 0;
       refusedInEpisode = 0;
     }
-    let held = bytes;
     let pending = true;
     let released = false;
+    // replied() was called, and how many pendUntil() promises are still out.
+    let replyStarted = false;
+    let routing = 0;
+    const settlePending = () => {
+      if (released || !pending || !replyStarted || routing > 0) return;
+      pending = false;
+      pendingBytes -= length * pendingCopies;
+      pump();
+    };
     return {
-      get bytes() { return held; },
+      get bytes() { return length * bodyCopies; },
       noteBodyLength(bodyLength) {
-        const next = weigh(bodyLength);
+        const next = lengthOf(bodyLength);
         // A stated length only grows; the guess for a missing one gives way to the real length.
-        if (released || (sized && next <= held)) return;
+        if (released || (sized && next <= length)) return;
         sized = true;
-        heldBytes += next - held;
-        if (pending) pendingBytes += next - held;
-        const shrank = next < held;
-        held = next;
+        heldBytes += (next - length) * bodyCopies;
+        if (pending) pendingBytes += (next - length) * pendingCopies;
+        const shrank = next < length;
+        length = next;
         if (shrank) pump();
       },
       replied() {
+        replyStarted = true;
+        settlePending();
+      },
+      pendUntil(settled) {
         if (released || !pending) return;
-        pending = false;
-        pendingBytes -= held;
-        pump();
+        routing++;
+        const done = () => {
+          routing--;
+          settlePending();
+        };
+        Promise.resolve(settled).then(done, done);
       },
       release() {
         if (released) return;
         released = true;
-        heldBytes -= held;
-        if (pending) pendingBytes -= held;
+        heldBytes -= length * bodyCopies;
+        if (pending) pendingBytes -= length * pendingCopies;
         pending = false;
         inflight--;
         pump();
@@ -176,7 +199,7 @@ export function createMemoryGate({
 
   // Let in waiting requests from the front while they fit.
   function pump() {
-    while (queue.length > 0 && !blocker(queue[0].bytes)) queue.shift().admit();
+    while (queue.length > 0 && !blocker(queue[0].length)) queue.shift().admit();
     if (queue.length === 0 && recheck) {
       clearInterval(recheck);
       recheck = null;
@@ -191,16 +214,16 @@ export function createMemoryGate({
    */
   async function acquire({ bodyLength = 0, signal = null } = {}) {
     const sized = bodyLength != null;
-    const bytes = weigh(sized ? bodyLength : unknownBodyBytes);
+    const length = lengthOf(sized ? bodyLength : unknownBodyBytes);
     if (signal?.aborted) return { aborted: true };
     // Behind anyone already waiting: the queue is first come, first served.
-    if (queue.length === 0 && !blocker(bytes)) return { ticket: grant(bytes, sized) };
-    if (!(maxWaitMs > 0)) return refuse(blocker(bytes) || "queue");
+    if (queue.length === 0 && !blocker(length)) return { ticket: grant(length, sized) };
+    if (!(maxWaitMs > 0)) return refuse(blocker(length) || "queue");
 
     totals.queued++;
     return new Promise((resolve) => {
       let timer = null;
-      const waiter = { bytes, admit: () => settle({ ticket: grant(bytes, sized) }) };
+      const waiter = { length, admit: () => settle({ ticket: grant(length, sized) }) };
       const onAbort = () => {
         totals.aborted++;
         settle({ aborted: true });
@@ -216,8 +239,8 @@ export function createMemoryGate({
       }
       timer = setTimeout(() => {
         // Out of turn but it fits now: let it in rather than turn it away.
-        const why = blocker(bytes);
-        settle(why ? refuse(why) : { ticket: grant(bytes, sized) });
+        const why = blocker(length);
+        settle(why ? refuse(why) : { ticket: grant(length, sized) });
       }, maxWaitMs);
       signal?.addEventListener?.("abort", onAbort, { once: true });
       queue.push(waiter);
@@ -234,7 +257,8 @@ export function createMemoryGate({
     acquire,
     retryAfterSec,
     stats: () => ({
-      enabled, inflight, heldBytes, pendingBytes, waiting: queue.length, budgetBytes, highWaterBytes, heapHighWaterPct,
+      enabled, inflight, heldBytes, pendingBytes, waiting: queue.length, budgetBytes, highWaterBytes,
+      heapHighWaterPct: heapFraction > 0 ? heapHighWaterPct : 0,
       refusing: refusingSince > 0, ...totals,
     }),
   };
@@ -242,9 +266,28 @@ export function createMemoryGate({
 
 let shared = null;
 
+/**
+ * A warning when the V8 heap may grow past what the container leaves it, or
+ * null. V8 keeps collected pages until a memory-reducing collection, so
+ * resident memory follows the heap's peak, plus Buffers, code and the
+ * runtime. With the heap limit over MEMORY_ADMISSION.maxHeapOfContainer of the
+ * container, the kernel can kill the process before V8 collects, whatever
+ * the gate admits.
+ */
+export function heapFitWarning({ heapLimit = v8.getHeapStatistics().heap_size_limit, containerLimit = readCgroupMemoryLimit() } = {}) {
+  if (!(heapLimit > 0) || !(containerLimit > 0)) return null;
+  const fits = Math.floor(containerLimit * MEMORY_ADMISSION.maxHeapOfContainer);
+  if (heapLimit <= fits) return null;
+  return `the V8 heap limit (${mb(heapLimit)}) is over ${Math.round(MEMORY_ADMISSION.maxHeapOfContainer * 100)}% of the container's memory (${mb(containerLimit)}), so resident memory can reach the container's limit before V8 collects; set --max-old-space-size to ${Math.floor(fits / MB)} or less, or leave it unset`;
+}
+
 /** The process's gate, built from MEMORY_ADMISSION on first use. */
 export function memoryGate() {
-  shared ??= createMemoryGate({ budgetBytes: MEMORY_ADMISSION.budgetBytes, highWaterBytes: resolveHighWater() });
+  if (!shared) {
+    shared = createMemoryGate({ budgetBytes: MEMORY_ADMISSION.budgetBytes, highWaterBytes: resolveHighWater() });
+    const warning = heapFitWarning();
+    if (warning) log.warn(TAG, warning);
+  }
   return shared;
 }
 

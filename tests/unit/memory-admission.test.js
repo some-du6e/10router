@@ -10,6 +10,7 @@ import {
   busyResponse,
   readCgroupMemoryLimit,
   resolveHighWater,
+  heapFitWarning,
 } from "@/sse/services/memoryAdmission.js";
 import { FORMATS } from "open-sse/translator/formats.js";
 
@@ -22,6 +23,7 @@ function gate(overrides = {}) {
     budgetBytes: 100 * MB,
     highWaterBytes: 0,
     bodyCopies: 1,
+    pendingCopies: 1,
     maxWaitMs: 1000,
     retryAfterSec: 7,
     recheckMs: 5,
@@ -188,6 +190,14 @@ describe("resident-memory backstop", () => {
     expect(readCgroupMemoryLimit(files({}))).toBe(null);
   });
 
+  it("warns when the V8 heap limit leaves the container too little room", () => {
+    // V8's default in a 2 GiB container: fine.
+    expect(heapFitWarning({ heapLimit: 1048 * MB, containerLimit: 2048 * MB })).toBe(null);
+    // --max-old-space-size=1400 in 2 GiB: the kernel killed it before V8 collected.
+    expect(heapFitWarning({ heapLimit: 1400 * MB, containerLimit: 2048 * MB })).toMatch(/V8 heap limit \(1400MB\) is over 60% of the container's memory \(2048MB\).*--max-old-space-size to 1228 or less/);
+    expect(heapFitWarning({ heapLimit: 1400 * MB, containerLimit: null })).toBe(null);
+  });
+
   it("puts the high-water mark at a fraction of the limit unless MEMORY_HIGH_WATER_MB is set", () => {
     expect(resolveHighWater({ highWaterMb: -1, fraction: 0.8, limit: () => 2000 * MB })).toBe(1600 * MB);
     expect(resolveHighWater({ highWaterMb: -1, fraction: 0.8, limit: () => null })).toBe(0);
@@ -223,7 +233,7 @@ describe("heap backstop", () => {
     expect(await g.acquire({ bodyLength: 1 * MB })).toEqual({ refused: "heap", retryAfterSec: 7 });
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(logger.warn.mock.calls[0][0]).toBe("MEMORY");
-    expect(logger.warn.mock.calls[0][1]).toMatch(/refusing new requests \(heap\): 1 in flight .*heap 900MB \+ 1MB not yet replying \(high water 850MB of 1000MB\)/);
+    expect(logger.warn.mock.calls[0][1]).toMatch(/refusing new requests \(heap\): 1 in flight holding 1MB, 1MB more coming from requests not yet replying, heap 900MB \(high water 850MB of 1000MB\), 1 waiting/);
   });
 
   it("counts admitted requests that haven't started replying, which the heap doesn't show yet", async () => {
@@ -252,12 +262,63 @@ describe("heap backstop", () => {
   });
 
   it("counts the new request's own body copies against the heap", async () => {
-    const g = heapGate({ used: 700 * MB }, { bodyCopies: 3, maxWaitMs: 20 });
+    const g = heapGate({ used: 700 * MB }, { pendingCopies: 3, maxWaitMs: 20 });
     const first = await g.acquire({ bodyLength: 10 * MB });
     first.ticket.replied();
     // 700 + 3 × 60 > 850, though the heap alone is under it.
     expect((await g.acquire({ bodyLength: 60 * MB })).refused).toBe("heap");
     expect((await g.acquire({ bodyLength: 40 * MB })).ticket).toBeTruthy();
+  });
+
+  it("keeps a request answered early counted until its routing settles (pendUntil)", async () => {
+    const g = heapGate({ used: 100 * MB }, { maxWaitMs: 50 });
+    const a = await g.acquire({ bodyLength: 300 * MB });
+    let finishRouting;
+    a.ticket.pendUntil(new Promise((resolve) => { finishRouting = resolve; }));
+    let failRouting;
+    a.ticket.pendUntil(new Promise((_, reject) => { failRouting = reject; }));
+    // Early headers: the reply has started, routing (fallbacks) hasn't ended.
+    a.ticket.replied();
+    expect(g.stats().pendingBytes).toBe(300 * MB);
+    // 100 + 300 + 500 > 850.
+    const b = g.acquire({ bodyLength: 500 * MB });
+    finishRouting();
+    await tick();
+    expect(g.stats()).toMatchObject({ pendingBytes: 300 * MB, waiting: 1 });
+    // A failed route ends it too.
+    failRouting(new Error("upstream failed"));
+    await tick();
+    expect(g.stats().pendingBytes).toBe(500 * MB);
+    expect((await b).ticket).toBeTruthy();
+  });
+
+  it("routing that settles before the reply starts leaves it pending until replied()", async () => {
+    const g = heapGate({ used: 0 });
+    const { ticket } = await g.acquire({ bodyLength: 10 * MB });
+    ticket.pendUntil(Promise.resolve());
+    await tick();
+    expect(g.stats().pendingBytes).toBe(10 * MB);
+    ticket.replied();
+    expect(g.stats().pendingBytes).toBe(0);
+    // Released while routing is still out: nothing left counted, nothing goes negative later.
+    const other = await g.acquire({ bodyLength: 10 * MB });
+    let finish;
+    other.ticket.pendUntil(new Promise((resolve) => { finish = resolve; }));
+    other.ticket.release();
+    finish();
+    await tick();
+    expect(g.stats()).toMatchObject({ inflight: 1, pendingBytes: 0, heldBytes: 10 * MB });
+  });
+
+  it("projects the bytes still coming onto resident memory too", async () => {
+    const g = gate({ budgetBytes: 0, highWaterBytes: 1600 * MB, rss: () => 1000 * MB, pendingCopies: 5, maxWaitMs: 20 });
+    const first = await g.acquire({ bodyLength: 60 * MB });
+    // 1000 + 5 × 60 + 5 × 60 = 1600: fits exactly.
+    expect((await g.acquire({ bodyLength: 60 * MB })).ticket).toBeTruthy();
+    // 1000 + 600 + 5 × 1 > 1600, though rss alone is far under it.
+    expect((await g.acquire({ bodyLength: 1 * MB })).refused).toBe("memory");
+    first.ticket.replied();
+    expect((await g.acquire({ bodyLength: 1 * MB })).ticket).toBeTruthy();
   });
 
   it("checks nothing when MEMORY_HEAP_HIGH_WATER_PCT is 0", async () => {
@@ -278,7 +339,7 @@ describe("heap backstop", () => {
 
 describe("a body without Content-Length", () => {
   it("counts as unknownBodyBytes until it is read, then as its real length", async () => {
-    const g = gate({ budgetBytes: 200 * MB, bodyCopies: 3, unknownBodyBytes: 20 * MB });
+    const g = gate({ budgetBytes: 200 * MB, bodyCopies: 3, pendingCopies: 3, unknownBodyBytes: 20 * MB });
     const held = await g.acquire({ bodyLength: 40 * MB });
     const { ticket } = await g.acquire({ bodyLength: null });
     expect(ticket.bytes).toBe(60 * MB);
@@ -300,7 +361,7 @@ describe("a body without Content-Length", () => {
   });
 
   it("is admitted through withMemoryAdmission at the guess, and counted as not yet replying until its reply starts", async () => {
-    const g = gate({ budgetBytes: 1000 * MB, bodyCopies: 3, unknownBodyBytes: 4 * MB });
+    const g = gate({ budgetBytes: 1000 * MB, bodyCopies: 3, pendingCopies: 5, unknownBodyBytes: 4 * MB });
     const { response, controller } = openStream();
     const chunked = new Request("http://localhost/v1/messages", { method: "POST", body: "{}", headers: { "content-type": "application/json" } });
     expect(chunked.headers.get("content-length")).toBeNull();
@@ -309,13 +370,34 @@ describe("a body without Content-Length", () => {
       during = { bytes: ticket.bytes, ...g.stats() };
       return response;
     }, { gate: g });
-    expect(during).toMatchObject({ bytes: 12 * MB, pendingBytes: 12 * MB });
+    expect(during).toMatchObject({ bytes: 12 * MB, pendingBytes: 20 * MB });
     // Replying: still held until the reply ends, no longer pending.
     expect(g.stats()).toMatchObject({ inflight: 1, heldBytes: 12 * MB, pendingBytes: 0 });
     const reading = res.text();
     controller.close();
     await reading;
     expect(g.stats()).toMatchObject({ inflight: 0, heldBytes: 0, pendingBytes: 0 });
+  });
+
+  it("a guessed body that waited in the queue still gives way to its real length", async () => {
+    const g = gate({ budgetBytes: 100 * MB, unknownBodyBytes: 60 * MB });
+    const held = await g.acquire({ bodyLength: 50 * MB });
+    const waiting = g.acquire({ bodyLength: null });
+    await tick();
+    held.ticket.release();
+    const { ticket } = await waiting;
+    expect(ticket.bytes).toBe(60 * MB);
+    ticket.noteBodyLength(2 * MB);
+    expect(g.stats()).toMatchObject({ heldBytes: 2 * MB, pendingBytes: 2 * MB });
+  });
+
+  it.each([["abc"], [" "], ["-5"]])("a Content-Length of %j counts as no length", async (value) => {
+    const g = gate({ unknownBodyBytes: 20 * MB });
+    const req = new Request("http://localhost/v1/messages", { method: "POST", headers: { "content-length": value } });
+    await withMemoryAdmission(req, async (ticket) => {
+      expect(ticket.bytes).toBe(20 * MB);
+      return new Response(null, { status: 204 });
+    }, { gate: g });
   });
 
   it("an empty stated body counts as 0, not the guess", async () => {
@@ -492,9 +574,9 @@ describe("handleChat wiring", () => {
     expect(memoryAdmissionStats().inflight).toBe(0);
   });
 
-  // With no content-length the gate admits the request at 0 bytes, so only the
-  // body read under the ticket can count it. Reading it before admission, or
-  // without passing the ticket, leaves the held bytes at 0.
+  // With no content-length the gate admits the request at a guessed length, so
+  // only the body read under the ticket can count its real one. Reading it
+  // before admission, or without passing the ticket, leaves the guess.
   it("reads a body without content-length only once admitted, and counts it while the reply is open", async () => {
     const before = memoryAdmissionStats();
     const text = JSON.stringify({ model: "openai/gpt-x", messages: [{ role: "user", content: "x".repeat(4096) }] });
@@ -520,7 +602,7 @@ describe("handleChat wiring", () => {
     expect(admittedAtFirstRead).toBe(before.admitted + 1);
     const held = memoryAdmissionStats();
     expect(held.inflight).toBe(before.inflight + 1);
-    expect(held.heldBytes - before.heldBytes).toBeGreaterThanOrEqual(text.length);
+    expect(held.heldBytes - before.heldBytes).toBe(3 * text.length);
 
     await res.text();
     expect(memoryAdmissionStats()).toMatchObject({ inflight: before.inflight, heldBytes: before.heldBytes });

@@ -342,7 +342,15 @@ async function admittedChat(
   // Next aborts request.signal only when the client leaves before the response ends.
   if (!earlyHeaders || !(body.stream === true || json) || !KEEPALIVE_FORMATS.has(sourceFormat)) return route(request.signal);
   const delayMs = json ? NON_STREAM_EARLY_HEADERS_MS : STREAM_EARLY_HEADERS_MS;
-  return respondWithEarlyHeaders({ run: route, sourceFormat, json, delayMs, signal: request.signal, log });
+  // Headers sent early don't end routing: until it settles the request keeps
+  // building upstream bodies (fallbacks, warm-key waits), so memory admission
+  // keeps counting them as not yet on the heap.
+  const run = (signal: AbortSignal) => {
+    const routed = route(signal);
+    ticket?.pendUntil(routed);
+    return routed;
+  };
+  return respondWithEarlyHeaders({ run, sourceFormat, json, delayMs, signal: request.signal, log });
 }
 
 async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, request, apiKey, routingFailures, signal = null, ingressCombo = null, sourceFormat }: RoutedChatArgs): Promise<Response> {

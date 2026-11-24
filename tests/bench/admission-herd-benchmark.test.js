@@ -23,9 +23,11 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { PerformanceObserver, constants as perfConstants } from "node:perf_hooks";
 import v8 from "node:v8";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { claudeCodeBody } from "../helpers/claudeCodeBody.js";
+import { settle } from "../helpers/heldStreams.js";
 import { claudeCodeHeaders, seedWarmCold } from "../helpers/warmWait.js";
 
 const N = Number(process.env.HERD_N || 300);
@@ -35,6 +37,7 @@ const UPSTREAM_MS = Number(process.env.HERD_UPSTREAM_MS || 3000);
 const ASCII = process.env.HERD_ASCII === "1";
 const NO_LENGTH = process.env.HERD_NO_LENGTH === "1";
 const DETAILS = process.env.HERD_DETAILS === "1";
+const LIMIT_FIRST = Number(process.env.HERD_429 || 0);
 const MB = 1024 * 1024;
 const KEY_A = "sk-herd-a-not-a-real-key-000000000";
 const KEY_B = "sk-herd-b-not-a-real-key-000000000";
@@ -47,18 +50,38 @@ let routerKey;
 let POST;
 let admission;
 const savedEnv = {};
+const savedConsole = {};
 const setEnv = (name, value) => {
   savedEnv[name] = process.env[name];
   process.env[name] = value;
 };
 
-// An upstream that reads each body, waits, then streams a short reply.
+// An upstream that reads each body, waits, then streams a short reply. With
+// HERD_429 set, each conversation's first HERD_429 attempts get a 429 at once,
+// so requests fall back across the two keys and wait for them, as under load.
+const CONVERSATION = Buffer.from("conversation ");
 function startSlowUpstream() {
-  const state = { requests: 0 };
+  const state = { requests: 0, limited: 0 };
+  const attempts = new Map();
   const server = http.createServer((req, res) => {
-    req.on("data", () => {});
+    const parts = [];
+    req.on("data", (part) => { if (LIMIT_FIRST > 0) parts.push(part); });
     req.on("end", () => {
       state.requests++;
+      let head = null;
+      if (parts.length) {
+        const bytes = Buffer.concat(parts);
+        const at = bytes.indexOf(CONVERSATION);
+        if (at >= 0) head = bytes.subarray(at, at + CONVERSATION.length + MARK.length).toString();
+      }
+      const n = (attempts.get(head) || 0) + 1;
+      attempts.set(head, n);
+      if (head && n <= LIMIT_FIRST) {
+        state.limited++;
+        res.writeHead(429, { "content-type": "application/json", "retry-after": "1" });
+        res.end(JSON.stringify({ error: { message: "Too many requests", type: "requests", code: "429" } }));
+        return;
+      }
       setTimeout(() => {
         const base = { id: "chatcmpl-herd", object: "chat.completion.chunk", created: 1700000000, model: "kimi-k3" };
         const chunk = (obj) => `data: ${JSON.stringify({ ...base, ...obj })}\n\n`;
@@ -116,7 +139,10 @@ beforeAll(async () => {
   setEnv("DATA_DIR", tempDir);
   if (process.env.MEMORY_HIGH_WATER_MB === undefined) setEnv("MEMORY_HIGH_WATER_MB", "1638");
   upstream = await startSlowUpstream();
-  for (const k of ["log", "info", "warn", "debug"]) console[k] = () => {};
+  for (const k of ["log", "info", "warn", "debug"]) {
+    savedConsole[k] = console[k];
+    console[k] = () => {};
+  }
   vi.resetModules();
   const db = await import("@/lib/db/index.js");
   await db.initDb();
@@ -132,6 +158,7 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
+  Object.assign(console, savedConsole);
   await new Promise((r) => (upstream ? upstream.server.close(r) : r()));
   if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
   for (const [name, value] of Object.entries(savedEnv)) {
@@ -144,8 +171,33 @@ describe("restart herd", () => {
   it("answers every request or refuses it with a 503, and keeps the heap under its limit", async () => {
     const template = herdTemplate();
     const limit = v8.getHeapStatistics().heap_size_limit;
-    let peak = 0;
-    const sample = () => { peak = Math.max(peak, v8.getHeapStatistics().used_heap_size); };
+    await settle();
+    const base = v8.getHeapStatistics().used_heap_size;
+    const baseRss = process.memoryUsage.rss();
+    // Sampled between tasks: the synchronous parse/translate/serialize of a
+    // body runs in one task, so a sample can't land inside one.
+    const m = { used: 0, rss: 0, committed: 0, live: 0, inflight: 0, perInflight: 0, rssPerInflight: 0 };
+    const sample = () => {
+      const h = v8.getHeapStatistics();
+      const inflight = admission.memoryAdmissionStats().inflight;
+      m.used = Math.max(m.used, h.used_heap_size);
+      m.committed = Math.max(m.committed, h.total_heap_size);
+      m.rss = Math.max(m.rss, process.memoryUsage.rss());
+      m.inflight = Math.max(m.inflight, inflight);
+      // While the herd is all in: later, garbage outlives the requests that made it.
+      if (inflight >= m.inflight * 0.9 && inflight > 0) m.rssPerInflight = Math.max(m.rssPerInflight, (process.memoryUsage.rss() - baseRss) / inflight);
+    };
+    // What a mark-compact leaves: the live heap, which is what V8 runs out of.
+    const gcs = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        if (entry.detail?.kind !== perfConstants.NODE_PERFORMANCE_GC_MAJOR) continue;
+        const used = v8.getHeapStatistics().used_heap_size;
+        const inflight = admission.memoryAdmissionStats().inflight;
+        m.live = Math.max(m.live, used);
+        if (inflight >= m.inflight * 0.9 && inflight > 0) m.perInflight = Math.max(m.perInflight, (used - base) / inflight);
+      }
+    });
+    gcs.observe({ entryTypes: ["gc"] });
     const sampler = setInterval(sample, 2);
     const t0 = performance.now();
 
@@ -159,27 +211,37 @@ describe("restart herd", () => {
       const text = await res.text();
       sample();
       if (res.status === 503) expect(res.headers.get("retry-after")).toMatch(/^\d+$/);
-      else if (res.status === 200) expect(text).toContain("Done");
+      // A reply that went out early (a hold, early headers) can still end in an error frame.
+      if (res.status === 200 && !text.includes("Done")) return "200 without an answer";
       return res.status;
     }));
     clearInterval(sampler);
+    gcs.disconnect();
     sample();
 
     const counts = {};
     for (const s of statuses) counts[s] = (counts[s] || 0) + 1;
     const gate = admission.memoryAdmissionStats();
+    const body = template.bytes.length;
     const mb = (b) => `${Math.round(b / MB)} MB`;
+    const pct = (b) => `${((b / limit) * 100).toFixed(0)}%`;
     process.stderr.write([
       "",
-      `herd: ${N} requests of ${(template.bytes.length / MB).toFixed(2)} MB${ASCII ? "" : " (two-byte text)"}, ${process.version}, upstream ${UPSTREAM_MS} ms`,
-      `heap: peak used ${mb(peak)} of ${mb(limit)} limit (${((peak / limit) * 100).toFixed(0)}%)`,
+      `herd: ${N} requests of ${(body / MB).toFixed(2)} MB${ASCII ? "" : " (two-byte text)"}${NO_LENGTH ? ", no Content-Length" : ""}${LIMIT_FIRST ? `, first ${LIMIT_FIRST} attempt(s) of each 429` : ""}, ${process.version}, upstream ${UPSTREAM_MS} ms`,
+      `heap: limit ${mb(limit)}, base ${mb(base)}, peak used ${mb(m.used)} (${pct(m.used)}), peak live after a mark-compact ${mb(m.live)} (${pct(m.live)}), peak committed ${mb(m.committed)}`,
+      `rss: base ${mb(baseRss)}, peak ${mb(m.rss)}`,
+      `per request in flight (most of the herd in): up to ${(m.perInflight / MB).toFixed(1)} MB of live heap (${(m.perInflight / body).toFixed(1)}× its body) and ${(m.rssPerInflight / MB).toFixed(1)} MB of rss (${(m.rssPerInflight / body).toFixed(1)}×) over base; up to ${m.inflight} in flight at once`,
       `replies: ${Object.entries(counts).map(([s, n]) => `${n}× ${s}`).join(", ")} in ${((performance.now() - t0) / 1000).toFixed(1)} s`,
-      `gate: admitted ${gate.admitted}, queued ${gate.queued}, refused ${gate.refused}, upstream saw ${upstream.state.requests}`,
+      `gate: admitted ${gate.admitted}, queued ${gate.queued}, refused ${gate.refused}; upstream saw ${upstream.state.requests} (${upstream.state.limited} answered 429)`,
       "",
     ].join("\n"));
 
-    expect(statuses.every((s) => s === 200 || s === 503)).toBe(true);
+    // With HERD_429, a request can find both keys locked and get the 429 itself.
+    expect(statuses.every((s) => s === 200 || s === 503 || (LIMIT_FIRST > 0 && s === 429))).toBe(true);
     expect(counts[200] || 0).toBeGreaterThan(0);
-    expect(peak).toBeLessThan(limit);
+    // Healthy: the live heap stayed well clear of the limit, and resident
+    // memory under HERD_MAX_RSS_MB when that is set.
+    expect(m.live / limit).toBeLessThan(Number(process.env.HERD_MAX_LIVE_PCT || 85) / 100);
+    if (process.env.HERD_MAX_RSS_MB) expect(m.rss).toBeLessThan(Number(process.env.HERD_MAX_RSS_MB) * MB);
   }, 600_000);
 });
