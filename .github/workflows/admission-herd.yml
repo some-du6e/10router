@@ -1,0 +1,106 @@
+name: Admission herd
+
+# A restart herd (tests/bench/admission-herd-benchmark.test.js): 300 Claude
+# Code conversations of about 2 MB each sent at once through the real
+# /v1/messages route to a slow upstream, under a 1048 MB V8 heap limit (what
+# Node 22 picks by itself in a 2 GiB container) and the resident-memory high
+# water of a 2 GiB container (1638 MB).
+#
+# Branch legs must answer every request with a reply or a 503 (or, in the
+# fallback legs, the upstream's own 429, as a status or as an error frame after
+# early headers), keep the live heap under 85% of its limit and resident
+# memory under 90% of 2 GiB. The heap-only legs turn the byte budget and the
+# resident-memory check off, so they pass only if the heap check holds on its
+# own, and must keep the live heap under 70%; one of them runs with 429
+# fallback, warm-key waits and early headers. Base legs run the same harness with the base branch's source files and
+# only report what happened (the one without Content-Length is expected to
+# crash with "JavaScript heap out of memory").
+on:
+  pull_request:
+    paths:
+      - "src/sse/services/memoryAdmission.js"
+      - "src/sse/handlers/chat.ts"
+      - "src/sse/utils/requestBody.js"
+      - "src/app/api/v1/messages/route.js"
+      - "src/proxy.js"
+      - "open-sse/handlers/chatCore.js"
+      - "open-sse/executors/**"
+      - "open-sse/translator/**"
+      - "open-sse/utils/earlyHeaders.js"
+      - "open-sse/utils/limitHold.js"
+      - "open-sse/config/runtimeConfig.js"
+      - "tests/bench/admission-herd-benchmark.test.js"
+      - "tests/helpers/claudeCodeBody.js"
+      - "tests/helpers/heldStreams.js"
+      - "tests/helpers/warmWait.js"
+      - "tests/package.json"
+      - "tests/vitest.benchmark.config.js"
+      - "tests/vitest.shared.js"
+      - ".github/workflows/admission-herd.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  herd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [base, branch]
+        scenario: [stated, no-length, fallback]
+        include:
+          - leg: branch
+            scenario: heap-only
+          - leg: branch
+            scenario: heap-only-fallback
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          # What production runs.
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: The base branch's source files
+        if: matrix.leg == 'base'
+        run: git checkout "origin/${{ github.base_ref || 'master' }}" -- open-sse src
+      - name: Herd (${{ matrix.leg }}, ${{ matrix.scenario }})
+        working-directory: tests
+        shell: bash
+        env:
+          NODE_OPTIONS: --max-old-space-size=1048
+          HERD_N: "300"
+          MEMORY_HIGH_WATER_MB: ${{ startsWith(matrix.scenario, 'heap-only') && '0' || '1638' }}
+          INFLIGHT_BODY_BUDGET_MB: ${{ startsWith(matrix.scenario, 'heap-only') && '0' || '900' }}
+          HERD_NO_LENGTH: ${{ (matrix.scenario == 'no-length' || matrix.scenario == 'heap-only') && '1' || '0' }}
+          HERD_429: ${{ endsWith(matrix.scenario, 'fallback') && '1' || '0' }}
+          # Under the upstream's 3 s, so replies go out early while routing goes on.
+          STREAM_EARLY_HEADERS_MS: ${{ endsWith(matrix.scenario, 'fallback') && '1000' || '30000' }}
+          HERD_MAX_RSS_MB: ${{ matrix.leg == 'branch' && '1843' || '' }}
+          # Alone, the heap check must hold the live heap well under its own mark.
+          HERD_MAX_LIVE_PCT: ${{ startsWith(matrix.scenario, 'heap-only') && '70' || '85' }}
+        run: |
+          set +e
+          ./node_modules/.bin/vitest run --config vitest.benchmark.config.js bench/admission-herd-benchmark.test.js > "$RUNNER_TEMP/herd.txt" 2>&1
+          code=$?
+          set -e
+          grep -E '^(herd|heap|rss|per request|replies|gate)|FATAL ERROR|Tests ' "$RUNNER_TEMP/herd.txt" || tail -40 "$RUNNER_TEMP/herd.txt"
+          {
+            echo "### ${{ matrix.leg }}, ${{ matrix.scenario }}"
+            echo '```'
+            grep -E '^(herd|heap|rss|per request|replies|gate)|FATAL ERROR' "$RUNNER_TEMP/herd.txt" || echo "(no result line)"
+            echo "exit $code"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ matrix.leg }}" = branch ] && [ "$code" -ne 0 ]; then
+            tail -80 "$RUNNER_TEMP/herd.txt"
+            exit 1
+          fi

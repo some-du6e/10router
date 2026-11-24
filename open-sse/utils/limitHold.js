@@ -197,7 +197,9 @@ function createSpliceTransform(sourceFormat, blockOffset) {
  *
  * @returns {Promise<object|null>} the successful result, or the last failure
  */
-export async function awaitLimitClear({ retryAtMs, attempt, provider, model, signal, log, timing }) {
+// `sleep(ms, signal)` waits between attempts; the app passes one that tells
+// memory admission the request builds nothing meanwhile.
+export async function awaitLimitClear({ retryAtMs, attempt, provider, model, signal, log, timing, sleep = abortableSleep }) {
   const { minWaitMs, recheckMs, maxHoldMs } = { ...DEFAULT_TIMING, ...(timing || {}) };
   const deadline = Date.now() + maxHoldMs;
   let waitMs = Math.max((retryAtMs || 0) - Date.now(), minWaitMs);
@@ -208,7 +210,7 @@ export async function awaitLimitClear({ retryAtMs, attempt, provider, model, sig
     // Never sleep past the ceiling: a reset days away would otherwise pin the
     // connection for days before the deadline is even looked at.
     waitMs = Math.min(waitMs, Math.max(deadline - Date.now(), 0));
-    await abortableSleep(waitMs, signal);
+    await sleep(waitMs, signal);
     if (signal?.aborted) break;
 
     last = await attempt();

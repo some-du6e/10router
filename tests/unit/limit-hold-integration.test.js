@@ -196,6 +196,38 @@ describe("rate-limit hold wiring", () => {
     expect(await res.text()).toBe('{"ok":true}');
   }, 30000);
 
+  // A non-streamed hold sleeps inside the request for up to hours; meanwhile
+  // memory admission mustn't count it as about to allocate.
+  it("a JSON client's hold stops counting as not yet replying while it sleeps, and counts its re-attempt", async () => {
+    const { memoryAdmissionStats } = await import("@/sse/services/memoryAdmission.js");
+    const { pendingBytes: before, inflight } = memoryAdmissionStats();
+    // Every account is limited for 300 ms, then the one key answers.
+    const clearAt = Date.now() + 300;
+    const auth = await import("@/sse/services/auth.js");
+    vi.spyOn(auth, "getProviderCredentials").mockImplementation(async () => (Date.now() >= clearAt
+      ? { connectionId: "c1", connectionName: "acct", accessToken: "t" }
+      : { ...LIMITED(), retryAfter: new Date(clearAt).toISOString() }));
+    let during = null;
+    let resolveSecond;
+    state.coreResults = [new Promise((resolve) => { resolveSecond = resolve; })];
+    const pending = handleChat(
+      makeRequest({ model: "gpt-5", messages: [{ role: "user", content: "hi" }] }),
+      { endpoint: "/v1/chat/completions", body: {}, headers: { accept: "application/json" } }
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    during = memoryAdmissionStats();
+    // The re-attempt once the limit clears builds its body again: counted.
+    await vi.waitFor(() => expect(state.coreResults).toHaveLength(0), { timeout: 5000, interval: 10 });
+    const rerunning = memoryAdmissionStats().pendingBytes;
+    resolveSecond({ success: true, response: new Response('{"ok":true}', { headers: { "Content-Type": "application/json" } }) });
+    const res = await pending;
+    expect(await res.text()).toBe('{"ok":true}');
+    // Admitted and in flight the whole time, but asleep.
+    expect(during).toMatchObject({ inflight: inflight + 1, pendingBytes: before });
+    expect(rerunning).toBeGreaterThan(before);
+    expect(memoryAdmissionStats().pendingBytes).toBe(before);
+  }, 30000);
+
   it("holds when every account failed on a limit before any lock was recorded", async () => {
     // The "No more accounts" path: each account is tried and fails on a limit
     // in this same pass, so getProviderCredentials ends with null rather than
