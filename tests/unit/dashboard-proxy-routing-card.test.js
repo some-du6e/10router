@@ -90,4 +90,18 @@ describe("Proxy routing card provider panel", () => {
     expect(text).toMatch(/Use Global.*Inheriting/);
     expect(text).not.toMatch(/Set their own[^]*Inheriting[^]*Use Global/);
   });
+
+  it("on the Global panel, lists accounts their provider decides under their provider", async () => {
+    const us = { id: "us", name: "US East", proxyUrl: "http://us.proxy.test:8080", isActive: true, strictProxy: true };
+    responses["/api/providers"] = () => Response.json({ connections: [{ id: "inh", provider: "codex", name: "Inheriting", providerSpecificData: {} }] });
+    responses["/api/settings"] = () => Response.json({ providerStrategies: { codex: { proxyPoolId: "us" } }, globalProxyPoolId: "eu" });
+    const card = dashboardComponent(path, imports);
+    const props = { proxyPools: [...pools, us], poolsLoaded: true, onPoolsChanged: vi.fn() };
+    card.render(props);
+    await vi.waitFor(() => expect(selects(card.render(props))).toHaveLength(1));
+    elements(card.render(props), (el) => el.type === "button" && textContent(el).startsWith("Global"))[0].props.onClick();
+    const text = textContent(card.render(props));
+    expect(text).toMatch(/Set by their provider.*Inheriting/);
+    expect(text).not.toContain("Use Global");
+  });
 });

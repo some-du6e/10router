@@ -393,8 +393,8 @@ export default function ProxyRoutingCard({ proxyPools, poolsLoaded, poolsError =
   function reachPanel(s: Selection) {
     const decided = governed(s);
     const scope = s.type === "global" ? connections : connections.filter((c) => s.type === "provider" && c.provider === s.id);
-    // Of the rest: accounts with a setting of their own, and (for a provider) ones
-    // that fall through to Global.
+    // Of the rest: accounts with a setting of their own, and the ones another layer
+    // decides — Global for a provider's panel, their provider for Global's.
     const own = scope.filter((c) => !decided.includes(c) && resolveAccount(c).layer === "account");
     const below = scope.filter((c) => !decided.includes(c) && !own.includes(c));
     const row = (c: Connection) => (
@@ -421,7 +421,7 @@ export default function ProxyRoutingCard({ proxyPools, poolsLoaded, poolsError =
         )}
         {below.length > 0 && (
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Use Global</p>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">{s.type === "global" ? "Set by their provider" : "Use Global"}</p>
             <ul className="max-h-40 divide-y divide-border-subtle overflow-y-auto opacity-70">{below.map(row)}</ul>
           </div>
         )}
