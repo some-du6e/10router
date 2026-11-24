@@ -39,7 +39,12 @@ func declineSessionIDThrows(body *Value) {
 	if sid := optional(body.Get("request")).Get("sessionId"); !sid.IsNullish() && !sid.Is("") {
 		joinString(sid)
 	}
-	for _, m := range body.Get("messages").Items() {
+	// requestMessages: messages if it is an array, else input.
+	items := body.Get("messages")
+	if !items.IsArray() {
+		items = body.Get("input")
+	}
+	for _, m := range items.Items() {
 		if !optional(m).Get("role").Is("assistant") {
 			continue
 		}

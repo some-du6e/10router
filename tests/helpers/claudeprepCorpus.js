@@ -642,9 +642,19 @@ const SCENARIOS = [
     const model = "claude-opus-4-8";
     const body = ccBody(rng, model, { messages: SMALL ? 6 : 50, toolCount: SMALL ? 3 : undefined });
     delete body.metadata;
-    if (i % 2 === 0) body.request = { sessionId: { toString: 0 } };
-    else body.messages.splice(1, 0, { role: "assistant", content: [{ type: "custom_block", output: { toString: 0 } }] });
+    if (i % 3 === 0) body.request = { sessionId: { toString: 0 } };
+    else if (i % 3 === 1) body.messages.splice(1, 0, { role: "assistant", content: [{ type: "custom_block", output: { toString: 0 } }] });
+    else {
+      // No messages array: Node's session capture reads input instead.
+      delete body.messages;
+      body.input = [{ role: "assistant", content: [{ type: "custom_block", output: { toString: 0 } }] }];
+    }
     return { model, headers: SDK_HEADERS, body, expectDecline: "own toString" };
+  }),
+  scenario("decline-override-tool-change", (rng) => {
+    const model = "claude-opus-4-8";
+    const merged = { messages: [{ role: "user", content: [{ type: "text", text: "hi" }, { type: "tool_removal", tool: { type: "tool_reference", name: "Bash" } }] }] };
+    return { model, headers: CC_HEADERS, psd: { overrides: { body: JSON.stringify(merged) } }, body: ccBody(rng, model, { messages: SMALL ? 6 : 50, toolCount: SMALL ? 3 : undefined }), expectDecline: "tool change from a body override" };
   }),
   scenario("decline-bad-port", (rng) => {
     const model = "claude-opus-4-8";
@@ -663,7 +673,7 @@ const SCENARIOS = [
 const smallCount = {
   "thinking-matrix": 40, "endpoint-overrides": 22, "tool-choice": 6, "max-tokens": 6, "cc-basic": 3, "empty-blocks": 4, params: 6,
   "stream-shapes": 12, "cc-dedupe": 4, "cc-images-tool-errors": 4, "broken-ids": 2, "numbers-and-keys": 3, "limit-hold-banner": 3,
-  "oauth-token-key": 3, "base-urls": 9, "provider-thinking": 12, "prefill-repair": 4, "odd-tool-calls": 2, "edge-probes": 7, "decline-session-id-throw": 2,
+  "oauth-token-key": 3, "base-urls": 9, "provider-thinking": 12, "prefill-repair": 4, "odd-tool-calls": 2, "edge-probes": 7, "decline-session-id-throw": 3,
 };
 
 function toFixture(name, spec, seed) {

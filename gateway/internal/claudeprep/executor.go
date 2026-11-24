@@ -129,9 +129,20 @@ func sentBetas(headers *Value) []string {
 }
 
 func finalizeBody(body *Value, headers *Value, provider string, models Models) *Value {
-	// BaseExecutor: tool changes (none reach here). DefaultExecutor, Claude
-	// format: first-party fields without their beta, then the forced
-	// tool_choice rule with the outgoing thinking and model.
+	// BaseExecutor: fold tool-change blocks without their beta. The client's
+	// were declined up front, but a body override can merge messages that
+	// carry them; folding isn't ported, so those go to Node too.
+	if msgs := body.Get("messages"); msgs.IsArray() {
+		for _, m := range msgs.Items() {
+			for _, b := range optional(m).Get("content").Items() {
+				if t := optional(b).Get("type"); t.Is("tool_addition") || t.Is("tool_removal") {
+					decline("mid-conversation tool change from a body override")
+				}
+			}
+		}
+	}
+	// DefaultExecutor, Claude format: first-party fields without their beta,
+	// then the forced tool_choice rule with the outgoing thinking and model.
 	sent := sentBetas(headers)
 	var drop []string
 	for flag, fields := range tbl.FirstPartyBetaFields {

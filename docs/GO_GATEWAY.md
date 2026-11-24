@@ -189,7 +189,7 @@ Nothing turns native until it matches Node byte for byte on recorded traffic.
    In place for `internal/claudeprep` (phase 2a), the request half:
    - **Corpus.** `tests/helpers/claudeprepCorpus.js` generates the cases. Its JSON writer can emit what `JSON.stringify` never does: `1.0`, `1e3`, big integers, duplicate and integer-like keys, escapes, CRLF and tab whitespace, and invalid UTF-8 bytes. The large corpus also runs every capability family against every thinking intent and every `(level)` suffix.
    - **Recorder.** `tests/unit/gateway-claudeprep-parity.test.js` is part of the default vitest suite. It runs each case through chat.ts's body steps (restated there, since `internal/route` owns them) and the real `handleChatCore`. A `vi.mock` of `proxyAwareFetch`, under the executor, captures the URL, the headers object and the body bytes, with keys redacted as `{{apiKey}}`. Nothing leaves the process.
-   - **Fixtures.** The repo keeps 176 fixtures in `gateway/internal/claudeprep/testdata/fixtures`, with the prose cut short. The core cases keep histories of 50 to 120 messages and 12 to 48 tools. The test fails if Node no longer makes them, or no longer matches the table export, so a Node change that would break parity fails in Node's own suite as well.
+   - **Fixtures.** The repo keeps 178 fixtures in `gateway/internal/claudeprep/testdata/fixtures`, with the prose cut short. The core cases keep histories of 50 to 120 messages and 12 to 48 tools. The test fails if Node no longer makes them, or no longer matches the table export, so a Node change that would break parity fails in Node's own suite as well.
    - **Recording.** `CLAUDEPREP_RECORD=1` rewrites the fixtures and `tables.json`. With `CLAUDEPREP_LARGE=1` and `CLAUDEPREP_OUT` it writes the large corpus instead: about 1,100 cases, including histories of 1,000 to 1,400 messages.
 2. **Transform tests.** The Go request preparation runs on every fixture's client body and must produce the same upstream body bytes as Node. JSON key order and number formatting count, because the upstream's prompt cache keys on bytes. This is where most of phase 2's risk sits.
 
@@ -247,7 +247,7 @@ Whatever the port doesn't model it hands back with a `*DeclineError` (`claudepre
 - JSON nested more than 512 deep (Node's own recursion fails a few thousand down);
 - header values that aren't printable ASCII without edge spaces: fetch sends Latin-1, throws on CR, LF and NUL, and trims, while net/http refuses other control characters;
 - the web search tool, which needs Node's built-in search hooks;
-- mid-conversation `tool_addition`/`tool_removal` blocks;
+- mid-conversation `tool_addition`/`tool_removal` blocks, the client's or a body override's;
 - a top-level `allOf`/`anyOf`/`oneOf` or `$ref` in a tool's `input_schema`, which Node flattens;
 - a `json_schema` `response_format`;
 - non-ASCII model ids and client-identity headers;
