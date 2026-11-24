@@ -245,8 +245,38 @@ func TestOutOfTurnAdmitWhenTheWaitEnds(t *testing.T) {
 	t2.Release()
 }
 
-// The front waiter whose wait runs out is decided before the queue moves:
-// room for one goes to it, not to the waiter behind it.
+// A waiter whose wait ends behind one that doesn't fit gets in out of turn
+// when it fits itself, rather than being turned away.
+func TestOutOfTurnBehindAWaiterThatDoesNotFit(t *testing.T) {
+	g := gate(Options{BudgetBytes: 100, MaxWait: time.Minute})
+	a, _, _ := g.Acquire(context.Background(), 60)
+	defer a.Release()
+	big := make(chan *Ticket, 1)
+	go func() {
+		tk, _, _ := g.Acquire(context.Background(), 90) // waits a minute
+		big <- tk
+	}()
+	for deadline := time.Now().Add(time.Second); g.Snapshot().Waiting < 1; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the big waiter never queued")
+		}
+	}
+	// The one behind it waits only briefly, so its wait ends first.
+	g.mu.Lock()
+	g.o.MaxWait = 30 * time.Millisecond
+	g.mu.Unlock()
+	small, r, err := g.Acquire(context.Background(), 30)
+	if err != nil || r != nil || small == nil {
+		t.Fatalf("the small one behind a waiter that doesn't fit: %v %+v %v", small, r, err)
+	}
+	small.Release()
+	if s := g.Snapshot(); s.Waiting != 1 {
+		t.Fatalf("the big waiter left the queue: %+v", s)
+	}
+}
+
+// Room for one goes to the front waiter whose wait runs out, not to the one
+// behind it (the queue goes in order before an out-of-turn decision).
 func TestTimedOutFrontWaiterKeepsItsTurn(t *testing.T) {
 	var mem atomic.Int64
 	mem.Store(2000)

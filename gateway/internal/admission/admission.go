@@ -313,9 +313,10 @@ func (g *Gate) Acquire(ctx context.Context, bodyLength int64) (*Ticket, *Refusal
 	w := &waiter{length: length, sized: sized, ready: make(chan *Ticket, 1)}
 	g.queue = append(g.queue, w)
 	g.startRecheck()
+	wait := g.o.MaxWait
 	g.mu.Unlock()
 
-	timer := time.NewTimer(g.o.MaxWait)
+	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {
 	case t := <-w.ready:

@@ -142,7 +142,7 @@ func TestDeclinesIDsNodeReadsDifferently(t *testing.T) {
 
 // Stored shapes Node reads through JavaScript's object rules.
 func TestDeclinesStoredShapesNodeReadsItsOwnWay(t *testing.T) {
-	aliases, err := jsjson.ParseObject([]byte(`{"__proto__":{"inherited":"hot/model-a"},"plain":"constructor/x"}`))
+	aliases, err := jsjson.ParseObject([]byte(`{"__proto__":{"inherited":"hot/model-a"},"plain":"constructor/x","objModel":{"provider":"hot","model":"toString"}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,8 +152,10 @@ func TestDeclinesStoredShapesNodeReadsItsOwnWay(t *testing.T) {
 		t.Errorf("an alias Node would inherit was resolved: %v", err)
 	}
 	c.Aliases.Delete("__proto__")
-	if _, err := c.ModelInfo("plain"); !decline.Is(err) {
-		t.Errorf("an alias naming Object.prototype was resolved: %v", err)
+	for _, alias := range []string{"plain", "objModel"} {
+		if _, err := c.ModelInfo(alias); !decline.Is(err) {
+			t.Errorf("%s: an alias naming Object.prototype was resolved: %v", alias, err)
+		}
 	}
 	if _, err := c.ComboModels("lengthy"); !decline.Is(err) {
 		t.Errorf("object-shaped members: %v", err)

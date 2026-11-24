@@ -184,8 +184,13 @@ func TestDeclinesComboStrategiesThatIsNotAnObject(t *testing.T) {
 
 // Without a lookup a combo can't be walked, so an allowlist is Node's to check.
 func TestDeclinesAllowlistWithoutALookup(t *testing.T) {
-	if _, err := IsModelAllowed("main", []string{"MAIN"}, nil); !decline.Is(err) {
-		t.Fatalf("got %v", err)
+	for _, model := range []string{"main", "prov/foo"} {
+		if _, err := IsModelAllowed(model, []string{"MAIN", "foo"}, nil); !decline.Is(err) {
+			t.Errorf("%s: got %v", model, err)
+		}
+		if _, err := IsModelAllowed(model, []string{"foo"}, &Lookup{}); !decline.Is(err) {
+			t.Errorf("%s with no combos: got %v", model, err)
+		}
 	}
 }
 

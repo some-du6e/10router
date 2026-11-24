@@ -226,10 +226,8 @@ type Lookup struct {
 
 // alias is lookup.aliases[raw]: the stored alias, else the built-in one.
 func (l *Lookup) alias(raw string) (any, bool) {
-	if l != nil && l.Combos != nil {
-		if v, ok := l.Combos.Aliases.Get(raw); ok {
-			return v, true
-		}
+	if v, ok := l.Combos.Aliases.Get(raw); ok {
+		return v, true
 	}
 	if v, ok := combo.BuiltinModelAlias(raw); ok {
 		return v, true
@@ -238,11 +236,8 @@ func (l *Lookup) alias(raw string) (any, bool) {
 }
 
 // comboMembers is lookup.comboModels: the members, and a fusion combo's judge.
+// The caller has checked l and l.Combos (IsModelAllowed).
 func (l *Lookup) comboMembers(name string) ([]string, error) {
-	if l == nil || l.Combos == nil {
-		// Without the combos, a combo name would be matched as a plain id.
-		return nil, declined("no combo lookup for the allowlist walk")
-	}
 	members, err := l.Combos.ComboModels(name)
 	if err != nil || len(members) == 0 {
 		return nil, err
@@ -309,6 +304,11 @@ type allowlist struct {
 func IsModelAllowed(requested string, allowedModels []string, l *Lookup) (bool, error) {
 	if len(allowedModels) == 0 {
 		return true, nil
+	}
+	// Without the combos and stored aliases, a combo or alias would be
+	// matched as a plain id.
+	if l == nil || l.Combos == nil {
+		return false, declined("no combo and alias lookup for the allowlist")
 	}
 	a := &allowlist{entries: allowedModels, allowed: map[string]bool{}, lookup: l}
 	for _, e := range allowedModels {
