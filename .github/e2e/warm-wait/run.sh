@@ -14,7 +14,12 @@ mkdir -p "$OUT"
 export DATA_DIR="$OUT/data"
 mkdir -p "$DATA_DIR"
 
+PIDS=()
+cleanup() { [ ${#PIDS[@]} -gt 0 ] && kill "${PIDS[@]}" 2>/dev/null; wait 2>/dev/null || true; }
+trap cleanup EXIT
+
 node "$HERE/mock-upstream.mjs" > "$OUT/mock.log" 2>&1 &
+PIDS+=($!)
 node --experimental-loader=./scripts/resolve-src-alias.mjs "$HERE/seed.mjs" 2>&1 | grep -v -i warning
 
 # Each 429 after the first moves the warm key's lock a little later; a longer
@@ -24,6 +29,7 @@ PROBE_OUT="$OUT/probe.json" NODE_OPTIONS="--require $HERE/probe.cjs" CACHE_AFFIN
   JWT_SECRET="e2e-$(openssl rand -hex 16)" PORT=20128 HOSTNAME=127.0.0.1 \
   node custom-server.js --port 20128 > "$OUT/server.log" 2>&1 &
 SERVER_PID=$!
+PIDS+=("$SERVER_PID")
 
 for _ in $(seq 1 60); do
   curl -sf -o /dev/null http://127.0.0.1:20128/v1/models && break

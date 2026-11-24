@@ -13,7 +13,7 @@
 // they hold, per request and against the size of one body. When the lock
 // ends they resume on the warm key, which answers; the bench checks that each
 // one was sent the very bytes its first attempt was. In-process, so Next's
-// own copy of each body (src/lib/proxyBodyCopy.js) isn't here: see
+// own copy of each body (src/lib/proxyBodyCopy.ts) isn't here: see
 // .github/e2e/warm-wait for the production server.
 //
 //   cd tests && ./node_modules/.bin/vitest run --config vitest.benchmark.config.js bench/warm-wait-retention-benchmark.test.js

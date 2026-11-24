@@ -1,7 +1,7 @@
 // Next hands the proxy (src/proxy.js) its own copy of each request body,
 // pushed the same chunks as the route's, and the request keeps that copy
 // reachable until its response ends. The proxy reads its copy as it arrives
-// (src/lib/proxyBodyCopy.js), so a request whose route has parsed the body no
+// (src/lib/proxyBodyCopy.ts), so a request whose route has parsed the body no
 // longer holds it a second time, raw, while it waits or streams.
 //
 // Runs Next's own pieces on a real HTTP server, as `next start` does for a
@@ -23,6 +23,8 @@ const SIZE = 3 * 1024 * 1024;
 let server;
 
 afterEach(async () => {
+  // A failed assertion can leave a response open; close() would wait on it.
+  server?.closeAllConnections();
   await new Promise((resolve) => (server ? server.close(resolve) : resolve()));
   server = null;
 });

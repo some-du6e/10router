@@ -10,10 +10,8 @@
  *
  * Not awaited: Next waits for the whole body before the route runs anyway, and
  * a copy whose upload was cut off never ends. Never throws.
- *
- * @param {Request} request - the proxy's request
  */
-export function releaseBodyCopy(request) {
+export function releaseBodyCopy(request: Pick<Request, "body"> | null | undefined): void {
   try {
     const body = request?.body;
     if (body && !body.locked) body.pipeTo(new WritableStream()).catch(() => {});

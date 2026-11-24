@@ -5,7 +5,7 @@ on:
     paths:
       - "src/sse/handlers/chat.ts"
       - "src/proxy.js"
-      - "src/lib/proxyBodyCopy.js"
+      - "src/lib/proxyBodyCopy.ts"
       - "src/sse/services/auth.js"
       - "src/sse/services/memoryAdmission.js"
       - "open-sse/handlers/chatCore.js"
@@ -65,7 +65,7 @@ jobs:
           ./node_modules/.bin/eslint
           src/sse/handlers/chat.ts
           src/proxy.js
-          src/lib/proxyBodyCopy.js
+          src/lib/proxyBodyCopy.ts
           tests/unit/warm-wait-release.test.js
           tests/unit/proxy-body-copy.test.js
           tests/bench/warm-wait-retention-benchmark.test.js
