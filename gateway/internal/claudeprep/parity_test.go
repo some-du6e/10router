@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -213,7 +214,7 @@ func TestParityWithNode(t *testing.T) {
 			if !lines && req.Stream != accept {
 				t.Errorf("Stream %v, but the SSE Accept header is %v", req.Stream, accept)
 			}
-			if fmt.Sprint(got) != fmt.Sprint(f.Node.Headers) {
+			if !reflect.DeepEqual(got, f.Node.Headers) && !(len(got) == 0 && len(f.Node.Headers) == 0) {
 				t.Errorf("headers\n got %v\nNode %v", got, f.Node.Headers)
 			}
 			if !bytes.Equal(req.Body, []byte(f.Node.Body)) {

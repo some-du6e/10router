@@ -1,6 +1,7 @@
 {
-  "_comment": "Node files each Go package ports (docs/GO_GATEWAY.md, 'Behaviors to port'). The drift check (scripts/gateway-drift-check.mjs, run by .github/workflows/gateway-drift.yml) fails a PR that changes one of these without changing gateway/internal/<pkg>/ (the port or its fixtures) or listing the package in gateway/GATEWAY_PROXY_ONLY. Files that only hold exported constants or tables (runtimeConfig.js, shared.js, pricing.js, ...) aren't listed: the parity workflow's path filter covers them, and its table-export and fixture checks fail when a value the port reads changes.",
+  "_comment": "Node files each Go package ports (docs/GO_GATEWAY.md, 'Behaviors to port'). The drift check (scripts/gateway-drift-check.mjs, run by .github/workflows/gateway-drift.yml) fails a PR that changes one of these without changing gateway/internal/<pkg>/ (the port or its fixtures) or listing the package in gateway/GATEWAY_PROXY_ONLY. Files that only hold exported constants or tables (runtimeConfig.js, shared.js, ...) aren't listed: the parity workflow's path filter covers them, and its table-export and fixture checks fail when a value the port reads changes. pricing.js is listed because Go restates its matchPattern glob rules, not just its tables.",
   "claudeprep": [
+    "open-sse/providers/pricing.js",
     "open-sse/translator/index.ts",
     "open-sse/translator/formats/claude.js",
     "open-sse/translator/concerns/thinkingUnified.js",
