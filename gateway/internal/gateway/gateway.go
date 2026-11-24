@@ -154,9 +154,10 @@ type Gateway struct {
 
 	// native is the database the native routes would read, in native mode
 	// only (nil until it opens). nativeErr is why it didn't open.
-	nativeMu  sync.Mutex
-	native    *db.DB
-	nativeErr string
+	nativeMu     sync.Mutex
+	native       *db.DB
+	nativeErr    string
+	nativeClosed bool
 }
 
 // nativeStatus is what health reports for the native routes: ready, or why not.
@@ -171,21 +172,55 @@ func (g *Gateway) nativeStatus() (ready bool, reason string) {
 		return false, openErr
 	}
 	st := d.Status()
+	if st.Ready && d.Snapshot() == nil {
+		reason := "the config snapshot has not loaded"
+		if e := d.LastError(); e != "" {
+			reason += ": " + e
+		}
+		return false, reason
+	}
 	return st.Ready, st.Reason
 }
 
-// openNative opens the app server's database once it listens (it migrates
-// before that), checks the schema and keeps the config snapshot current.
-// Native mode serves no route yet, so this only feeds health and the log.
+// nativeRetry is how often a database that didn't open is tried again.
+const nativeRetry = time.Second
+
+// openNative opens the app server's database, checks the schema and keeps
+// the config snapshot current. Node opens (and on a fresh install creates
+// and migrates) its database on its first use of it, which can come after
+// it listens, so a file that isn't there yet is tried again every
+// nativeRetry until ctx ends. Native mode serves no route yet, so this only
+// feeds health and the log.
 func (g *Gateway) openNative(ctx context.Context, env []string) {
 	getenv := os.Getenv
 	if env != nil {
 		getenv = func(k string) string { return envValue(env, k) }
 	}
+	if g.tryOpenNative(ctx, getenv) {
+		return
+	}
+	go func() {
+		t := time.NewTicker(nativeRetry)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if g.tryOpenNative(ctx, getenv) {
+					return
+				}
+			}
+		}
+	}()
+}
+
+func (g *Gateway) tryOpenNative(ctx context.Context, getenv func(string) string) bool {
 	path, err := db.DataFile(getenv)
 	if err == nil {
 		var d *db.DB
 		if d, err = db.Open(path, db.Options{}); err == nil {
+			var lastErr string
 			err = d.Watch(ctx, db.WatchOptions{
 				OnStatus: func(st db.Status) {
 					if st.Ready {
@@ -194,27 +229,44 @@ func (g *Gateway) openNative(ctx context.Context, env []string) {
 						g.logger.Printf("[Gateway] native routes off: %s", st.Reason)
 					}
 				},
+				// One line per distinct error, not one per 250 ms poll.
+				OnError: func(err error) {
+					if msg := err.Error(); msg != lastErr {
+						lastErr = msg
+						g.logger.Printf("[Gateway] native: reading the database failed: %s", msg)
+					}
+				},
 			})
 			if err == nil {
 				g.nativeMu.Lock()
 				g.native = d
+				g.nativeErr = ""
+				closed := g.nativeClosed
 				g.nativeMu.Unlock()
-				return
+				if closed {
+					_ = d.Close()
+				}
+				return true
 			}
 			_ = d.Close()
 		}
 	}
 	reason := "cannot open the database: " + err.Error()
-	g.logger.Printf("[Gateway] native routes off: %s", reason)
 	g.nativeMu.Lock()
+	changed := g.nativeErr != reason
 	g.nativeErr = reason
 	g.nativeMu.Unlock()
+	if changed {
+		g.logger.Printf("[Gateway] native routes off: %s (trying again every %v)", reason, nativeRetry)
+	}
+	return false
 }
 
 func (g *Gateway) closeNative() {
 	g.nativeMu.Lock()
 	d := g.native
 	g.native = nil
+	g.nativeClosed = true
 	g.nativeMu.Unlock()
 	if d != nil {
 		_ = d.Close()
@@ -495,7 +547,7 @@ func Run(o Options) int {
 		}
 	}
 
-	// Node has migrated the database by the time it listens.
+	// The schema guard tells a database Node hasn't migrated yet apart.
 	if cfg.Mode == config.ModeNative {
 		nativeCtx, stopNative := context.WithCancel(context.Background())
 		// Deferred in this order so the watcher stops before the database closes.

@@ -552,6 +552,29 @@ func TestNativeHealthReportsTheSchemaGuard(t *testing.T) {
 			}
 		})
 	}
+	// Node creates the file on its first use of it, which can come after it
+	// listens: the gateway keeps trying.
+	t.Run("file made later", func(t *testing.T) {
+		dataDir := t.TempDir()
+		cfg := baseConfig(portOf(t, app.URL))
+		cfg.Mode = config.ModeNative
+		g := New(cfg, log.New(io.Discard, "", 0), "test")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		g.openNative(ctx, []string{"DATA_DIR=" + dataDir})
+		defer g.closeNative()
+		if body := health(g); body["native"] != "off" {
+			t.Fatalf("before: %v", body)
+		}
+		dbtest.New(t, dbtest.Options{Path: dataDir + "/db/data.sqlite"})
+		deadline := time.Now().Add(5 * time.Second)
+		for health(g)["native"] != "ready" {
+			if time.Now().After(deadline) {
+				t.Fatalf("still %v", health(g))
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	})
 	// Proxy mode reports nothing about it.
 	if body := health(New(baseConfig(portOf(t, app.URL)), log.New(io.Discard, "", 0), "test")); body["native"] != nil {
 		t.Fatalf("proxy health %v", body)

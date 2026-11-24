@@ -25,7 +25,8 @@ export async function driverAvailable(driver) {
     }
     return true;
   } catch (error) {
-    if (process.env.REQUIRE_NATIVE_SQLITE === "1" && driver === "better-sqlite3") throw error;
+    // CI builds both: a missing one fails there instead of skipping.
+    if (process.env.REQUIRE_NATIVE_SQLITE === "1") throw error;
     return false;
   }
 }
@@ -41,9 +42,9 @@ export function closeRepos() {
 }
 
 /**
- * Fresh modules on dataDir with `driver` (null: driver.js's own chain).
- * `wrap` may replace the adapter the repos see (instrumentation).
- * @returns {Promise<{ repos: any, adapter: any, file: string, modules: (id: string) => Promise<any> }>}
+ * Fresh modules on dataDir with `driver`. `wrap` may replace the adapter the
+ * repos see (instrumentation).
+ * @returns {Promise<{ repos: any, adapter: any, file: string }>}
  */
 export async function openRepos(driver, dataDir, { wrap } = {}) {
   closeRepos();
@@ -54,25 +55,17 @@ export async function openRepos(driver, dataDir, { wrap } = {}) {
   vi.resetModules();
   const { DATA_FILE, ensureDirs } = await import("@/lib/db/paths.js");
   ensureDirs();
-  if (driver) {
-    const factory = await FACTORIES[driver]();
-    const raw = await factory(DATA_FILE);
-    const adapter = wrap ? wrap(raw) : raw;
-    // Before anything imports driver.js, which adopts this state object.
-    global._dbAdapter = { instance: adapter, initPromise: null, initError: null, initFailedAt: 0, logged: true };
-    const { runMigrationOnce } = await import("@/lib/db/migrate.js");
-    await runMigrationOnce(adapter);
-    const { recordDriver } = await import("@/lib/db/driver.js");
-    recordDriver(adapter);
-  }
+  const factory = await FACTORIES[driver]();
+  const raw = await factory(DATA_FILE);
+  const adapter = wrap ? wrap(raw) : raw;
+  // Before anything imports driver.js, which adopts this state object.
+  global._dbAdapter = { instance: adapter, initPromise: null, initError: null, initFailedAt: 0, logged: true };
+  const { runMigrationOnce } = await import("@/lib/db/migrate.js");
+  await runMigrationOnce(adapter);
+  const { recordDriver } = await import("@/lib/db/driver.js");
+  recordDriver(adapter);
   const repos = await import("@/lib/db/index.js");
-  const { getAdapter } = await import("@/lib/db/driver.js");
-  let adapter = await getAdapter();
-  if (!driver && wrap) {
-    adapter = wrap(adapter);
-    global._dbAdapter.instance = adapter;
-  }
-  return { repos, adapter, file: DATA_FILE, modules: (id) => import(id) };
+  return { repos, adapter, file: DATA_FILE };
 }
 
 /** _meta.configGeneration as a number (0 when unset). */

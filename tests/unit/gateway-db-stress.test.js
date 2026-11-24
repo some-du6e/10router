@@ -57,6 +57,21 @@ async function workload(durationMs, repos, adapter, keys) {
     const line = args.map((a) => (a instanceof Error ? a.message : String(a))).join(" ");
     (isBusy(line) ? busy : errors).push(line);
   };
+  // Node's slowest calls, by name: what a stall was waiting in.
+  const slow = [];
+  const timed = async (name, fn) => {
+    const t = performance.now();
+    try {
+      return await fn();
+    } finally {
+      const took = performance.now() - t;
+      if (took >= 20) {
+        slow.push({ name, ms: Math.round(took) });
+        slow.sort((x, y) => y.ms - x.ms);
+        slow.length = Math.min(slow.length, 10);
+      }
+    }
+  };
   lag.enable();
   const end = Date.now() + durationMs;
   let lastConfig = 0;
@@ -65,40 +80,40 @@ async function workload(durationMs, repos, adapter, keys) {
     while (Date.now() < end) {
       const n = ++counts.requests;
       try {
-        const conns = await repos.getProviderConnections({ provider: PROVIDER, isActive: true });
+        const conns = await timed("getProviderConnections", () => repos.getProviderConnections({ provider: PROVIDER, isActive: true }));
         const c = conns[n % conns.length];
         const key = keys[n % keys.length];
-        await repos.getApiKeyPolicy(key);
+        await timed("getApiKeyPolicy", () => repos.getApiKeyPolicy(key));
         const now = new Date().toISOString();
         if (n % 5 === 0) {
-          await repos.updateProviderConnection(c.id, {
+          await timed("lock write", () => repos.updateProviderConnection(c.id, {
             "modelLock_node-model": new Date(Date.now() + 30000).toISOString(), "modelLimit_node-model": true,
             testStatus: "unavailable", lastError: "rate limited", errorCode: 429, lastErrorAt: now, backoffLevel: 1,
-          });
+          }));
           counts.lockWrites++;
         } else if (n % 5 === 1) {
-          await repos.updateProviderConnection(c.id, {
+          await timed("lock clear", () => repos.updateProviderConnection(c.id, {
             "modelLock_node-model": null, "modelLimit_node-model": null, testStatus: "active", lastError: null, errorCode: null, backoffLevel: 0,
-          }, { liftDemote: "node-model" });
+          }, { liftDemote: "node-model" }));
           counts.lockWrites++;
         } else if (n % 5 === 2) {
-          await repos.updateProviderConnection(c.id, { lastUsedAt: now, consecutiveUseCount: n % 3 });
+          await timed("round-robin write", () => repos.updateProviderConnection(c.id, { lastUsedAt: now, consecutiveUseCount: n % 3 }));
           counts.lockWrites++;
         }
-        await repos.saveRequestUsage({
+        await timed("saveRequestUsage", () => repos.saveRequestUsage({
           provider: PROVIDER, model: "node-model", connectionId: c.id, apiKey: key, endpoint: "/v1/messages",
           tokens: { input_tokens: 1000 + (n % 5000), output_tokens: n % 800, cache_read_input_tokens: n % 4000 },
-        });
+        }));
         counts.usage++;
         if (n % 4 === 0) {
-          await repos.saveRequestDetail({
+          await timed("saveRequestDetail", () => repos.saveRequestDetail({
             provider: PROVIDER, model: "node-model", connectionId: c.id, status: "success",
             latency: { ttft: 120, total: 900 }, request: { model: "node-model", messages: [{ role: "user", content: "synthetic" }] },
-          });
+          }));
           counts.details++;
         }
         if (Date.now() - lastConfig >= 500) {
-          await repos.updateSettings({ stickyRoundRobinLimit: 3 + (n % 3) });
+          await timed("updateSettings", () => repos.updateSettings({ stickyRoundRobinLimit: 3 + (n % 3) }));
           counts.configWrites++;
           lastConfig = Date.now();
         }
@@ -121,6 +136,7 @@ async function workload(durationMs, repos, adapter, keys) {
     ...counts,
     lagMs: { p50: ms(lag.percentile(50)), p99: ms(lag.percentile(99)), max: ms(lag.max) },
     checkpointsMs: checkpoints,
+    slowest: slow,
     busy: busy.slice(0, 5), busyCount: busy.length,
     errors: errors.slice(0, 5), errorCount: errors.length,
   };
@@ -155,6 +171,9 @@ function report(driver, baseline, shared, gateway) {
     `| connection write | ${lat(g.connectionWrite)} |`,
     `| request-detail batch | ${lat(g.detailBatch)} |`,
     `| read (list + key) | ${lat(g.read)} |`,
+    "",
+    `Gateway write lock: ${gateway.lock ? `${gateway.lock.transactions} transactions for ${gateway.lock.writes} writes, held p50 ${gateway.lock.holdP50Ms} / p99 ${gateway.lock.holdP99Ms} / max ${gateway.lock.holdMaxMs} ms, waited p99 ${gateway.lock.waitP99Ms} / max ${gateway.lock.waitMaxMs} ms` : "-"}.`,
+    `Node's slowest calls with the gateway: ${shared.slowest.map((s) => `${s.name} ${s.ms} ms`).join(", ") || "none over 20 ms"}.`,
     "",
   ].join("\n");
   console.log(md);

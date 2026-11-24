@@ -1,15 +1,10 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "./jsonCol.js";
-import { CONFIG_KV_SCOPES, bumpConfigGenerationSync } from "./configGeneration.js";
+import { CONFIG_KV_SCOPES, writeConfig } from "./configGeneration.js";
 
 export function makeKv(scope) {
   // Writes to a scope the gateway caches move _meta.configGeneration with them.
-  const isConfig = CONFIG_KV_SCOPES.has(scope);
-  const write = (db, fn) => db.transaction(() => {
-    const result = fn();
-    if (isConfig) bumpConfigGenerationSync(db);
-    return result;
-  });
+  const write = CONFIG_KV_SCOPES.has(scope) ? writeConfig : (db, fn) => db.transaction(fn);
   return {
     async get(key, fallback = null) {
       const db = await getAdapter();

@@ -127,6 +127,10 @@ func TestBuiltManifestMatchesTheDoc(t *testing.T) {
 	if Built.SchemaVersion != 6 || len(Built.Tables) != 11 {
 		t.Fatalf("manifest: %+v", Built)
 	}
+	// The scopes loadKV reads are the manifest's (which Node's test holds to CONFIG_KV_SCOPES).
+	if strings.Join(Built.KVScopes, ",") != "modelAliases,pricing,customModels" {
+		t.Fatalf("kv scopes: %v", Built.KVScopes)
+	}
 }
 
 func TestWatchReloadsOnAGenerationChangeOnly(t *testing.T) {
@@ -213,7 +217,7 @@ func TestSnapshotReadsConfig(t *testing.T) {
 	dbtest.Exec(t, node, `INSERT INTO providerNodes(id, type, name, data, createdAt, updatedAt) VALUES('openai-compatible-chat-1', 'openai-compatible', 'N', '{"prefix":"oc","baseUrl":"http://u","apiType":"chat","droppedBetas":["x"],"modelRoutes":{"m":"anthropic"},"id":"stale"}', 't', 't')`)
 	dbtest.Exec(t, node, `INSERT INTO apiKeys(id, key, name, isActive, createdAt, budgetUsd, allowedModels, spentUsd, spendOffsetUsd, limitHold) VALUES('k1', 'sk-a', 'A', 1, 't', 5, '["fast",3,"m"]', 1.2345678, 0.2, 0)`)
 	dbtest.Exec(t, node, `INSERT INTO kv(scope, key, value) VALUES('modelAliases', 'sonnet', '"oc/claude"'), ('pricing', 'oc', '{"m":{"input":1}}'), ('customModels', 'oc|m|llm', '{"providerAlias":"oc","id":"m","type":"llm"}'), ('disabledModels', 'oc', '["x"]')`)
-	s, err := d.loadSnapshot(context.Background())
+	s, err := d.LoadSnapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

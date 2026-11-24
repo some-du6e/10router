@@ -62,6 +62,13 @@ func (d *DB) Status() Status {
 	return Status{Reason: "the database has not been checked yet"}
 }
 
+// LastError is the watcher's latest poll or reload error, "" when its last
+// poll went through.
+func (d *DB) LastError() string {
+	s, _ := d.lastErr.Load().(string)
+	return s
+}
+
 // Snapshot is the latest config snapshot, nil before the first load or
 // while the guard says the schema can't be read.
 func (d *DB) Snapshot() *Snapshot {
@@ -101,6 +108,8 @@ func (d *DB) Watch(ctx context.Context, o WatchOptions) error {
 	w := &watcher{d: d, o: o, conn: conn}
 	if err := w.poll(ctx, true); err != nil {
 		w.fail(err)
+	} else {
+		d.lastErr.Store("")
 	}
 	go func() {
 		defer conn.Close()
@@ -113,6 +122,8 @@ func (d *DB) Watch(ctx context.Context, o WatchOptions) error {
 			case <-t.C:
 				if err := w.poll(ctx, false); err != nil && ctx.Err() == nil {
 					w.fail(err)
+				} else if err == nil {
+					d.lastErr.Store("")
 				}
 			}
 		}
@@ -127,13 +138,34 @@ type watcher struct {
 
 	dataVersion   int64
 	schemaVersion int64
+	guarded       string
 	generation    int64
 	loadedAt      time.Time
 	checkedAt     time.Time
 	lastStatus    *Status
 }
 
+// readMeta reads the _meta rows the watcher and the guard use, in one statement.
+func readMeta(ctx context.Context, q querier) (map[string]string, error) {
+	rows, err := q.QueryContext(ctx, `SELECT key, value FROM _meta WHERE key IN ('configGeneration', 'schemaVersion', 'dbDriver')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	meta := map[string]string{}
+	for rows.Next() {
+		var k string
+		var v sql.NullString
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		meta[k] = v.String
+	}
+	return meta, rows.Err()
+}
+
 func (w *watcher) fail(err error) {
+	w.d.lastErr.Store(err.Error())
 	w.d.stats.errors.Add(1)
 	if w.o.OnError != nil {
 		w.o.OnError(err)
@@ -162,18 +194,21 @@ func (w *watcher) poll(ctx context.Context, first bool) error {
 	if err := w.conn.QueryRowContext(ctx, "PRAGMA schema_version").Scan(&sv); err != nil {
 		return err
 	}
-	var gen sql.NullString
-	err := w.conn.QueryRowContext(ctx, `SELECT value FROM _meta WHERE key = 'configGeneration'`).Scan(&gen)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	meta, err := readMeta(ctx, w.conn)
+	if err != nil {
 		return err
 	}
-	generation := jsParseInt(gen.String)
+	generation := jsParseInt(meta["configGeneration"])
+	// The guard reads two plain rows as well as the schema: Node records its
+	// driver at every start and a data-only migration moves schemaVersion,
+	// neither of which changes schema_version.
+	guarded := meta["schemaVersion"] + "\x00" + meta["dbDriver"]
 
-	// A refusal is re-checked every TTL too: what it read (the driver Node
-	// recorded, a missing table) can change without a schema change here.
+	// A refusal is re-checked every TTL too: what it read (a missing table,
+	// the file's journal mode) can change without either.
 	recheck := w.lastStatus != nil && !w.lastStatus.Ready && time.Since(w.checkedAt) >= w.o.TTL
-	if first || sv != w.schemaVersion || recheck {
-		w.schemaVersion = sv
+	if first || sv != w.schemaVersion || guarded != w.guarded || recheck {
+		w.schemaVersion, w.guarded = sv, guarded
 		d.stats.checks.Add(1)
 		st := d.Check(ctx)
 		w.checkedAt = time.Now()
@@ -185,7 +220,7 @@ func (w *watcher) poll(ctx context.Context, first bool) error {
 	if !first && !stale && generation == w.generation && d.snapshot.Load() != nil {
 		return nil
 	}
-	snap, err := d.loadSnapshot(ctx)
+	snap, err := d.LoadSnapshot(ctx)
 	if err != nil {
 		return err
 	}

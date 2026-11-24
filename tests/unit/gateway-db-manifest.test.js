@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { TABLES, buildCreateTableSql } from "@/lib/db/schema.js";
 import { latestVersion } from "@/lib/db/migrations/index.js";
+import { CONFIG_KV_SCOPES } from "@/lib/db/helpers/configGeneration.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const GATEWAY_DB = path.join(ROOT, "gateway/internal/db");
@@ -35,6 +36,10 @@ it("shares a file only with the drivers that keep it on disk", () => {
     .filter(Boolean);
   expect([...drivers].sort()).toEqual(["better-sqlite3", "bun:sqlite", "node:sqlite", "sql.js"]);
   expect([...manifest.drivers].sort()).toEqual(drivers.filter((d) => d !== "sql.js").sort());
+});
+
+it("caches exactly the kv scopes whose writes move the config generation", () => {
+  expect(manifest.kvScopes).toEqual([...CONFIG_KV_SCOPES]);
 });
 
 it("builds the Go tests' databases with the schema migrations make", () => {

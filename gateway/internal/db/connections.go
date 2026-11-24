@@ -94,9 +94,16 @@ func (d *DB) ListConnections(ctx context.Context, provider string, active *bool)
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
-	// Node has no ORDER BY; its plans (an equality index, or the table) all
-	// return rowid order, which this makes explicit.
-	q += " ORDER BY rowid"
+	// Node has no ORDER BY, so its rows come in its plan's order, which the
+	// sort below keeps among equal priorities. With provider and isActive,
+	// and with no filter, that is rowid order; with provider alone SQLite
+	// walks idx_pc_priority (provider, priority): NULLs first, then by
+	// priority, then rowid. The parity test holds both to Node's.
+	if provider != "" && active == nil {
+		q += " ORDER BY priority, rowid"
+	} else {
+		q += " ORDER BY rowid"
+	}
 	rows, err := d.readers.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -218,7 +225,7 @@ func (d *DB) UpdateConnection(ctx context.Context, id string, u ConnectionUpdate
 		}
 	}
 	var result *Connection
-	err := d.writeTx(ctx, func(tx *sql.Tx) error {
+	err := d.writeTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		existing, err := scanConn(tx.QueryRowContext(ctx, `SELECT `+connColumns+` FROM providerConnections WHERE id = ?`, id).Scan)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
@@ -287,7 +294,8 @@ func (d *DB) UpdateConnection(ctx context.Context, id string, u ConnectionUpdate
 		if u.NoteServed {
 			merged.Set("authDemoteOkAt", now)
 		}
-		stripKeys(merged, connColumnKeys...)
+		// No column-named key can be in merged: scanConn stripped them from
+		// the stored data and OwnedField admits none, so connToRow's strip is a no-op here.
 
 		bump := isActive != existing.IsActive
 		if _, err := tx.ExecContext(ctx, `UPDATE providerConnections SET isActive = ?, data = ?, updatedAt = ? WHERE id = ?`,
@@ -365,7 +373,7 @@ func unionDroppedBetas(a any, b []string) []any {
 // connectionID or nodeID may be empty.
 func (d *DB) MergeDroppedBetas(ctx context.Context, connectionID, nodeID string, betas []string, ownBaseURL bool) error {
 	if connectionID != "" {
-		err := d.writeTx(ctx, func(tx *sql.Tx) error {
+		err := d.writeTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			c, err := scanConn(tx.QueryRowContext(ctx, `SELECT `+connColumns+` FROM providerConnections WHERE id = ?`, connectionID).Scan)
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil
@@ -379,7 +387,6 @@ func (d *DB) MergeDroppedBetas(ctx context.Context, connectionID, nodeID string,
 			psd.Set("droppedBetas", unionDroppedBetas(old, betas))
 			merged := c.Data.Clone()
 			merged.Set("providerSpecificData", psd)
-			stripKeys(merged, connColumnKeys...)
 			if _, err := tx.ExecContext(ctx, `UPDATE providerConnections SET data = ?, updatedAt = ? WHERE id = ?`,
 				merged.String(), ISOTime(d.now()), connectionID); err != nil {
 				return err
@@ -397,8 +404,8 @@ func (d *DB) MergeDroppedBetas(ctx context.Context, connectionID, nodeID string,
 	if nodeID == "" || ownBaseURL {
 		return nil
 	}
-	return d.writeTx(ctx, func(tx *sql.Tx) error {
-		n, err := scanNode(tx.QueryRowContext(ctx, `SELECT id, type, name, data, createdAt, updatedAt FROM providerNodes WHERE id = ?`, nodeID).Scan)
+	return d.writeTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		n, err := scanNode(tx.QueryRowContext(ctx, `SELECT `+nodeColumns+` FROM providerNodes WHERE id = ?`, nodeID).Scan)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}

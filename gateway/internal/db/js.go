@@ -96,10 +96,8 @@ func jsNumberString(f float64) string {
 // num is a parsed value as a number when it is one, else 0. Node's rows hold
 // numbers where these are read; anything else is a row it didn't write.
 func num(v any) float64 {
-	if f, ok := v.(float64); ok {
-		return f
-	}
-	return 0
+	f, _ := jsjson.Number(v)
+	return f
 }
 
 // firstTruthy is `a || b || ...` over an object's fields: the first truthy

@@ -7,12 +7,14 @@ import (
 )
 
 func TestNumbersPrintAsJavaScript(t *testing.T) {
+	// A runtime sum: the constant expression 0.1 + 0.2 is exactly 0.3 in Go.
+	tenth, fifth := 0.1, 0.2
 	// Expected values are what JSON.stringify prints in Node.
 	for _, c := range []struct {
 		in   float64
 		want string
 	}{
-		{0.1 + 0.2, "0.30000000000000004"},
+		{tenth + fifth, "0.30000000000000004"},
 		{1e21, "1e+21"},
 		{1e-7, "1e-7"},
 		{1.5e-6, "0.0000015"},
@@ -96,6 +98,58 @@ func TestRoundTripIsStable(t *testing.T) {
 	again, _ := Parse([]byte(want))
 	if !Equal(v, again) {
 		t.Fatal("not equal after a round trip")
+	}
+}
+
+// esc is a JSON \u escape, built so no editor turns it into the character.
+func esc(hex string) string { return "\\" + "u" + hex }
+
+func TestLoneSurrogatesSurviveARoundTrip(t *testing.T) {
+	// "…" + the first half of an emoji, as errorText.slice(0, 100) can leave
+	// it: JSON.stringify writes the lone half back as the same escape.
+	for _, in := range []string{
+		`{"lastError":"rate limit ` + esc("d83d") + `"}`,
+		`{"a":"` + esc("dc00") + `x` + esc("d800") + `"}`,
+	} {
+		v, err := Parse([]byte(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := string(Marshal(v)); got != in {
+			t.Fatalf("got %s, want %s", got, in)
+		}
+	}
+	// A pair is one character, written raw.
+	v, err := Parse([]byte(`"` + esc("d83d") + esc("de00") + `"`))
+	if err != nil || v != "😀" {
+		t.Fatalf("pair: %q %v", v, err)
+	}
+	if got := string(Marshal("😀")); got != `"😀"` {
+		t.Fatalf("emoji: %s", got)
+	}
+}
+
+func TestParseFollowsJSONGrammar(t *testing.T) {
+	for _, bad := range []string{``, `01`, `1.`, `.5`, `-`, `+1`, `1e`, `[1,]`, `{"a":1,}`, `{a:1}`, `"\x"`, `"tab	in"`, `tru`, `nul`, `[`, `{"a"}`, `"` + esc("12g4") + `"`} {
+		if _, err := Parse([]byte(bad)); err == nil {
+			t.Errorf("%q parsed", bad)
+		}
+	}
+	v, err := Parse([]byte(` {"a" : [ -0.5e+2 , 0 , 1E2, "\/\"\\\b\f\n\r\t" , true , false , null ] } `))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(Marshal(v)); got != `{"a":[-50,0,100,"/\"\\\b\f\n\r\t",true,false,null]}` {
+		t.Fatalf("got %s", got)
+	}
+}
+
+func TestGoIntsAreNumbers(t *testing.T) {
+	if f, ok := Number(120); !ok || f != 120 {
+		t.Fatal("int")
+	}
+	if Truthy(0) || !Truthy(int64(3)) || Truthy((*Object)(nil)) {
+		t.Fatal("truthiness of ints and a nil object")
 	}
 }
 

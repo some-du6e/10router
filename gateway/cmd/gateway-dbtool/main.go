@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/some-du6e/10router/gateway/internal/db"
@@ -95,6 +96,7 @@ func runDump(args []string) error {
 	fs := flag.NewFlagSet("dump", flag.ExitOnError)
 	path := fs.String("db", "", "database file")
 	pools := fs.String("pools", "", "comma-separated proxy pool ids to read")
+	provider := fs.String("provider", "", "also list this provider's connections")
 	_ = fs.Parse(args)
 	ctx := context.Background()
 	d, err := openDB(*path, "")
@@ -150,11 +152,21 @@ func runDump(args []string) error {
 	if err != nil {
 		return err
 	}
-	connList := []any{}
-	for _, c := range conns {
-		connList = append(connList, c.NodeObject())
+	out.Set("connections", nodeObjects(conns))
+	// The provider filters the request path uses, with and without isActive.
+	if *provider != "" {
+		all, err := d.ListConnections(ctx, *provider, nil)
+		if err != nil {
+			return err
+		}
+		active := true
+		on, err := d.ListConnections(ctx, *provider, &active)
+		if err != nil {
+			return err
+		}
+		out.Set("providerConnections", nodeObjects(all))
+		out.Set("activeProviderConnections", nodeObjects(on))
 	}
-	out.Set("connections", connList)
 
 	poolList := []any{}
 	if *pools != "" {
@@ -176,15 +188,13 @@ func runDump(args []string) error {
 }
 
 func splitComma(s string) []string {
-	var out []string
-	start := 0
-	for i := 0; i <= len(s); i++ {
-		if i == len(s) || s[i] == ',' {
-			if i > start {
-				out = append(out, s[start:i])
-			}
-			start = i + 1
-		}
+	return strings.FieldsFunc(s, func(r rune) bool { return r == ',' })
+}
+
+func nodeObjects(conns []*db.Connection) []any {
+	out := []any{}
+	for _, c := range conns {
+		out = append(out, c.NodeObject())
 	}
 	return out
 }

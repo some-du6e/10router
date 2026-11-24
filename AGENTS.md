@@ -6,7 +6,7 @@ The repo ships two independently versioned packages:
 - **Gateway + dashboard** (root `package.json`): `src/` is the Next.js app and its API routes; `open-sse/` is the provider-agnostic routing and translation engine.
 - **CLI launcher** (`cli/`, published to npm as `10router`): installs and starts the server and runs the tray. It has its own `package.json` and build.
 
-`gateway/` is a Go module (Go 1.24, standard library only) built into the Docker image. With `GATEWAY_MODE=proxy` it takes the public port and relays to the Node server on loopback; off by default. See `docs/GO_GATEWAY.md`. `.github/workflows/gateway.yml` runs its `gofmt`, `go vet` and `go test -race`.
+`gateway/` is a Go module (Go 1.24; one dependency, `modernc.org/sqlite`) built into the Docker image. With `GATEWAY_MODE=proxy` it takes the public port and relays to the Node server on loopback; off by default. See `docs/GO_GATEWAY.md`. `.github/workflows/gateway.yml` runs its `gofmt`, `go vet` and `go test -race`. `gateway/internal/db` reads and writes Node's SQLite file and must write the rows Node's repos write; `.github/workflows/gateway-db.yml` holds it to this branch's Node.
 
 Read before working in these areas:
 - `docs/ARCHITECTURE.md`: request lifecycle, fallback, OAuth refresh, cloud sync, data model. Its persistence section is stale; see [Persistence](#persistence).

@@ -58,25 +58,25 @@ func New(t testing.TB, o Options) (string, *sql.DB) {
 	if mode == "" {
 		mode = "wal"
 	}
-	mustExec(t, node, "PRAGMA journal_mode = "+mode)
-	mustExec(t, node, SchemaSQL(t))
+	Exec(t, node, "PRAGMA journal_mode = "+mode)
+	Exec(t, node, SchemaSQL(t))
 	version := o.SchemaVersion
 	if version == 0 {
 		version = 6
 	}
 	if version > 0 {
-		mustExec(t, node, `INSERT INTO _meta(key, value) VALUES('schemaVersion', ?)`, fmt.Sprint(version))
+		Exec(t, node, `INSERT INTO _meta(key, value) VALUES('schemaVersion', ?)`, fmt.Sprint(version))
 	}
 	driver := o.Driver
 	if driver == "" {
 		driver = "better-sqlite3"
 	}
 	if driver != "-" {
-		mustExec(t, node, `INSERT INTO _meta(key, value) VALUES('dbDriver', ?)`, driver)
+		Exec(t, node, `INSERT INTO _meta(key, value) VALUES('dbDriver', ?)`, driver)
 	}
 	for _, d := range o.Drop {
 		table, col, _ := strings.Cut(d, ".")
-		mustExec(t, node, fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, col))
+		Exec(t, node, fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, col))
 	}
 	return path, node
 }
@@ -94,15 +94,13 @@ func Open(t testing.TB, path string) *sql.DB {
 	return node
 }
 
-func mustExec(t testing.TB, db *sql.DB, q string, args ...any) {
+// Exec runs q on db and fails the test on an error.
+func Exec(t testing.TB, db *sql.DB, q string, args ...any) {
 	t.Helper()
 	if _, err := db.Exec(q, args...); err != nil {
 		t.Fatalf("%s: %v", q, err)
 	}
 }
-
-// Exec runs q on db and fails the test on an error.
-func Exec(t testing.TB, db *sql.DB, q string, args ...any) { t.Helper(); mustExec(t, db, q, args...) }
 
 // QueryString reads one text value.
 func QueryString(t testing.TB, db *sql.DB, q string, args ...any) string {

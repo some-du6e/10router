@@ -2,6 +2,7 @@
   "comment": "What the gateway reads in Node's database (docs/GO_GATEWAY.md, Schema ownership). schemaVersion is the highest migration it knows (_meta.schemaVersion, the migration count in src/lib/db/migrations); tables lists the columns it uses. tests/unit/gateway-db-manifest.test.js holds this to src/lib/db/schema.js, so a migration fails CI until this file says the gateway can read its schema.",
   "schemaVersion": 6,
   "drivers": ["better-sqlite3", "bun:sqlite", "node:sqlite"],
+  "kvScopes": ["modelAliases", "pricing", "customModels"],
   "tables": {
     "_meta": ["key", "value"],
     "settings": ["id", "data"],

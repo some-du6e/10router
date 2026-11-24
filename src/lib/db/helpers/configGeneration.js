@@ -6,7 +6,7 @@
 // (connectionConfigChanged), never the request path's lock and usage writes.
 // tests/unit/config-generation.test.js fails on a write path that skips it.
 
-export const CONFIG_GENERATION_KEY = "configGeneration";
+const CONFIG_GENERATION_KEY = "configGeneration";
 
 /** The kv scopes the gateway's config snapshot reads. */
 export const CONFIG_KV_SCOPES = new Set(["modelAliases", "pricing", "customModels"]);

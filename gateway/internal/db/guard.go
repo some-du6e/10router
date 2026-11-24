@@ -19,9 +19,12 @@ var manifestJSON []byte
 // Manifest is what this gateway build can read: the highest migration it
 // knows, the drivers whose file it may share, and the columns it uses.
 type Manifest struct {
-	SchemaVersion int                 `json:"schemaVersion"`
-	Drivers       []string            `json:"drivers"`
-	Tables        map[string][]string `json:"tables"`
+	SchemaVersion int      `json:"schemaVersion"`
+	Drivers       []string `json:"drivers"`
+	// KVScopes are the kv scopes the snapshot reads, the ones whose writes
+	// Node bumps configGeneration for (CONFIG_KV_SCOPES).
+	KVScopes []string            `json:"kvScopes"`
+	Tables   map[string][]string `json:"tables"`
 }
 
 // Built is the manifest compiled into this binary.

@@ -46,8 +46,9 @@ func orObject(o *jsjson.Object) *jsjson.Object {
 	return o
 }
 
+// orEmptyPayload is truncateField's `if (obj === undefined || obj === null) return {}`.
 func orEmptyPayload(v any) any {
-	if v == nil {
+	if o, ok := v.(*jsjson.Object); v == nil || (ok && o == nil) {
 		return jsjson.NewObject()
 	}
 	return v
@@ -88,7 +89,7 @@ func (d *DB) SaveRequestDetails(ctx context.Context, rows []RequestDetail, maxRe
 		n := min(len(rows), maxRowsPerWrite)
 		batch := rows[:n]
 		rows = rows[n:]
-		err := d.writeTx(ctx, func(tx *sql.Tx) error {
+		err := d.writeTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			for i := range batch {
 				r := &batch[i]
 				var full any

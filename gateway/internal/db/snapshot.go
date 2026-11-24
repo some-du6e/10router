@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/some-du6e/10router/gateway/internal/db/jsjson"
@@ -49,10 +50,6 @@ func (s *Snapshot) Alias(alias string) (string, bool) {
 	return str, ok
 }
 
-// LoadSnapshot reads every snapshot table in one short read transaction, so
-// they are from one point in time. Watch calls it; it is exported for tools.
-func (d *DB) LoadSnapshot(ctx context.Context) (*Snapshot, error) { return d.loadSnapshot(ctx) }
-
 // APIKeys is getApiKeys(): every key, oldest first.
 func (d *DB) APIKeys(ctx context.Context) ([]*APIKey, error) {
 	rows, err := d.readers.QueryContext(ctx, `SELECT `+apiKeyColumns+` FROM apiKeys ORDER BY createdAt ASC`)
@@ -71,7 +68,9 @@ func (d *DB) APIKeys(ctx context.Context) ([]*APIKey, error) {
 	return out, rows.Err()
 }
 
-func (d *DB) loadSnapshot(ctx context.Context) (*Snapshot, error) {
+// LoadSnapshot reads every snapshot table in one short read transaction, so
+// they are from one point in time. Watch calls it; tools may too.
+func (d *DB) LoadSnapshot(ctx context.Context) (*Snapshot, error) {
 	s := &Snapshot{
 		LoadedAt:     d.now(),
 		Combos:       map[string]*Combo{},
@@ -156,8 +155,10 @@ func scanNode(scan func(...any) error) (*ProviderNode, error) {
 // nodeColumnKeys are nodesRepo.js's columns, which nodeToRow keeps out of data.
 var nodeColumnKeys = []string{"id", "type", "name", "createdAt", "updatedAt"}
 
+const nodeColumns = `id, type, name, data, createdAt, updatedAt`
+
 func loadNodes(ctx context.Context, tx *sql.Tx, s *Snapshot) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id, type, name, data, createdAt, updatedAt FROM providerNodes`)
+	rows, err := tx.QueryContext(ctx, `SELECT `+nodeColumns+` FROM providerNodes`)
 	if err != nil {
 		return err
 	}
@@ -192,11 +193,13 @@ func loadAPIKeys(ctx context.Context, tx *sql.Tx, s *Snapshot) error {
 // come back in the order Node's object is built in.
 func loadKV(ctx context.Context, tx *sql.Tx, s *Snapshot) error {
 	custom := jsjson.NewObject()
-	for _, scope := range []struct {
-		name string
-		into *jsjson.Object
-	}{{"modelAliases", s.ModelAliases}, {"pricing", s.Pricing}, {"customModels", custom}} {
-		rows, err := tx.QueryContext(ctx, `SELECT key, value FROM kv WHERE scope = ?`, scope.name)
+	into := map[string]*jsjson.Object{"modelAliases": s.ModelAliases, "pricing": s.Pricing, "customModels": custom}
+	for _, name := range Built.KVScopes {
+		target := into[name]
+		if target == nil {
+			return fmt.Errorf("db: manifest kv scope %q has no snapshot field", name)
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT key, value FROM kv WHERE scope = ?`, name)
 		if err != nil {
 			return err
 		}
@@ -208,7 +211,7 @@ func loadKV(ctx context.Context, tx *sql.Tx, s *Snapshot) error {
 				return err
 			}
 			// parseJson(r.value): unreadable is null.
-			scope.into.Set(key, parseJSONOr(value, nil))
+			target.Set(key, parseJSONOr(value, nil))
 		}
 		if err := rows.Close(); err != nil {
 			return err
@@ -224,7 +227,7 @@ func loadKV(ctx context.Context, tx *sql.Tx, s *Snapshot) error {
 
 // Nodes is getProviderNodes(): every node, in table order.
 func (d *DB) Nodes(ctx context.Context) ([]*ProviderNode, error) {
-	rows, err := d.readers.QueryContext(ctx, `SELECT id, type, name, data, createdAt, updatedAt FROM providerNodes ORDER BY rowid`)
+	rows, err := d.readers.QueryContext(ctx, `SELECT `+nodeColumns+` FROM providerNodes ORDER BY rowid`)
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +245,7 @@ func (d *DB) Nodes(ctx context.Context) ([]*ProviderNode, error) {
 
 // NodeByID reads one provider node fresh (getProviderNodeById).
 func (d *DB) NodeByID(ctx context.Context, id string) (*ProviderNode, error) {
-	row := d.readers.QueryRowContext(ctx, `SELECT id, type, name, data, createdAt, updatedAt FROM providerNodes WHERE id = ?`, id)
+	row := d.readers.QueryRowContext(ctx, `SELECT `+nodeColumns+` FROM providerNodes WHERE id = ?`, id)
 	n, err := scanNode(row.Scan)
 	if err == sql.ErrNoRows {
 		return nil, nil

@@ -51,10 +51,13 @@ type Options struct {
 type DB struct {
 	writer  *sql.DB
 	readers *sql.DB
+	w       *writer
 	now     func() time.Time
 
 	status   atomic.Pointer[Status]
 	snapshot atomic.Pointer[Snapshot]
+	// lastErr is the watcher's latest poll or reload error ("" after a good poll).
+	lastErr atomic.Value
 
 	watchMu  sync.Mutex
 	watching bool
@@ -152,7 +155,7 @@ func Open(path string, o Options) (*DB, error) {
 	if now == nil {
 		now = time.Now
 	}
-	d := &DB{writer: writer, readers: readers, now: now}
+	d := &DB{writer: writer, readers: readers, w: newWriter(writer), now: now}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := writer.PingContext(ctx); err != nil {
@@ -166,26 +169,22 @@ func Open(path string, o Options) (*DB, error) {
 	return d, nil
 }
 
-// Close closes every connection. If no other process has the file open
-// (Node already exited), SQLite checkpoints on the last close; while Node
-// runs it can't, so this never checkpoints under Node.
+// Close runs the writes already queued, then closes every connection. If no
+// other process has the file open (Node already exited), SQLite checkpoints
+// on the last close; while Node runs it can't, so the gateway never
+// checkpoints under Node.
 func (d *DB) Close() error {
+	d.w.close()
 	return errors.Join(d.readers.Close(), d.writer.Close())
 }
 
-// writeTx runs fn in one BEGIN IMMEDIATE transaction on the writer and
-// commits, or rolls back on an error. Keep fn short: a better-sqlite3 Node
-// waits for this lock on its event loop.
-func (d *DB) writeTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
-	tx, err := d.writer.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	if err := fn(tx); err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	return tx.Commit()
+// writeTx queues fn for the writer goroutine (writer.go), which runs it in a
+// BEGIN IMMEDIATE transaction, possibly with other queued writes, inside a
+// savepoint of its own: an error rolls back fn's changes only. It returns
+// fn's error, or the commit's. ctx bounds only the wait to be queued; once
+// queued, the write runs, so a caller never retries one that landed.
+func (d *DB) writeTx(ctx context.Context, fn func(ctx context.Context, tx *sql.Tx) error) error {
+	return d.w.submit(ctx, fn)
 }
 
 // readTx runs fn in one short read transaction on a reader, so its reads see

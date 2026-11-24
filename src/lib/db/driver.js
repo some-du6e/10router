@@ -88,6 +88,7 @@ async function initAdapter() {
 // migrations, which tell a fresh database by its empty _meta.
 export function recordDriver(adapter) {
   try {
+    // setMetaSync's upsert, inline: metaStore.js imports this module.
     adapter.run(`INSERT INTO _meta(key, value) VALUES('dbDriver', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [adapter.driver]);
   } catch (e) {
     console.warn(`[DB] recording the driver failed: ${e.message}`);

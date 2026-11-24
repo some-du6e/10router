@@ -24,6 +24,7 @@ const defaultSettingsJSON = `{
   "limitHoldEnabled": false,
   "limitHoldOnPinned": false,
   "providerStrategies": {},
+  "globalProxyPoolId": null,
   "quotaVisibility": {},
   "comboStrategy": "fallback",
   "comboStickyRoundRobinLimit": 1,

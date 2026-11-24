@@ -119,8 +119,15 @@ describe.skipIf(!TOOL)("Go reads what Node wrote", () => {
       const { repos, adapter, file } = await openRepos(driver, dir);
       const s = await seedConfig(repos);
       await repos.saveRequestUsage({ provider: s.node.id, model: "m1", apiKey: s.key1.key, tokens: { input_tokens: 1000, output_tokens: 10 } });
+      // Rows from before priorities were always set (legacy imports): NULL and 0,
+      // which tie with each other and come first in the provider index.
+      for (const [id, priority] of [["legacy-zero", 0], ["legacy-null", null]]) {
+        adapter.run(`INSERT INTO providerConnections(id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES(?, ?, 'apikey', ?, ?, 1, '{}', 't', 't')`, [id, s.node.id, id, priority]);
+      }
 
-      const dump = JSON.parse(execFileSync(TOOL, ["dump", "--db", file, "--pools", `${s.pool.id},missing`], { encoding: "utf8" }));
+      const dump = JSON.parse(execFileSync(TOOL, ["dump", "--db", file, "--pools", `${s.pool.id},missing`, "--provider", s.node.id], { encoding: "utf8" }));
+      expect(json(dump.providerConnections)).toBe(json(await repos.getProviderConnections({ provider: s.node.id })));
+      expect(json(dump.activeProviderConnections)).toBe(json(await repos.getProviderConnections({ provider: s.node.id, isActive: true })));
       expect(json(dump.settings)).toBe(json(await repos.getSettings()));
       for (const name of ["fast", "slow"]) expect(json(dump.combos[name])).toBe(json(await repos.getComboByName(name)));
       expect(json(dump.nodes)).toBe(json(await repos.getProviderNodes()));
@@ -167,16 +174,27 @@ describe.skipIf(!TOOL)("Go writes what Node writes", () => {
       const update = async (...args) => { nodeConn.push(await repos.updateProviderConnection(...args)); };
 
       // ── connection state ──
+      // An error cut in the middle of an emoji (errorText.slice(0, 100)) leaves a lone surrogate.
       const lockSet = {
         modelLock_m1: LATER, modelLimit_m1: true, modelNoHeaders_m1: null, providerReset_m1: null, testStatus: "unavailable",
-        lastError: "rate limited", errorCode: 429, lastErrorAt: NOW, backoffLevel: 1, authFailCount: 1, authFailModels: ["m1"],
+        lastError: `rate limited ${String.fromCharCode(0xd83d)}`, errorCode: 429, lastErrorAt: NOW, backoffLevel: 1, authFailCount: 1, authFailModels: ["m1"],
       };
       await update(s.c1.id, lockSet);
       goOps.push({ op: "connection", id: s.c1.id, set: lockSet });
 
+      // A key pasted in since: the stored streak is put back.
+      await update(s.c1.id, { authFailCount: 7, lastError: "401" }, { apiKeyUsed: "an-older-key" });
+      goOps.push({ op: "connection", id: s.c1.id, set: { authFailCount: 7, lastError: "401" }, apiKeyUsed: "an-older-key" });
+
       const demoteTo = { count: 1, firstAt: NOW, lastCountedAt: NOW, reason: "403 forbidden" };
       await update(s.c1.id, {}, { demote: { model: "m1", from: null, to: demoteTo, data: { lastError: "m1 demoted" }, probeNow: ["o"] }, apiKeyUsed: "upstream-key-1" });
       goOps.push({ op: "connection", id: s.c1.id, demote: { model: "m1", from: null, to: demoteTo, data: { lastError: "m1 demoted" }, probeNow: ["o"] }, apiKeyUsed: "upstream-key-1" });
+
+      // The count escalating: `from` is the stored record. The probe on o is
+      // now due already (nextProbeAt is now), so it stays.
+      const escalated = { ...demoteTo, count: 2, demotedAt: NOW, nextProbeAt: LATER };
+      await update(s.c1.id, {}, { demote: { model: "m1", from: demoteTo, to: escalated, probeNow: ["o"] }, apiKeyUsed: "upstream-key-1" });
+      goOps.push({ op: "connection", id: s.c1.id, demote: { model: "m1", from: demoteTo, to: escalated, probeNow: ["o"] }, apiKeyUsed: "upstream-key-1" });
 
       // A stale `from` changes nothing.
       await update(s.c1.id, {}, { demote: { model: "m1", from: { count: 0 }, to: { count: 9 } } });
@@ -185,6 +203,14 @@ describe.skipIf(!TOOL)("Go writes what Node writes", () => {
       const clear = { modelLock_m1: null, providerReset_m1: null, modelLimit_m1: null, modelNoHeaders_m1: null, testStatus: "active", lastError: null, errorCode: null, lastErrorAt: null, backoffLevel: 0, authFailCount: null, authFailModels: null };
       await update(s.c1.id, clear, { liftDemote: "m1", noteServed: true });
       goOps.push({ op: "connection", id: s.c1.id, set: clear, liftDemote: "m1", noteServed: true });
+
+      // Lifting a model with no record touches nothing of it.
+      await update(s.c1.id, {}, { liftDemote: "never-demoted" });
+      goOps.push({ op: "connection", id: s.c1.id, liftDemote: "never-demoted" });
+
+      // A key already off isn't turned off again.
+      await update(s.c3.id, { authFailCount: 9 }, { autoDisable: { isActive: false, autoDisabledAt: NOW, autoDisabledReason: "again" }, apiKeyUsed: "upstream-key-3" });
+      goOps.push({ op: "connection", id: s.c3.id, set: { authFailCount: 9 }, autoDisable: { at: NOW, reason: "again" }, apiKeyUsed: "upstream-key-3" });
 
       await update(s.c1.id, { lastUsedAt: NOW, consecutiveUseCount: 2 });
       goOps.push({ op: "connection", id: s.c1.id, set: { lastUsedAt: NOW, consecutiveUseCount: 2 } });
@@ -214,10 +240,13 @@ describe.skipIf(!TOOL)("Go writes what Node writes", () => {
         { timestamp: "2026-03-01T10:30:00.000Z", provider: s.node.id, model: "m1", connectionId: s.c1.id, apiKey: s.key2.key, endpoint: "/v1/messages", tokens: { input_tokens: 7, output_tokens: 3 } },
         { timestamp: "2026-03-01T10:31:00.000Z", provider: s.node.id, model: "m2", apiKey: s.key2.key, tokens: { prompt_tokens: 11, completion_tokens: 13, cached_tokens: 2 }, status: "error" },
         { timestamp: "2026-03-01T10:32:00.000Z", provider: s.node.id, model: "m1", connectionId: s.c1.id, tokens: { input_tokens: 5, output_tokens: 1 } },
+        // No provider: the meta keys go, and the key and endpoint rows say "unknown".
+        { timestamp: "2026-03-01T10:33:00.000Z", model: "m1", apiKey: s.key1.key, tokens: { input_tokens: 4, output_tokens: 2 } },
       ];
       const historyBefore = a.get(`SELECT COALESCE(MAX(id), 0) AS id FROM usageHistory`).id;
       for (const e of entries) await repos.saveRequestUsage(structuredClone(e));
-      // Node priced them; the gateway gets the price internal/usage would compute.
+      // Node priced them; the gateway is handed Node's prices (pricing in Go is
+      // internal/usage's, a later phase), so this compares the writes alone.
       const costs = a.all(`SELECT cost FROM usageHistory WHERE id > ? ORDER BY id`, [historyBefore]).map((r) => r.cost);
       expect(costs.some((c) => c > 0)).toBe(true);
       goOps.push({ op: "usage", entries: entries.map((e, i) => ({ ...e, cost: costs[i] })) });

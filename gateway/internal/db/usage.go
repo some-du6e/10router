@@ -53,7 +53,7 @@ func (d *DB) WriteUsage(ctx context.Context, entries []UsageEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
-	return d.writeTx(ctx, func(tx *sql.Tx) error {
+	return d.writeTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		insert, err := tx.PrepareContext(ctx, `INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
 			return err
@@ -79,15 +79,19 @@ func (d *DB) WriteUsage(ctx context.Context, entries []UsageEntry) error {
 			if status == "" {
 				status = "ok"
 			}
-			promptTokens := num(firstTruthy(tokens, "prompt_tokens", "input_tokens"))
-			completionTokens := num(firstTruthy(tokens, "completion_tokens", "output_tokens"))
-			if _, err := insert.ExecContext(ctx, e.Timestamp, orNull(e.Provider), orNull(e.Model), orNull(e.ConnectionID),
-				orNull(e.APIKey), orNull(e.Endpoint), promptTokens, completionTokens, costOr0(e.Cost), status,
+			// `if (!entry.timestamp) entry.timestamp = new Date().toISOString()`
+			ts := e.Timestamp
+			if ts == "" {
+				ts = ISOTime(d.now())
+			}
+			tc := countTokens(tokens)
+			if _, err := insert.ExecContext(ctx, ts, orNull(e.Provider), orNull(e.Model), orNull(e.ConnectionID),
+				orNull(e.APIKey), orNull(e.Endpoint), tc.prompt, tc.completion, costOr0(e.Cost), status,
 				tokens.String(), "{}"); err != nil {
 				return err
 			}
 
-			dateKey := localDateKey(e.Timestamp)
+			dateKey := localDateKey(ts)
 			day, ok := days[dateKey]
 			if !ok {
 				var data sql.NullString
@@ -106,11 +110,11 @@ func (d *DB) WriteUsage(ctx context.Context, entries []UsageEntry) error {
 				days[dateKey] = day
 				dayOrder = append(dayOrder, dateKey)
 			}
-			aggregateEntryToDay(day, e, tokens)
+			aggregateEntryToDay(day, e, tc)
 
 			// addApiKeySpendSync: a key that isn't in apiKeys updates nothing.
 			if e.APIKey != "" {
-				if _, err := spend.ExecContext(ctx, costOr0(e.Cost), e.Timestamp, e.Timestamp, e.APIKey); err != nil {
+				if _, err := spend.ExecContext(ctx, costOr0(e.Cost), ts, ts, e.APIKey); err != nil {
 					return err
 				}
 			}
@@ -216,11 +220,20 @@ func addToCounter(target *jsjson.Object, key string, v counterValues) {
 	}
 }
 
+type tokenCounts struct{ prompt, completion, cached float64 }
+
+// countTokens is usageRepo.js's `tokens.prompt_tokens || tokens.input_tokens || 0` and the like.
+func countTokens(tokens *jsjson.Object) tokenCounts {
+	return tokenCounts{
+		prompt:     num(firstTruthy(tokens, "prompt_tokens", "input_tokens")),
+		completion: num(firstTruthy(tokens, "completion_tokens", "output_tokens")),
+		cached:     num(firstTruthy(tokens, "cached_tokens", "cache_read_input_tokens")),
+	}
+}
+
 // aggregateEntryToDay is usageRepo.js's aggregateEntryToDay.
-func aggregateEntryToDay(day *jsjson.Object, e *UsageEntry, tokens *jsjson.Object) {
-	promptTokens := num(firstTruthy(tokens, "prompt_tokens", "input_tokens"))
-	completionTokens := num(firstTruthy(tokens, "completion_tokens", "output_tokens"))
-	cachedTokens := num(firstTruthy(tokens, "cached_tokens", "cache_read_input_tokens"))
+func aggregateEntryToDay(day *jsjson.Object, e *UsageEntry, tc tokenCounts) {
+	promptTokens, completionTokens, cachedTokens := tc.prompt, tc.completion, tc.cached
 	cost := costOr0(e.Cost)
 
 	add(day, "requests", 1)
@@ -295,8 +308,8 @@ type UsageWriterOptions struct {
 }
 
 // UsageWriter batches usage rows: Add queues one, and every Interval the
-// queue is written in transactions of up to MaxBatch rows, so the gateway
-// takes the write lock about ten times a second however busy it is.
+// queue is written in writes of up to MaxBatch rows, which the writer
+// (writer.go) puts in as few transactions as it can.
 type UsageWriter struct {
 	d    *DB
 	opts UsageWriterOptions
@@ -306,9 +319,10 @@ type UsageWriter struct {
 	dropped int64
 	written int64
 
-	flushMu sync.Mutex
-	stop    chan struct{}
-	done    chan struct{}
+	flushMu   sync.Mutex
+	stop      chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // NewUsageWriter starts a writer. Close flushes what is left.
@@ -332,7 +346,9 @@ func (w *UsageWriter) Add(e UsageEntry) {
 	w.mu.Lock()
 	w.queue = append(w.queue, e)
 	if over := len(w.queue) - w.opts.MaxQueued; over > 0 {
-		w.queue = append(w.queue[:0:0], w.queue[over:]...)
+		// Re-slicing, not copying: the backing array is let go on the next
+		// growth, so a full queue costs nothing per row.
+		w.queue = w.queue[over:]
 		w.dropped += int64(over)
 	}
 	w.mu.Unlock()
@@ -380,17 +396,20 @@ func (w *UsageWriter) Flush(ctx context.Context) error {
 		}
 		w.mu.Lock()
 		// Add only appends, or drops from the front past MaxQueued: what it
-		// dropped meanwhile came off this batch first.
-		left := max(0, n-int(w.dropped-droppedBefore))
-		w.queue = w.queue[min(left, len(w.queue)):]
+		// dropped meanwhile came off this batch first, and was written after all.
+		droppedHere := min(n, int(w.dropped-droppedBefore))
+		w.dropped -= int64(droppedHere)
+		w.queue = w.queue[min(n-droppedHere, len(w.queue)):]
 		w.written += int64(n)
 		w.mu.Unlock()
 	}
 }
 
-// Close stops the timer and writes what is left.
+// Close stops the timer and writes what is left. Later calls only flush.
 func (w *UsageWriter) Close(ctx context.Context) error {
-	close(w.stop)
-	<-w.done
+	w.closeOnce.Do(func() {
+		close(w.stop)
+		<-w.done
+	})
 	return w.Flush(ctx)
 }

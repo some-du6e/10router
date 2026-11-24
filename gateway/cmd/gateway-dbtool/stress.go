@@ -155,29 +155,46 @@ func runStress(args []string) error {
 		}
 	})
 
-	if *patchRate > 0 {
-		every(ctx, &wg, time.Second/time.Duration(*patchRate), func() {
-			c := conns[rand.IntN(len(conns))]
-			var set []jsjson.Member
-			if rand.IntN(2) == 0 {
-				set = []jsjson.Member{
-					{Key: "modelLock_gw-model", Value: db.ISOTime(time.Now().Add(30 * time.Second))},
-					{Key: "modelLimit_gw-model", Value: true}, {Key: "testStatus", Value: "unavailable"},
-					{Key: "lastError", Value: "rate limited"}, {Key: "errorCode", Value: 429.0},
-					{Key: "lastErrorAt", Value: db.ISOTime(time.Now())}, {Key: "backoffLevel", Value: 1.0},
-				}
-			} else {
-				set = []jsjson.Member{
-					{Key: "modelLock_gw-model", Value: nil}, {Key: "modelLimit_gw-model", Value: nil},
-					{Key: "testStatus", Value: "active"}, {Key: "lastError", Value: nil}, {Key: "errorCode", Value: nil},
-					{Key: "backoffLevel", Value: 0.0}, {Key: "lastUsedAt", Value: db.ISOTime(time.Now())},
-				}
+	var skipped atomic.Int64
+	patchOne := func() {
+		c := conns[rand.IntN(len(conns))]
+		var set []jsjson.Member
+		if rand.IntN(2) == 0 {
+			set = []jsjson.Member{
+				{Key: "modelLock_gw-model", Value: db.ISOTime(time.Now().Add(30 * time.Second))},
+				{Key: "modelLimit_gw-model", Value: true}, {Key: "testStatus", Value: "unavailable"},
+				{Key: "lastError", Value: "rate limited"}, {Key: "errorCode", Value: 429.0},
+				{Key: "lastErrorAt", Value: db.ISOTime(time.Now())}, {Key: "backoffLevel", Value: 1.0},
 			}
-			start := time.Now()
-			_, err := d.UpdateConnection(context.Background(), c.ID, db.ConnectionUpdate{Set: set})
-			patchLat.add(time.Since(start))
-			patches.Add(1)
-			errs.add(err)
+		} else {
+			set = []jsjson.Member{
+				{Key: "modelLock_gw-model", Value: nil}, {Key: "modelLimit_gw-model", Value: nil},
+				{Key: "testStatus", Value: "active"}, {Key: "lastError", Value: nil}, {Key: "errorCode", Value: nil},
+				{Key: "backoffLevel", Value: 0.0}, {Key: "lastUsedAt", Value: db.ISOTime(time.Now())},
+			}
+		}
+		start := time.Now()
+		_, err := d.UpdateConnection(context.Background(), c.ID, db.ConnectionUpdate{Set: set})
+		patchLat.add(time.Since(start))
+		patches.Add(1)
+		errs.add(err)
+	}
+	if *patchRate > 0 {
+		// Requests write their locks concurrently, each waiting for its own.
+		inflight := make(chan struct{}, 64)
+		every(ctx, &wg, time.Second/time.Duration(*patchRate), func() {
+			select {
+			case inflight <- struct{}{}:
+			default:
+				skipped.Add(1) // 64 already waiting: the writer is behind
+				return
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer func() { <-inflight }()
+				patchOne()
+			}()
 		})
 	}
 
@@ -241,18 +258,19 @@ func runStress(args []string) error {
 	slices.Sort(seen)
 	stats := d.Stats()
 	out := map[string]any{
-		"ok":               errs.total.Load() == 0 && dropped == 0,
-		"errors":           errs.total.Load(),
-		"busyErrors":       errs.busy.Load(),
-		"firstErrors":      errs.first,
-		"usageRows":        written,
-		"usageDropped":     dropped,
-		"connectionWrites": patches.Load(),
-		"detailRows":       details.Load(),
-		"reads":            reads.Load(),
-		"watch":            stats,
-		"firstGeneration":  firstGen,
-		"generations":      seen,
+		"ok":                      errs.total.Load() == 0 && dropped == 0,
+		"errors":                  errs.total.Load(),
+		"busyErrors":              errs.busy.Load(),
+		"firstErrors":             errs.first,
+		"usageRows":               written,
+		"usageDropped":            dropped,
+		"connectionWrites":        patches.Load(),
+		"connectionWritesSkipped": skipped.Load(),
+		"detailRows":              details.Load(),
+		"reads":                   reads.Load(),
+		"watch":                   stats,
+		"firstGeneration":         firstGen,
+		"generations":             seen,
 		"latency": map[string]summary{
 			"usageBatch":      usageLat.summary(),
 			"connectionWrite": patchLat.summary(),
@@ -260,6 +278,8 @@ func runStress(args []string) error {
 			"read":            readLat.summary(),
 		},
 		"status": d.Status(),
+		// How long the gateway held the write lock per transaction, and waited for it.
+		"lock": d.LockStats(),
 	}
 	printJSON(out)
 	if errs.total.Load() > 0 || dropped > 0 {

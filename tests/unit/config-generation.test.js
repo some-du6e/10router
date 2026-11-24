@@ -15,11 +15,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { closeRepos, driverAvailable, generation, openRepos, tempDataDir } from "../helpers/nodeDb.js";
+import { CONFIG_KV_SCOPES } from "@/lib/db/helpers/configGeneration.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const CONFIG_TABLES = ["settings", "combos", "providerNodes", "apiKeys", "kv", "providerConnections"];
-// A table named by a template expression (UPDATE ${table}) counts too.
-const CONFIG_WRITE = new RegExp(String.raw`\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|UPDATE|DELETE\s+FROM|REPLACE\s+INTO)\s+(\$\{[^}]+\}|(?:${CONFIG_TABLES.join("|")})\b)`, "g");
+// SQL keywords in capitals, as every statement in this repo writes them (in
+// lower case they'd match prose such as "update combos"); a quoted table
+// name, or one named by a template expression (UPDATE ${table}), counts too.
+const CONFIG_WRITE = new RegExp(String.raw`\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|UPDATE|DELETE\s+FROM|REPLACE\s+INTO)\s+(\$\{[^}]+\}|["\x60[]?(?:${CONFIG_TABLES.join("|")})\b)`, "g");
 const KEYWORDS = new Set(["if", "for", "while", "switch", "catch", "function", "return"]);
 
 // file#function → statements. "bumps" sites are run by OPS below; the rest
@@ -58,10 +61,10 @@ const WRITE_SITES = {
   "src/lib/db/repos/disabledModelsRepo.js#enableModels": [3, "exempt: kv scope disabledModels, not in the gateway's snapshot"],
   "src/lib/hostCredentials.js#saveHostPassword": [2, "exempt: kv scope hostCredentials, not in the gateway's snapshot"],
   "src/lib/db/helpers/hostCredentials.js#migrateLegacyHostPassword": [2, "exempt: kv scope hostCredentials, not in the gateway's snapshot"],
-  "src/lib/db/migrate.js#importLegacyMain": [8, "exempt: legacy import runs before the app server listens; its transaction bumps anyway"],
-  "src/lib/db/migrate.js#importLegacyDisabled": [1, "exempt: legacy import runs before the app server listens"],
-  "src/lib/db/migrations/003-remove-ide-proxy.js#up": [2, "exempt: migrations run before the app server listens, so before the gateway reads"],
-  "src/lib/db/migrations/004-remove-token-saver.js#up": [1, "exempt: migrations run before the app server listens, so before the gateway reads"],
+  "src/lib/db/migrate.js#importLegacyMain": [8, "exempt: runs inside the legacy import's transaction, which bumps"],
+  "src/lib/db/migrate.js#importLegacyDisabled": [1, "exempt: kv scope disabledModels, not in the gateway's snapshot"],
+  "src/lib/db/migrations/003-remove-ide-proxy.js#up": [2, "exempt: a one-time migration at Node's first database use; the gateway's 5 s snapshot TTL picks it up"],
+  "src/lib/db/migrations/004-remove-token-saver.js#up": [1, "exempt: a one-time migration at Node's first database use; the gateway's 5 s snapshot TTL picks it up"],
 };
 
 function sourceFiles(dir, out = []) {
@@ -69,7 +72,7 @@ function sourceFiles(dir, out = []) {
     if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) sourceFiles(full, out);
-    else if (/\.(m?js|ts|tsx)$/.test(entry.name) && !/\.test\./.test(entry.name)) out.push(full);
+    else if (/\.([mc]?js|jsx|ts|tsx)$/.test(entry.name) && !/\.test\./.test(entry.name)) out.push(full);
   }
   return out;
 }
@@ -113,7 +116,6 @@ it("every SQL write to a config table is listed, with how it moves the config ge
 
 // ── Dynamic: each bumping site, on each driver ────────────────────────────
 
-const CONFIG_KV_SCOPES = new Set(["modelAliases", "pricing", "customModels"]);
 const BUMP = /INSERT INTO _meta\(key, value\) VALUES\('configGeneration'/;
 const EXEMPT_SQL = /UPDATE apiKeys SET\s+spentUsd/;
 
@@ -124,35 +126,42 @@ function classify(sql, params = []) {
   const m = CONFIG_WRITE.exec(sql);
   CONFIG_WRITE.lastIndex = 0;
   if (!m || EXEMPT_SQL.test(sql)) return null;
+  const table = m[1].replace(/["`[\]]/g, "").toLowerCase();
   // Lock and usage writes to providerConnections are checked per op instead.
-  if (m[1] === "providerConnections" || m[1].startsWith("${")) return null;
-  if (m[1] === "kv") {
+  if (table === "providerconnections" || table.startsWith("${")) return null;
+  if (table === "kv") {
     const literal = sql.match(/scope = '(\w+)'|VALUES\('(\w+)'/);
     const scope = literal ? literal[1] || literal[2] : params[0];
     return CONFIG_KV_SCOPES.has(scope) ? "kv" : null;
   }
-  return m[1];
+  return table;
 }
 
 // An adapter that records, per outermost transaction, its config writes and
-// whether it bumped; a config write outside a transaction is a violation.
-function instrument(adapter, violations) {
+// whether it bumped. A config write, or a bump, outside a transaction is a
+// violation: the bump must commit with the write.
+function instrument(adapter, violations, seen) {
   let depth = 0;
   let tx = null;
   const note = (sql, params) => {
     const kind = classify(sql, params);
     if (!kind) return;
-    if (depth === 0) {
-      if (kind !== "bump") violations.push(`outside a transaction: ${sql.slice(0, 80)}`);
-    } else if (kind === "bump") tx.bumped = true;
+    if (depth === 0) violations.push(`outside a transaction: ${sql.slice(0, 80)}`);
+    else if (kind === "bump") tx.bumped = true;
     else tx.writes.push(sql.slice(0, 80));
   };
   return {
     ...adapter,
     run(sql, params) { note(sql, params); return adapter.run(sql, params); },
+    // A write with RETURNING goes through get or all.
+    get(sql, params) { note(sql, params); return adapter.get(sql, params); },
+    all(sql, params) { note(sql, params); return adapter.all(sql, params); },
     exec(sql) { note(sql); return adapter.exec(sql); },
     transaction(fn) {
-      if (depth === 0) tx = { writes: [], bumped: false };
+      if (depth === 0) {
+        tx = { writes: [], bumped: false };
+        seen.transactions++;
+      }
       depth++;
       try {
         return adapter.transaction(fn);
@@ -281,7 +290,8 @@ for (const driver of ["sql.js", "node:sqlite", "better-sqlite3"]) {
       const dir = tempDataDir("config-generation-");
       dirs.push(dir);
       const violations = [];
-      const ctx = await openRepos(driver, dir, { wrap: (a) => instrument(a, violations) });
+      const seen = { transactions: 0 };
+      const ctx = await openRepos(driver, dir, { wrap: (a) => instrument(a, violations, seen) });
       expect(ctx.adapter.driver).toBe(driver);
       // The driver is recorded for the gateway's guard.
       expect(ctx.adapter.get(`SELECT value FROM _meta WHERE key = 'dbDriver'`)?.value).toBe(driver);
@@ -294,6 +304,8 @@ for (const driver of ["sql.js", "node:sqlite", "better-sqlite3"]) {
       }
       expect(results).toEqual(OPS.map((op) => [op.name, op.bump]));
       expect(violations).toEqual([]);
+      // The repos ran through the checking adapter.
+      expect(seen.transactions).toBeGreaterThan(OPS.length / 2);
     });
   });
 }

@@ -5,15 +5,14 @@
 // and strings are escaped as JSON.stringify escapes them (no HTML escaping,
 // no U+2028/U+2029 escaping).
 //
-// Values are nil (null), bool, float64, string, []any and *Object.
+// Values are nil (null), bool, float64, string, []any and *Object. A string
+// may hold a lone surrogate as WTF-8 bytes (see Parse).
 package jsjson
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"strconv"
 	"unicode/utf8"
@@ -159,9 +158,6 @@ func arrayIndex(key string) (uint64, bool) {
 	return n, n < math.MaxUint32
 }
 
-// MarshalJSON lets an *Object sit inside values encoding/json writes.
-func (o *Object) MarshalJSON() ([]byte, error) { return Marshal(o), nil }
-
 // String is the object's JSON.
 func (o *Object) String() string { return string(Marshal(o)) }
 
@@ -169,16 +165,18 @@ func (o *Object) String() string { return string(Marshal(o)) }
 var ErrNotObject = errors.New("jsjson: not an object")
 
 // Parse reads one JSON value as JSON.parse would. A duplicate key keeps its
-// first position and its last value.
+// first position and its last value. A \u escape of a lone surrogate, which
+// a JavaScript string can hold (a string cut in the middle of an emoji), is
+// kept as its WTF-8 bytes, which AppendString writes back as the same escape.
 func Parse(data []byte) (any, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	v, err := parseValue(dec)
+	p := parser{data: data}
+	v, err := p.value(0)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := dec.Token(); err != io.EOF {
-		return nil, errors.New("jsjson: trailing data")
+	p.space()
+	if p.i != len(p.data) {
+		return nil, p.fail("trailing data")
 	}
 	return v, nil
 }
@@ -196,66 +194,258 @@ func ParseObject(data []byte) (*Object, error) {
 	return o, nil
 }
 
-func parseValue(dec *json.Decoder) (any, error) {
-	tok, err := dec.Token()
-	if err != nil {
-		return nil, err
+// maxDepth bounds nesting, as V8's stack does.
+const maxDepth = 10000
+
+type parser struct {
+	data []byte
+	i    int
+}
+
+func (p *parser) fail(what string) error {
+	return fmt.Errorf("jsjson: %s at offset %d", what, p.i)
+}
+
+func (p *parser) space() {
+	for p.i < len(p.data) {
+		switch p.data[p.i] {
+		case ' ', '\t', '\n', '\r':
+			p.i++
+		default:
+			return
+		}
 	}
-	switch t := tok.(type) {
-	case json.Delim:
-		switch t {
-		case '{':
-			o := &Object{}
-			for dec.More() {
-				kt, err := dec.Token()
-				if err != nil {
-					return nil, err
-				}
-				key, ok := kt.(string)
-				if !ok {
-					return nil, fmt.Errorf("jsjson: object key %v", kt)
-				}
-				v, err := parseValue(dec)
-				if err != nil {
-					return nil, err
-				}
-				o.Set(key, v)
-			}
-			if _, err := dec.Token(); err != nil {
-				return nil, err
-			}
+}
+
+func (p *parser) literal(word string, v any) (any, error) {
+	if !bytes.HasPrefix(p.data[p.i:], []byte(word)) {
+		return nil, p.fail("invalid literal")
+	}
+	p.i += len(word)
+	return v, nil
+}
+
+func (p *parser) value(depth int) (any, error) {
+	if depth > maxDepth {
+		return nil, p.fail("nested too deep")
+	}
+	p.space()
+	if p.i >= len(p.data) {
+		return nil, p.fail("unexpected end")
+	}
+	switch c := p.data[p.i]; {
+	case c == '{':
+		p.i++
+		o := &Object{}
+		p.space()
+		if p.i < len(p.data) && p.data[p.i] == '}' {
+			p.i++
 			return o, nil
-		case '[':
-			arr := []any{}
-			for dec.More() {
-				v, err := parseValue(dec)
-				if err != nil {
-					return nil, err
-				}
-				arr = append(arr, v)
+		}
+		for {
+			p.space()
+			if p.i >= len(p.data) || p.data[p.i] != '"' {
+				return nil, p.fail("expected a key")
 			}
-			if _, err := dec.Token(); err != nil {
+			key, err := p.str()
+			if err != nil {
 				return nil, err
 			}
+			p.space()
+			if p.i >= len(p.data) || p.data[p.i] != ':' {
+				return nil, p.fail("expected ':'")
+			}
+			p.i++
+			v, err := p.value(depth + 1)
+			if err != nil {
+				return nil, err
+			}
+			o.Set(key, v)
+			p.space()
+			if p.i < len(p.data) && p.data[p.i] == ',' {
+				p.i++
+				continue
+			}
+			if p.i < len(p.data) && p.data[p.i] == '}' {
+				p.i++
+				return o, nil
+			}
+			return nil, p.fail("expected ',' or '}'")
+		}
+	case c == '[':
+		p.i++
+		arr := []any{}
+		p.space()
+		if p.i < len(p.data) && p.data[p.i] == ']' {
+			p.i++
 			return arr, nil
 		}
-		return nil, fmt.Errorf("jsjson: unexpected %v", t)
-	case json.Number:
-		// JSON.parse rounds to the nearest double, as ParseFloat does; a
-		// literal past the double range is ±Infinity there and an error here.
-		f, err := strconv.ParseFloat(string(t), 64)
-		if err != nil {
-			var ne *strconv.NumError
-			if errors.As(err, &ne) && errors.Is(ne.Err, strconv.ErrRange) {
-				return f, nil
+		for {
+			v, err := p.value(depth + 1)
+			if err != nil {
+				return nil, err
 			}
+			arr = append(arr, v)
+			p.space()
+			if p.i < len(p.data) && p.data[p.i] == ',' {
+				p.i++
+				continue
+			}
+			if p.i < len(p.data) && p.data[p.i] == ']' {
+				p.i++
+				return arr, nil
+			}
+			return nil, p.fail("expected ',' or ']'")
+		}
+	case c == '"':
+		return p.str()
+	case c == 't':
+		return p.literal("true", true)
+	case c == 'f':
+		return p.literal("false", false)
+	case c == 'n':
+		return p.literal("null", nil)
+	case c == '-' || (c >= '0' && c <= '9'):
+		return p.number()
+	}
+	return nil, p.fail("unexpected character")
+}
+
+// number reads JSON's number grammar. JSON.parse rounds to the nearest
+// double, as ParseFloat does; past the double range it is ±Infinity.
+func (p *parser) number() (any, error) {
+	start := p.i
+	digits := func() int {
+		n := 0
+		for p.i < len(p.data) && p.data[p.i] >= '0' && p.data[p.i] <= '9' {
+			p.i++
+			n++
+		}
+		return n
+	}
+	if p.data[p.i] == '-' {
+		p.i++
+	}
+	if p.i < len(p.data) && p.data[p.i] == '0' {
+		p.i++
+	} else if digits() == 0 {
+		return nil, p.fail("invalid number")
+	}
+	if p.i < len(p.data) && p.data[p.i] == '.' {
+		p.i++
+		if digits() == 0 {
+			return nil, p.fail("invalid number")
+		}
+	}
+	if p.i < len(p.data) && (p.data[p.i] == 'e' || p.data[p.i] == 'E') {
+		p.i++
+		if p.i < len(p.data) && (p.data[p.i] == '+' || p.data[p.i] == '-') {
+			p.i++
+		}
+		if digits() == 0 {
+			return nil, p.fail("invalid number")
+		}
+	}
+	f, err := strconv.ParseFloat(string(p.data[start:p.i]), 64)
+	if err != nil {
+		var ne *strconv.NumError
+		if !errors.As(err, &ne) || !errors.Is(ne.Err, strconv.ErrRange) {
 			return nil, err
 		}
-		return f, nil
-	case string, bool, nil:
-		return t, nil
 	}
-	return nil, fmt.Errorf("jsjson: unexpected token %v", tok)
+	return f, nil
+}
+
+func hexValue(b []byte) (rune, bool) {
+	var r rune
+	for _, c := range b {
+		switch {
+		case c >= '0' && c <= '9':
+			r = r<<4 | rune(c-'0')
+		case c >= 'a' && c <= 'f':
+			r = r<<4 | rune(c-'a'+10)
+		case c >= 'A' && c <= 'F':
+			r = r<<4 | rune(c-'A'+10)
+		default:
+			return 0, false
+		}
+	}
+	return r, true
+}
+
+// appendWTF8 appends r, which may be a lone surrogate, in WTF-8: UTF-8's
+// encoding applied to the surrogate's code point.
+func appendWTF8(b []byte, r rune) []byte {
+	if r >= 0xD800 && r <= 0xDFFF {
+		return append(b, 0xED, byte(0x80|(r>>6)&0x3F), byte(0x80|r&0x3F))
+	}
+	return utf8.AppendRune(b, r)
+}
+
+func (p *parser) str() (string, error) {
+	p.i++ // the opening quote
+	var out []byte
+	start := p.i
+	for p.i < len(p.data) {
+		c := p.data[p.i]
+		switch {
+		case c == '"':
+			if out == nil {
+				s := string(p.data[start:p.i])
+				p.i++
+				return s, nil
+			}
+			out = append(out, p.data[start:p.i]...)
+			p.i++
+			return string(out), nil
+		case c < 0x20:
+			return "", p.fail("control character in a string")
+		case c == '\\':
+			out = append(out, p.data[start:p.i]...)
+			if p.i+1 >= len(p.data) {
+				return "", p.fail("unexpected end")
+			}
+			esc := p.data[p.i+1]
+			p.i += 2
+			switch esc {
+			case '"', '\\', '/':
+				out = append(out, esc)
+			case 'b':
+				out = append(out, '\b')
+			case 'f':
+				out = append(out, '\f')
+			case 'n':
+				out = append(out, '\n')
+			case 'r':
+				out = append(out, '\r')
+			case 't':
+				out = append(out, '\t')
+			case 'u':
+				if p.i+4 > len(p.data) {
+					return "", p.fail("short \\u escape")
+				}
+				r, ok := hexValue(p.data[p.i : p.i+4])
+				if !ok {
+					return "", p.fail("invalid \\u escape")
+				}
+				p.i += 4
+				// A high surrogate followed by an escaped low one is one code point.
+				if r >= 0xD800 && r <= 0xDBFF && p.i+6 <= len(p.data) && p.data[p.i] == '\\' && p.data[p.i+1] == 'u' {
+					if lo, ok := hexValue(p.data[p.i+2 : p.i+6]); ok && lo >= 0xDC00 && lo <= 0xDFFF {
+						r = 0x10000 + (r-0xD800)<<10 + (lo - 0xDC00)
+						p.i += 6
+					}
+				}
+				out = appendWTF8(out, r)
+			default:
+				return "", p.fail("invalid escape")
+			}
+			start = p.i
+		default:
+			p.i++
+		}
+	}
+	return "", p.fail("unterminated string")
 }
 
 // Marshal is JSON.stringify(v). NaN and ±Infinity are null, as there.
@@ -313,13 +503,6 @@ func AppendValue(b []byte, v any) []byte {
 			b = AppendValue(b, m.Value)
 		}
 		return append(b, '}')
-	case json.RawMessage:
-		// Already JSON; re-read so it is written in JavaScript's form.
-		parsed, err := Parse(t)
-		if err != nil {
-			return append(b, "null"...)
-		}
-		return AppendValue(b, parsed)
 	}
 	panic(fmt.Sprintf("jsjson: cannot encode %T", v))
 }
@@ -390,6 +573,16 @@ func AppendString(b []byte, s string) []byte {
 			continue
 		}
 		r, size := utf8.DecodeRuneInString(s[i:])
+		if c == 0xED && i+2 < len(s) && s[i+1] >= 0xA0 && s[i+1] <= 0xBF && s[i+2] >= 0x80 && s[i+2] <= 0xBF {
+			// A lone surrogate, as Parse keeps one (WTF-8): JSON.stringify
+			// writes it as an escape.
+			u := 0xD000 | rune(s[i+1]&0x3F)<<6 | rune(s[i+2]&0x3F)
+			b = append(b, s[start:i]...)
+			b = append(b, '\\', 'u', hexDigits[u>>12&0xf], hexDigits[u>>8&0xf], hexDigits[u>>4&0xf], hexDigits[u&0xf])
+			i += 3
+			start = i
+			continue
+		}
 		if r == utf8.RuneError && size == 1 {
 			b = append(b, s[start:i]...)
 			b = append(b, "�"...)
@@ -409,17 +602,34 @@ func Equal(a, b any) bool {
 	return bytes.Equal(Marshal(a), Marshal(b))
 }
 
+// Number is v as a JavaScript number: a float64, or a Go int a caller set
+// (AppendValue writes those as numbers too).
+func Number(v any) (float64, bool) {
+	switch t := v.(type) {
+	case float64:
+		return t, true
+	case int:
+		return float64(t), true
+	case int64:
+		return float64(t), true
+	}
+	return 0, false
+}
+
 // Truthy is JavaScript truthiness for a parsed value.
 func Truthy(v any) bool {
+	if f, ok := Number(v); ok {
+		return f != 0 && !math.IsNaN(f)
+	}
 	switch t := v.(type) {
 	case nil:
 		return false
 	case bool:
 		return t
-	case float64:
-		return t != 0 && !math.IsNaN(t)
 	case string:
 		return t != ""
+	case *Object:
+		return t != nil
 	}
 	return true
 }
