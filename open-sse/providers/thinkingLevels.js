@@ -5,7 +5,7 @@ import { matchPattern } from "./pricing.js";
 import { resolveKiroEffortPath } from "../config/kiroConstants.js";
 
 // Shared level sets (deduped) — verified against provider docs + wire in thinkingUnified.applyFormat.
-const L = {
+export const L = {
   base: ["none", "low", "medium", "high"],                          // qwen, step, hunyuan, gemini-budget
   onOff: ["none", "thinking"],                                      // zai (binary), minimax (adaptive)
   openai: ["none", "minimal", "low", "medium", "high", "xhigh"],    // GPT-5.x / o-series (no "max")
@@ -16,7 +16,7 @@ const L = {
 };
 
 // thinkingFormat → valid selectable levels (source of truth for UI options).
-const FORMAT_LEVELS = {
+export const FORMAT_LEVELS = {
   openai: L.openai,
   "claude-adaptive": L.levelMax,
   "claude-budget": L.budgetX,
@@ -34,7 +34,7 @@ const FORMAT_LEVELS = {
 const CODEX_GPT_5_6_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 // Model-name pattern overrides (glob, first match wins) — more precise than format default.
-const PATTERN_THINKING = [
+export const PATTERN_THINKING = [
   { pattern: "*gpt-6.1-sol*", levels: ["low", "medium", "high", "xhigh", "max"] },
   { pattern: "*gpt-6-astra*", levels: ["low", "medium", "high", "xhigh", "max"] },
   { pattern: "*gpt-6-sol*", levels: ["none", "low", "medium", "high", "xhigh", "max"] },

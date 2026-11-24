@@ -9,7 +9,7 @@ const SEP = "[-_/:.]";
 
 // Image GENERATION, video generation, and non-chat models also carry these
 // words but take no image input — checked first so they can never match.
-const NOT_VISION = new RegExp(
+export const NOT_VISION = new RegExp(
   [
     `(^|${SEP})(image|img)(${SEP}|$)`,
     "stable-image", "gen[0-9]_image", "nanobanana", "imagine",
@@ -23,7 +23,7 @@ const NOT_VISION = new RegExp(
 // Explicit modality words, plus the "<digit>v" suffix vendors use for vision
 // variants (glm-4.6v, glm-5v-turbo). The digit-v branch requires a dotted
 // version so the never-shipped `gpt-4v` cannot match.
-const VISION_NAME = new RegExp(
+export const VISION_NAME = new RegExp(
   [
     `(^|${SEP})(vision|vl|vlm|multimodal|omni|visual)(${SEP}|$)`,
     `[0-9]\\.[0-9]+v(${SEP}|$)`,

@@ -1,0 +1,61 @@
+{
+ "name": "thinking-matrix-033",
+ "seed": 261480,
+ "inputs": {
+  "provider": "openai-compatible-chat-5f0c1d2e-0000-4000-8000-00000000c1a0",
+  "model": "claude-fable-5-1(high)",
+  "apiKey": "sk-synthetic-thinkingmatrix033-0000",
+  "providerSpecificData": {
+   "apiType": "chat",
+   "baseUrl": "https://gateway.example.test/v1",
+   "modelRoutes": {
+    "claude-fable-5-1": "anthropic"
+   }
+  },
+  "providerThinking": null,
+  "keyHasBudget": false,
+  "catalog": null
+ },
+ "request": {
+  "headers": {
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27",
+   "anthropic-version": "2023-06-01",
+   "accept": "application/json",
+   "content-type": "application/json"
+  },
+  "body": "{\"model\":\"combo-2\",\"max_tokens\":32000,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":31999},\"metadata\":{\"user_id\":\"user_9HjSNAVXyzRMylYqlF8Nd76U1W9Ynyyl_account__session_2dOR0gL1\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"yield queue a module parser index field index for to parser a node is\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"kernel token offset cache join delta vector\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"boolean\",\"description\":\"index zone\"},\"task_1\":{\"type\":\"boolean\",\"description\":\"handler\"},\"task_2\":{\"type\":\"object\",\"description\":\"zone buffer\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"task_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"Bash\",\"description\":\"zone index graph handler vector handler\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"object\",\"description\":\"queue node\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"bash_1\":{\"type\":\"integer\",\"description\":\"join buffer\",\"minimum\":0}},\"required\":[\"bash_0\"],\"additionalProperties\":false}},{\"name\":\"Glob\",\"description\":\"handler parser in to queue a\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"boolean\",\"description\":\"handler index\"}},\"required\":[\"glob_0\"]}},{\"name\":\"Grep\",\"description\":\"token of with for zone queue the kernel worker\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"array\",\"description\":\"queue\",\"items\":{\"type\":\"string\"}}},\"required\":[\"grep_0\"],\"additionalProperties\":false}},{\"name\":\"Read\",\"description\":\"parser and with\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"read_0\":{\"type\":\"object\",\"description\":\"delta buffer\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"read_0\"]}},{\"name\":\"Edit\",\"description\":\"delta stream with\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"edit_0\":{\"type\":\"number\",\"description\":\"delta\",\"minimum\":0},\"edit_1\":{\"type\":\"number\",\"description\":\"kernel\",\"minimum\":0},\"edit_2\":{\"type\":\"boolean\",\"description\":\"join\"},\"edit_3\":{\"type\":\"integer\",\"description\":\"buffer\",\"minimum\":0}},\"required\":[\"edit_0\"],\"additionalProperties\":false}},{\"name\":\"Write\",\"description\":\"and queue a delta layer with and\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"write_0\":{\"type\":\"string\",\"description\":\"delta graph\"}},\"required\":[\"write_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"NotebookEdit\",\"description\":\"graph delta graph echo echo module\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"notebookedit_0\":{\"type\":\"array\",\"description\":\"bravo\",\"items\":{\"type\":\"string\"}},\"notebookedit_1\":{\"type\":\"array\",\"description\":\"and\",\"items\":{\"type\":\"string\"}},\"notebookedit_2\":{\"type\":\"string\",\"description\":\"layer\"},\"notebookedit_3\":{\"type\":\"boolean\",\"description\":\"join in\"},\"notebookedit_4\":{\"type\":\"string\",\"description\":\"parser\"}},\"required\":[\"notebookedit_0\"]},\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\na module on parser a delta is\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"index to\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"is for\",\"signature\":\"EqNeiIl0GBT6StVnY==\"},{\"type\":\"text\",\"text\":\"parser queue index\"},{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":40},\"id\":\"toolu_01UvxtXmaWJi6KwG8Ulbb9uT\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01UvxtXmaWJi6KwG8Ulbb9uT\",\"content\":\"}\\n}\\n// TODO: handle the empty case\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"redacted_thinking\",\"data\":\"RDz5yPdagP0AHfgzoN8L6DFTvderRcPzWFSB2vqRsvkl3hb2GEdLu8TwTzUOoV\"},{\"type\":\"text\",\"text\":\"bravo parser of\"},{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":132},\"id\":\"toolu_01FaMy2ovevrLy8e6CSx1kYQ\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01FaMy2ovevrLy8e6CSx1kYQ\",\"content\":[{\"type\":\"text\",\"text\":\"throw new Error(\\\"unexpected end\\\");\\nfor (const item of list) total += item.size;\"}],\"is_error\":true}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"record\"}]}],\"output_config\":{\"effort\":\"medium\"}}"
+ },
+ "node": {
+  "url": "https://gateway.example.test/v1/messages",
+  "headers": [
+   [
+    "Content-Type",
+    "application/json"
+   ],
+   [
+    "anthropic-version",
+    "2023-06-01"
+   ],
+   [
+    "x-api-key",
+    "{{apiKey}}"
+   ],
+   [
+    "anthropic-beta",
+    "interleaved-thinking-2025-05-14,context-management-2025-06-27"
+   ],
+   [
+    "Authorization",
+    "Bearer {{apiKey}}"
+   ],
+   [
+    "Accept",
+    "text/event-stream"
+   ]
+  ],
+  "body": "{\"model\":\"claude-fable-5-1\",\"max_tokens\":32000,\"stream\":true,\"metadata\":{\"user_id\":\"user_9HjSNAVXyzRMylYqlF8Nd76U1W9Ynyyl_account__session_2dOR0gL1\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\"},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\"},{\"type\":\"text\",\"text\":\"yield queue a module parser index field index for to parser a node is\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"kernel token offset cache join delta vector\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"boolean\",\"description\":\"index zone\"},\"task_1\":{\"type\":\"boolean\",\"description\":\"handler\"},\"task_2\":{\"type\":\"object\",\"description\":\"zone buffer\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"task_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"type\":\"custom\"},{\"name\":\"Bash\",\"description\":\"zone index graph handler vector handler\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"object\",\"description\":\"queue node\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"bash_1\":{\"type\":\"integer\",\"description\":\"join buffer\",\"minimum\":0}},\"required\":[\"bash_0\"],\"additionalProperties\":false},\"type\":\"custom\"},{\"name\":\"Glob\",\"description\":\"handler parser in to queue a\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"boolean\",\"description\":\"handler index\"}},\"required\":[\"glob_0\"]},\"type\":\"custom\"},{\"name\":\"Grep\",\"description\":\"token of with for zone queue the kernel worker\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"array\",\"description\":\"queue\",\"items\":{\"type\":\"string\"}}},\"required\":[\"grep_0\"],\"additionalProperties\":false},\"type\":\"custom\"},{\"name\":\"Read\",\"description\":\"parser and with\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"read_0\":{\"type\":\"object\",\"description\":\"delta buffer\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"read_0\"]},\"type\":\"custom\"},{\"name\":\"Edit\",\"description\":\"delta stream with\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"edit_0\":{\"type\":\"number\",\"description\":\"delta\",\"minimum\":0},\"edit_1\":{\"type\":\"number\",\"description\":\"kernel\",\"minimum\":0},\"edit_2\":{\"type\":\"boolean\",\"description\":\"join\"},\"edit_3\":{\"type\":\"integer\",\"description\":\"buffer\",\"minimum\":0}},\"required\":[\"edit_0\"],\"additionalProperties\":false},\"type\":\"custom\"},{\"name\":\"Write\",\"description\":\"and queue a delta layer with and\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"write_0\":{\"type\":\"string\",\"description\":\"delta graph\"}},\"required\":[\"write_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"type\":\"custom\"},{\"name\":\"NotebookEdit\",\"description\":\"graph delta graph echo echo module\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"notebookedit_0\":{\"type\":\"array\",\"description\":\"bravo\",\"items\":{\"type\":\"string\"}},\"notebookedit_1\":{\"type\":\"array\",\"description\":\"and\",\"items\":{\"type\":\"string\"}},\"notebookedit_2\":{\"type\":\"string\",\"description\":\"layer\"},\"notebookedit_3\":{\"type\":\"boolean\",\"description\":\"join in\"},\"notebookedit_4\":{\"type\":\"string\",\"description\":\"parser\"}},\"required\":[\"notebookedit_0\"]},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\na module on parser a delta is\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"index to\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"is for\",\"signature\":\"EqNeiIl0GBT6StVnY==\"},{\"type\":\"text\",\"text\":\"parser queue index\"},{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":40},\"id\":\"toolu_01UvxtXmaWJi6KwG8Ulbb9uT\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01UvxtXmaWJi6KwG8Ulbb9uT\",\"content\":\"}\\n}\\n// TODO: handle the empty case\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"redacted_thinking\",\"data\":\"RDz5yPdagP0AHfgzoN8L6DFTvderRcPzWFSB2vqRsvkl3hb2GEdLu8TwTzUOoV\"},{\"type\":\"text\",\"text\":\"bravo parser of\"},{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":132},\"id\":\"toolu_01FaMy2ovevrLy8e6CSx1kYQ\",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01FaMy2ovevrLy8e6CSx1kYQ\",\"content\":[{\"type\":\"text\",\"text\":\"throw new Error(\\\"unexpected end\\\");\\nfor (const item of list) total += item.size;\"}],\"is_error\":true},{\"type\":\"text\",\"text\":\"record\"}]}],\"output_config\":{\"effort\":\"high\"}}",
+  "sha256": "4f2b5b6375fa3931ed0aa7e2136e0d8551edc3a34fb484f54f95baee8fe7c122"
+ }
+}

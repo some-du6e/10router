@@ -1,0 +1,67 @@
+{
+ "name": "endpoint-overrides-008",
+ "seed": 63624,
+ "inputs": {
+  "provider": "openai-compatible-chat-5f0c1d2e-0000-4000-8000-00000000c1a0",
+  "model": "claude-opus-4-8",
+  "apiKey": "sk-synthetic-endpointoverrides008-0000",
+  "providerSpecificData": {
+   "apiType": "chat",
+   "baseUrl": "https://gateway.example.test/v1",
+   "modelRoutes": {
+    "claude-opus-4-8": "anthropic"
+   },
+   "mimic": "custom",
+   "customHeaders": "user-agent: custom-agent/1.0\nanthropic-beta: custom-beta-1"
+  },
+  "providerThinking": null,
+  "keyHasBudget": false,
+  "catalog": null
+ },
+ "request": {
+  "headers": {
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27",
+   "anthropic-version": "2023-06-01",
+   "accept": "application/json",
+   "content-type": "application/json"
+  },
+  "body": "{\"model\":\"combo-5\",\"max_tokens\":32000,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":31999},\"metadata\":{\"user_id\":\"user_3R00R0wkXMybRyQ365Uc08jihGWVIeYH_account__session_hOvHQuRp\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"with update alpha delta yield node node token config config cache token module to\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"is worker\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"integer\",\"description\":\"in handler\",\"minimum\":0},\"task_1\":{\"type\":\"string\",\"description\":\"decode\"},\"task_2\":{\"type\":\"string\",\"description\":\"cache token\"},\"task_3\":{\"type\":\"object\",\"description\":\"graph\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"task_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"Bash\",\"description\":\"on token echo queue decode\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"integer\",\"description\":\"decode token\",\"minimum\":0},\"bash_1\":{\"type\":\"string\",\"description\":\"and cache\"},\"bash_2\":{\"type\":\"string\",\"description\":\"buffer is\"}},\"required\":[\"bash_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"Glob\",\"description\":\"bravo handler decode the\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"string\",\"description\":\"on\"},\"glob_1\":{\"type\":\"string\",\"description\":\"to with\"},\"glob_2\":{\"type\":\"boolean\",\"description\":\"with\"},\"glob_3\":{\"type\":\"number\",\"description\":\"the\",\"minimum\":0},\"glob_4\":{\"type\":\"integer\",\"description\":\"handler\",\"minimum\":0}},\"required\":[\"glob_0\"]}},{\"name\":\"Grep\",\"description\":\"token record cache filter record cache\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"object\",\"description\":\"node\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"grep_0\"]}},{\"name\":\"Read\",\"description\":\"delta\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"read_0\":{\"type\":\"string\",\"description\":\"config\"},\"read_1\":{\"type\":\"number\",\"description\":\"alpha bravo\",\"minimum\":0},\"read_2\":{\"type\":\"object\",\"description\":\"and\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"read_3\":{\"type\":\"array\",\"description\":\"with\",\"items\":{\"type\":\"string\"}},\"read_4\":{\"type\":\"boolean\",\"description\":\"vector\"}},\"required\":[\"read_0\"]}},{\"name\":\"Edit\",\"description\":\"parser queue handler layer echo graph echo graph bravo\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"edit_0\":{\"type\":\"string\",\"description\":\"of\"},\"edit_1\":{\"type\":\"boolean\",\"description\":\"cache\"},\"edit_2\":{\"type\":\"string\",\"description\":\"bravo buffer\"},\"edit_3\":{\"type\":\"array\",\"description\":\"handler buffer\",\"items\":{\"type\":\"string\"}}},\"required\":[\"edit_0\"]},\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\noffset on layer for bravo update delta\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"for a\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"with\"},{\"type\":\"tool_use\",\"name\":\"Edit\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":385},\"id\":\"toolu_015a4FGpef9z3icyne3b0aBs\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_015a4FGpef9z3icyne3b0aBs\",\"content\":\"}\\nlet count = 0;\\nif (!result) return null;\"},{\"type\":\"text\",\"text\":\"with\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":224},\"id\":\"toolu_01MIKOLygp3FqgJEbRDIcaF0\"},{\"type\":\"text\",\"text\":\"bravo\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01MIKOLygp3FqgJEbRDIcaF0\",\"content\":\"if (!result) return null;\\nimport { join } from \\\"node:path\\\";\"},{\"type\":\"text\",\"text\":\"bravo\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"vector join yield zone on decode index module record record\",\"signature\":\"EqMPfeo6zsTqmCipSsZC9Tm==\"},{\"type\":\"text\",\"text\":\"yield\"},{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"path\":\"/work/src/module_3.ts\",\"limit\":75},\"id\":\"toolu_01YGax8scbk27BwfoRMG5DgT\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01YGax8scbk27BwfoRMG5DgT\",\"content\":[{\"type\":\"text\",\"text\":\"for (const item of list) total += item.size;\\nlet count = 0;\\nconst value = await load(path);\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"yield with\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_4.ts\",\"limit\":343},\"id\":\"toolu_01MlItEaXyRCKu41dvBajSee\"},{\"type\":\"text\",\"text\":\"a\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01MlItEaXyRCKu41dvBajSee\",\"content\":[{\"type\":\"text\",\"text\":\"import { join } from \\\"node:path\\\";\\nif (!result) return null;\"}]},{\"type\":\"text\",\"text\":\"cache\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"worker the\"}]}]}"
+ },
+ "node": {
+  "url": "https://gateway.example.test/v1/messages",
+  "headers": [
+   [
+    "Content-Type",
+    "application/json"
+   ],
+   [
+    "anthropic-version",
+    "2023-06-01"
+   ],
+   [
+    "x-api-key",
+    "{{apiKey}}"
+   ],
+   [
+    "Authorization",
+    "Bearer {{apiKey}}"
+   ],
+   [
+    "Accept",
+    "text/event-stream"
+   ],
+   [
+    "user-agent",
+    "custom-agent/1.0"
+   ],
+   [
+    "anthropic-beta",
+    "custom-beta-1"
+   ]
+  ],
+  "body": "{\"model\":\"claude-opus-4-8\",\"max_tokens\":32000,\"stream\":true,\"metadata\":{\"user_id\":\"user_3R00R0wkXMybRyQ365Uc08jihGWVIeYH_account__session_hOvHQuRp\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\"},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\"},{\"type\":\"text\",\"text\":\"with update alpha delta yield node node token config config cache token module to\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"is worker\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"integer\",\"description\":\"in handler\",\"minimum\":0},\"task_1\":{\"type\":\"string\",\"description\":\"decode\"},\"task_2\":{\"type\":\"string\",\"description\":\"cache token\"},\"task_3\":{\"type\":\"object\",\"description\":\"graph\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"task_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"type\":\"custom\"},{\"name\":\"Bash\",\"description\":\"on token echo queue decode\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"integer\",\"description\":\"decode token\",\"minimum\":0},\"bash_1\":{\"type\":\"string\",\"description\":\"and cache\"},\"bash_2\":{\"type\":\"string\",\"description\":\"buffer is\"}},\"required\":[\"bash_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"type\":\"custom\"},{\"name\":\"Glob\",\"description\":\"bravo handler decode the\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"string\",\"description\":\"on\"},\"glob_1\":{\"type\":\"string\",\"description\":\"to with\"},\"glob_2\":{\"type\":\"boolean\",\"description\":\"with\"},\"glob_3\":{\"type\":\"number\",\"description\":\"the\",\"minimum\":0},\"glob_4\":{\"type\":\"integer\",\"description\":\"handler\",\"minimum\":0}},\"required\":[\"glob_0\"]},\"type\":\"custom\"},{\"name\":\"Grep\",\"description\":\"token record cache filter record cache\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"object\",\"description\":\"node\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"grep_0\"]},\"type\":\"custom\"},{\"name\":\"Read\",\"description\":\"delta\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"read_0\":{\"type\":\"string\",\"description\":\"config\"},\"read_1\":{\"type\":\"number\",\"description\":\"alpha bravo\",\"minimum\":0},\"read_2\":{\"type\":\"object\",\"description\":\"and\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"read_3\":{\"type\":\"array\",\"description\":\"with\",\"items\":{\"type\":\"string\"}},\"read_4\":{\"type\":\"boolean\",\"description\":\"vector\"}},\"required\":[\"read_0\"]},\"type\":\"custom\"},{\"name\":\"Edit\",\"description\":\"parser queue handler layer echo graph echo graph bravo\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"edit_0\":{\"type\":\"string\",\"description\":\"of\"},\"edit_1\":{\"type\":\"boolean\",\"description\":\"cache\"},\"edit_2\":{\"type\":\"string\",\"description\":\"bravo buffer\"},\"edit_3\":{\"type\":\"array\",\"description\":\"handler buffer\",\"items\":{\"type\":\"string\"}}},\"required\":[\"edit_0\"]},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\noffset on layer for bravo update delta\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"for a\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"with\"},{\"type\":\"tool_use\",\"name\":\"Edit\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":385},\"id\":\"toolu_015a4FGpef9z3icyne3b0aBs\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_015a4FGpef9z3icyne3b0aBs\",\"content\":\"}\\nlet count = 0;\\nif (!result) return null;\"},{\"type\":\"text\",\"text\":\"with\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":224},\"id\":\"toolu_01MIKOLygp3FqgJEbRDIcaF0\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01MIKOLygp3FqgJEbRDIcaF0\",\"content\":\"if (!result) return null;\\nimport { join } from \\\"node:path\\\";\"},{\"type\":\"text\",\"text\":\"bravo\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"vector join yield zone on decode index module record record\",\"signature\":\"EqMPfeo6zsTqmCipSsZC9Tm==\"},{\"type\":\"text\",\"text\":\"yield\"},{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"path\":\"/work/src/module_3.ts\",\"limit\":75},\"id\":\"toolu_01YGax8scbk27BwfoRMG5DgT\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01YGax8scbk27BwfoRMG5DgT\",\"content\":[{\"type\":\"text\",\"text\":\"for (const item of list) total += item.size;\\nlet count = 0;\\nconst value = await load(path);\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"yield with\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_4.ts\",\"limit\":343},\"id\":\"toolu_01MlItEaXyRCKu41dvBajSee\",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01MlItEaXyRCKu41dvBajSee\",\"content\":[{\"type\":\"text\",\"text\":\"import { join } from \\\"node:path\\\";\\nif (!result) return null;\"}]},{\"type\":\"text\",\"text\":\"cache\"},{\"type\":\"text\",\"text\":\"worker the\"}]}],\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"high\"}}",
+  "sha256": "1bb42d433b5eb2447b3f5aa58ea1449b06b11c28dbf3d171439454913d39bc71"
+ }
+}

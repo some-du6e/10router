@@ -1,0 +1,61 @@
+{
+ "name": "thinking-matrix-034",
+ "seed": 269399,
+ "inputs": {
+  "provider": "openai-compatible-chat-5f0c1d2e-0000-4000-8000-00000000c1a0",
+  "model": "claude-haiku-5-5(high)",
+  "apiKey": "sk-synthetic-thinkingmatrix034-0000",
+  "providerSpecificData": {
+   "apiType": "chat",
+   "baseUrl": "https://gateway.example.test/v1",
+   "modelRoutes": {
+    "claude-haiku-5-5": "anthropic"
+   }
+  },
+  "providerThinking": null,
+  "keyHasBudget": false,
+  "catalog": null
+ },
+ "request": {
+  "headers": {
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27",
+   "anthropic-version": "2023-06-01",
+   "accept": "application/json",
+   "content-type": "application/json"
+  },
+  "body": "{\"model\":\"combo-8\",\"max_tokens\":200000,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":2048},\"metadata\":{\"user_id\":\"user_opJRKUVjdnQ2XnX111kBDc4BMcA3M495_account__session_fIC76HuI\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"on record and in module for handler worker record of stream echo of node\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"with filter\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"object\",\"description\":\"token buffer\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"task_1\":{\"type\":\"array\",\"description\":\"config stream\",\"items\":{\"type\":\"string\"}},\"task_2\":{\"type\":\"string\",\"description\":\"in\"},\"task_3\":{\"type\":\"integer\",\"description\":\"handler module\",\"minimum\":0},\"task_4\":{\"type\":\"array\",\"description\":\"worker\",\"items\":{\"type\":\"string\"}},\"task_5\":{\"type\":\"number\",\"description\":\"config with\",\"minimum\":0}},\"required\":[\"task_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"Bash\",\"description\":\"index to field record filter echo kernel field with\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"number\",\"description\":\"encode delta\",\"minimum\":0},\"bash_1\":{\"type\":\"number\",\"description\":\"is index\",\"minimum\":0},\"bash_2\":{\"type\":\"string\",\"description\":\"module\"},\"bash_3\":{\"type\":\"integer\",\"description\":\"handler bravo\",\"minimum\":0}},\"required\":[\"bash_0\"]}},{\"name\":\"Glob\",\"description\":\"module on a filter join queue and zone\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"object\",\"description\":\"a\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"glob_1\":{\"type\":\"array\",\"description\":\"a\",\"items\":{\"type\":\"string\"}},\"glob_2\":{\"type\":\"boolean\",\"description\":\"and\"},\"glob_3\":{\"type\":\"number\",\"description\":\"filter\",\"minimum\":0}},\"required\":[\"glob_0\"],\"additionalProperties\":false},\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nalpha join module filter module token alpha\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"kernel on\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"redacted_thinking\",\"data\":\"RDNftxOSnZ3tZRfSdoc9PBX7N5H63awncIWSzfn5Ft3zkCSoPphBwZqAVdQ9Bk\"},{\"type\":\"text\",\"text\":\"encode\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":269},\"id\":\"toolu_01CyHxBN4zgfghYgJbIgGcbG\"},{\"type\":\"text\",\"text\":\"update\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01CyHxBN4zgfghYgJbIgGcbG\",\"content\":\"for (const item of list) total += item.size;\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"encode worker delta a\",\"signature\":\"Eqakb6B9Pu7B9MjM1==\"},{\"type\":\"text\",\"text\":\"filter config in\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":319},\"id\":\"toolu_019OGRgMErf4dnwRgX9Z0885\"},{\"type\":\"text\",\"text\":\"module\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_019OGRgMErf4dnwRgX9Z0885\",\"content\":[{\"type\":\"text\",\"text\":\"throw new Error(\\\"unexpected end\\\");\\nthrow new Error(\\\"unexpected end\\\");\"}]}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"record encode\"}]}],\"output_config\":{\"effort\":\"none\"},\"reasoning_effort\":\"high\"}"
+ },
+ "node": {
+  "url": "https://gateway.example.test/v1/messages",
+  "headers": [
+   [
+    "Content-Type",
+    "application/json"
+   ],
+   [
+    "anthropic-version",
+    "2023-06-01"
+   ],
+   [
+    "x-api-key",
+    "{{apiKey}}"
+   ],
+   [
+    "anthropic-beta",
+    "interleaved-thinking-2025-05-14,context-management-2025-06-27"
+   ],
+   [
+    "Authorization",
+    "Bearer {{apiKey}}"
+   ],
+   [
+    "Accept",
+    "text/event-stream"
+   ]
+  ],
+  "body": "{\"model\":\"claude-haiku-5-5\",\"max_tokens\":128000,\"stream\":true,\"metadata\":{\"user_id\":\"user_opJRKUVjdnQ2XnX111kBDc4BMcA3M495_account__session_fIC76HuI\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\"},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\"},{\"type\":\"text\",\"text\":\"on record and in module for handler worker record of stream echo of node\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"with filter\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"object\",\"description\":\"token buffer\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"task_1\":{\"type\":\"array\",\"description\":\"config stream\",\"items\":{\"type\":\"string\"}},\"task_2\":{\"type\":\"string\",\"description\":\"in\"},\"task_3\":{\"type\":\"integer\",\"description\":\"handler module\",\"minimum\":0},\"task_4\":{\"type\":\"array\",\"description\":\"worker\",\"items\":{\"type\":\"string\"}},\"task_5\":{\"type\":\"number\",\"description\":\"config with\",\"minimum\":0}},\"required\":[\"task_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"type\":\"custom\"},{\"name\":\"Bash\",\"description\":\"index to field record filter echo kernel field with\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"number\",\"description\":\"encode delta\",\"minimum\":0},\"bash_1\":{\"type\":\"number\",\"description\":\"is index\",\"minimum\":0},\"bash_2\":{\"type\":\"string\",\"description\":\"module\"},\"bash_3\":{\"type\":\"integer\",\"description\":\"handler bravo\",\"minimum\":0}},\"required\":[\"bash_0\"]},\"type\":\"custom\"},{\"name\":\"Glob\",\"description\":\"module on a filter join queue and zone\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"object\",\"description\":\"a\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"glob_1\":{\"type\":\"array\",\"description\":\"a\",\"items\":{\"type\":\"string\"}},\"glob_2\":{\"type\":\"boolean\",\"description\":\"and\"},\"glob_3\":{\"type\":\"number\",\"description\":\"filter\",\"minimum\":0}},\"required\":[\"glob_0\"],\"additionalProperties\":false},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nalpha join module filter module token alpha\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"kernel on\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"redacted_thinking\",\"data\":\"RDNftxOSnZ3tZRfSdoc9PBX7N5H63awncIWSzfn5Ft3zkCSoPphBwZqAVdQ9Bk\"},{\"type\":\"text\",\"text\":\"encode\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":269},\"id\":\"toolu_01CyHxBN4zgfghYgJbIgGcbG\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01CyHxBN4zgfghYgJbIgGcbG\",\"content\":\"for (const item of list) total += item.size;\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"encode worker delta a\",\"signature\":\"Eqakb6B9Pu7B9MjM1==\"},{\"type\":\"text\",\"text\":\"filter config in\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":319},\"id\":\"toolu_019OGRgMErf4dnwRgX9Z0885\",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_019OGRgMErf4dnwRgX9Z0885\",\"content\":[{\"type\":\"text\",\"text\":\"throw new Error(\\\"unexpected end\\\");\\nthrow new Error(\\\"unexpected end\\\");\"}]},{\"type\":\"text\",\"text\":\"record encode\"}]}],\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"high\"}}",
+  "sha256": "5cc4d0506635645a72490198bf362e2c21fbb61e28930d9253ba5be6347c661d"
+ }
+}

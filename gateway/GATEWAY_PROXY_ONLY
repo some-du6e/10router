@@ -1,0 +1,5 @@
+# Go packages whose native route must stay proxied to Node, one per line
+# (names from gateway/node-map.json). A PR that changes Node behavior a port
+# mirrors either updates the port in gateway/ or lists the package here, and
+# the gateway then sends that route to Node until the port catches up
+# (docs/GO_GATEWAY.md, "Drift"). Lines starting with # are comments.

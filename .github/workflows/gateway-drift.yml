@@ -1,0 +1,26 @@
+name: Gateway drift
+
+# The Go gateway ports some Node behavior byte for byte (docs/GO_GATEWAY.md,
+# "Drift"). A PR that changes a Node file gateway/node-map.json maps must
+# touch gateway/ too: update the port, or list the package in
+# gateway/GATEWAY_PROXY_ONLY. Runs on every PR: it only reads the diff.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Mapped Node files change with gateway/
+        run: git diff --name-only "origin/${{ github.base_ref || 'master' }}...HEAD" | node scripts/gateway-drift-check.mjs
