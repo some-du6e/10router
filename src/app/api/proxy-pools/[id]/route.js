@@ -84,9 +84,11 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ error: normalized.error }, { status: 400 });
     }
 
-    // A new URL gets the same rule as on create; keeping the stored one is fine.
-    const nextUrl = normalized.updates.proxyUrl;
-    if (nextUrl && nextUrl !== existing.proxyUrl) {
+    // A new URL gets the same rule as on create, and so does a stored one
+    // switched back on; keeping the stored one as it is is fine.
+    const nextUrl = normalized.updates.proxyUrl || existing.proxyUrl;
+    const enabling = normalized.updates.isActive === true && existing.isActive !== true;
+    if (nextUrl && (nextUrl !== existing.proxyUrl || enabling)) {
       const urlProblem = await proxyUrlProblem(request, nextUrl);
       if (urlProblem) return NextResponse.json({ error: urlProblem, field: "proxyUrl" }, { status: 400 });
     }

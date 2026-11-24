@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSettings, updateSettings } from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 import { proxyUrlProblem } from "@/lib/network/privateUrls.js";
+import { sameOidcIssuer } from "@/lib/auth/oidc";
 import { resetComboRotation } from "open-sse/services/combo.js";
 import bcrypt from "bcryptjs";
 import {
@@ -135,15 +136,30 @@ export async function PATCH(request) {
       }
     }
 
+    // Moving OIDC to another issuer needs the client secret sent again: the
+    // saved one would otherwise go to the new issuer's token endpoint.
+    if (body.oidcIssuerUrl && !body.oidcClientSecret) {
+      const current = await getSettings();
+      if (current.oidcClientSecret && !sameOidcIssuer(body.oidcIssuerUrl, current.oidcIssuerUrl)) {
+        return NextResponse.json({ error: "Enter the client secret again to change the issuer URL.", field: "oidcClientSecret" }, { status: 400 });
+      }
+    }
+
     // Every upstream request without a proxy of its own goes through the
     // outbound proxy: a new URL, or turning a stored one on, gets the proxy URL
     // rule (remote sessions can't point it at a private host).
-    if (Object.prototype.hasOwnProperty.call(body, "outboundProxyUrl") || body.outboundProxyEnabled === true) {
+    // applyOutboundProxyEnv reads the switch with Boolean() and the URL with
+    // String(), so the check reads them the same way.
+    const sendsUrl = Object.prototype.hasOwnProperty.call(body, "outboundProxyUrl");
+    if (sendsUrl || body.outboundProxyEnabled) {
       const current = await getSettings();
-      const url = Object.prototype.hasOwnProperty.call(body, "outboundProxyUrl") ? body.outboundProxyUrl : current.outboundProxyUrl;
-      const enabling = body.outboundProxyEnabled === true && current.outboundProxyEnabled !== true;
-      if (typeof url === "string" && url.trim() && (url !== current.outboundProxyUrl || enabling)) {
-        const problem = await proxyUrlProblem(request, url);
+      const url = sendsUrl ? body.outboundProxyUrl : current.outboundProxyUrl;
+      const enabling = Boolean(body.outboundProxyEnabled) && !current.outboundProxyEnabled;
+      if (url !== undefined && url !== null && url !== "" && (url !== current.outboundProxyUrl || enabling)) {
+        if (typeof url !== "string") {
+          return NextResponse.json({ error: "outboundProxyUrl must be a string", field: "outboundProxyUrl" }, { status: 400 });
+        }
+        const problem = url.trim() ? await proxyUrlProblem(request, url) : null;
         if (problem) return NextResponse.json({ error: problem, field: "outboundProxyUrl" }, { status: 400 });
       }
     }

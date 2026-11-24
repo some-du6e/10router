@@ -81,8 +81,11 @@ export async function providerDataProblem(
     { field: "azureEndpoint", value: next.azureEndpoint, stored: current?.azureEndpoint },
   ];
   for (const { field, value, stored, proxy, recheck } of urls) {
-    if (typeof value !== "string" || !value.trim()) continue;
+    if (value === undefined || value === null || value === "") continue;
     if (value === stored && !recheck) continue;
+    // The runtime reads any value with String(), so an array is a URL too.
+    if (typeof value !== "string") return { error: `${field} must be a string`, field };
+    if (!value.trim()) continue;
     const problem = proxy ? await proxyUrlProblem(request, value) : await privateUrlRejected(request, value.trim());
     if (problem) return { error: problem, field };
   }

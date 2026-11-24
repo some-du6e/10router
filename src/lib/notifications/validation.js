@@ -138,7 +138,20 @@ function validateConfig(type, config) {
   }
 }
 
-export function normalizeNotificationChannelInput(body = {}, existing = null) {
+function urlOrigin(value) {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return "";
+  }
+}
+
+export const PRIVATE_NETWORK_NOT_ALLOWED =
+  "Private network delivery can only be turned on from the dashboard on this machine or, with login on, with ALLOW_PRIVATE_ENDPOINT_URLS=true.";
+
+// blocksPrivateNetwork: the caller may not point the server at internal hosts
+// (see blocksPrivateUrls in src/lib/network/privateUrls.ts).
+export function normalizeNotificationChannelInput(body = {}, existing = null, { blocksPrivateNetwork = false } = {}) {
   const name = stringValue(body.name ?? existing?.name);
   const type = stringValue(body.type ?? existing?.type).toLowerCase();
   if (!name) throw new Error("Name is required");
@@ -147,16 +160,30 @@ export function normalizeNotificationChannelInput(body = {}, existing = null) {
   const providedConfig = normalizeConfig(type, body.config || {});
   const previousConfig = existing?.type === type ? existing.config || {} : {};
   const config = { ...previousConfig, ...providedConfig };
-  for (const field of SECRET_CONFIG_FIELDS[type] || []) {
+  const secretFields = SECRET_CONFIG_FIELDS[type] || [];
+  const urlFields = URL_CONFIG_FIELDS[type] || [];
+  // A stored secret only goes back to the host it was saved for: an edit that
+  // moves the channel to another host has to send it again.
+  const sameHost = urlFields.every((field) =>
+    secretFields.includes(field) || urlOrigin(config[field]) === urlOrigin(previousConfig[field]));
+  for (const field of secretFields) {
     const provided = providedConfig[field];
     const hasProvidedValue = typeof provided === "string"
       ? provided.length > 0
       : provided && typeof provided === "object"
         ? Object.keys(provided).length > 0
         : Boolean(provided);
-    if (!hasProvidedValue && previousConfig[field]) config[field] = previousConfig[field];
+    if (!hasProvidedValue && previousConfig[field] && sameHost) config[field] = previousConfig[field];
   }
   validateConfig(type, config);
+  // The private-network option skips the public-address check on every send,
+  // so a caller that may not use internal hosts can't turn it on or move a
+  // channel that has it.
+  if (blocksPrivateNetwork && config.allowPrivateNetwork) {
+    const kept = previousConfig.allowPrivateNetwork === true
+      && urlFields.every((field) => config[field] === previousConfig[field]);
+    if (!kept) throw new Error(PRIVATE_NETWORK_NOT_ALLOWED);
+  }
 
   const events = body.events === undefined
     ? normalizeEvents(existing?.events || Object.values(NOTIFICATION_EVENTS))

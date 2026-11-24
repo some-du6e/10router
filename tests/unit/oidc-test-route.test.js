@@ -13,7 +13,8 @@ vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => (mocks.token
 vi.mock("@/lib/localDb", () => ({ getSettings: mocks.getSettings }));
 vi.mock("@/lib/db/helpers/metaStore.js", () => ({ getMeta: mocks.getMeta, setMeta: vi.fn() }));
 vi.mock("@/lib/auth/dashboardSession", () => ({ getDashboardAuthSession: mocks.getDashboardAuthSession }));
-vi.mock("@/lib/auth/oidc", () => ({
+vi.mock("@/lib/auth/oidc", async (orig) => ({
+  ...(await orig()),
   fetchOidcDiscovery: mocks.fetchOidcDiscovery,
   getPublicOrigin: () => "https://dash.example.test",
   probeOidcClientSecret: mocks.probeOidcClientSecret,

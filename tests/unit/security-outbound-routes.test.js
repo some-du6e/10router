@@ -369,6 +369,19 @@ describe("proxy pools", () => {
     expect(state.pools[0].proxyUrl).toBe("http://8.8.8.8:3128");
   });
 
+  it("checks a stored private URL when a remote session switches the pool back on", async () => {
+    state.pools = [{ id: "pool-1", name: "lan", type: "http", proxyUrl: "http://10.0.0.8:3128", isActive: false }];
+    const on = await pool.PUT(req({ isActive: true }), params("pool-1"));
+    expect(on.status).toBe(400);
+    expect(on.body).toEqual({ error: PRIVATE_URL_ERROR, field: "proxyUrl" });
+    expect(state.pools[0].isActive).toBe(false);
+    // Edits that leave it off pass; so does switching it on from this machine.
+    expect((await pool.PUT(req({ name: "lan2" }), params("pool-1"))).status).toBe(200);
+    state.local = true;
+    expect((await pool.PUT(req({ isActive: true }), params("pool-1"))).status).toBe(200);
+    expect(state.pools[0].isActive).toBe(true);
+  });
+
   it("keeps the type of a Deno relay on edit", async () => {
     state.pools = [{ id: "pool-1", name: "d", type: "deno", proxyUrl: "https://relay.example.deno.net/?relay_key=k" }];
     const res = await pool.PUT(req({ name: "d2", type: "deno" }), params("pool-1"));
@@ -405,6 +418,18 @@ describe("proxy pools", () => {
     expect(mocks.testProxyUrl).not.toHaveBeenCalled();
     state.local = true;
     expect((await proxyTestRoute.POST(req({ proxyUrl: "http://10.0.0.8:3128" }))).status).toBe(200);
+  });
+});
+
+describe("settings proxy test input", () => {
+  it("refuses a proxy or test URL that isn't a string", async () => {
+    const proxy = await proxyTestRoute.POST(req({ proxyUrl: ["http://10.0.0.5:3128"] }));
+    expect(proxy.status).toBe(400);
+    expect(proxy.body).toEqual({ ok: false, error: "proxyUrl must be a string", field: "proxyUrl" });
+    const page = await proxyTestRoute.POST(req({ proxyUrl: "http://8.8.8.8:3128", testUrl: ["http://10.0.0.6:8080/"] }));
+    expect(page.status).toBe(400);
+    expect(page.body.field).toBe("testUrl");
+    expect(mocks.testProxyUrl).not.toHaveBeenCalled();
   });
 });
 
@@ -458,7 +483,7 @@ describe("connection URLs saved through any field", () => {
   });
 
   it("a key on a LAN custom node can still be added from a remote session (the node's URL isn't the key's)", async () => {
-    const res = await providers.POST(req({ provider: NODE.id, apiKey: "sk-n", name: "n" }));
+    const res = await providers.POST(req({ provider: NODE.id, apiKey: "sk-n", name: "n", providerSpecificData: { baseUrl: NODE.baseUrl } }));
     expect(res.status).toBe(201);
     expect(state.created[0].providerSpecificData.baseUrl).toBe(NODE.baseUrl);
   });
@@ -470,6 +495,21 @@ describe("connection URLs saved through any field", () => {
     expect(changed.body).toEqual({ error: PRIVATE_URL_ERROR, field: "proxy" });
     const kept = await node.PUT(req({ name: "Local", prefix: "x", apiType: "chat", baseUrl: NODE.baseUrl, quirks: { overrides: { proxy: "http://10.0.0.5:8080" } } }), params(NODE.id));
     expect(kept.status).toBe(200);
+  });
+
+  it("refuses a URL sent as anything but a string, which the runtime would read as one", async () => {
+    state.connections = [
+      { id: "o1", provider: "openai", authType: "apikey", providerSpecificData: {} },
+      { id: "c1", provider: NODE.id, authType: "apikey", providerSpecificData: { baseUrl: NODE.baseUrl } },
+    ];
+    const proxy = await connection.PUT(req({ providerSpecificData: { connectionProxyEnabled: true, connectionProxyUrl: ["http://10.0.0.5:3128"] } }), params("o1"));
+    expect(proxy.status).toBe(400);
+    expect(proxy.body).toEqual({ error: "connectionProxyUrl must be a string", field: "connectionProxyUrl" });
+    const endpointProxy = await connection.PUT(req({ providerSpecificData: { overrides: { proxy: ["http://10.0.0.5:3128"] } } }), params("c1"));
+    expect(endpointProxy.status).toBe(400);
+    expect(endpointProxy.body).toEqual({ error: "proxy must be a string", field: "proxy" });
+    expect(state.connections[0].providerSpecificData).toEqual({});
+    expect(state.connections[1].providerSpecificData).toEqual({ baseUrl: NODE.baseUrl });
   });
 
   it("re-detect apply refuses a private per-endpoint proxy in the accepted quirks", async () => {

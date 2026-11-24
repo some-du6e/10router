@@ -221,6 +221,16 @@ describe("PATCH /api/settings outbound proxy", () => {
     expect((await PATCH(request({ outboundProxyEnabled: true }))).status).toBe(400);
   });
 
+  it("reads the switch and the URL the way the proxy does: any truthy switch, any URL value", async () => {
+    mocks.getSettings.mockResolvedValue({ outboundProxyEnabled: false, outboundProxyUrl: "http://10.0.0.8:3128" });
+    expect((await PATCH(request({ outboundProxyEnabled: 1 }))).status).toBe(400);
+    mocks.getSettings.mockResolvedValue({ outboundProxyEnabled: false, outboundProxyUrl: "" });
+    const array = await PATCH(request({ outboundProxyEnabled: true, outboundProxyUrl: ["http://10.0.0.5:3128"] }));
+    expect(array.status).toBe(400);
+    expect(array.body).toEqual({ error: "outboundProxyUrl must be a string", field: "outboundProxyUrl" });
+    expect(mocks.updateSettings).not.toHaveBeenCalled();
+  });
+
   it("lets a local session, or a signed-in one with ALLOW_PRIVATE_ENDPOINT_URLS, use a LAN proxy", async () => {
     caller.local = true;
     expect((await PATCH(request({ outboundProxyEnabled: true, outboundProxyUrl: "http://10.0.0.8:3128" }))).status).toBe(200);
@@ -232,5 +242,30 @@ describe("PATCH /api/settings outbound proxy", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe("PATCH /api/settings OIDC issuer", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    caller.local = true;
+    mocks.getSettings.mockResolvedValue({ oidcIssuerUrl: "https://idp.example.com", oidcClientId: "c", oidcClientSecret: "saved-secret" });
+    mocks.updateSettings.mockImplementation(async (body) => body);
+  });
+
+  it("needs the client secret again to point OIDC at another issuer", async () => {
+    for (const body of [{ oidcIssuerUrl: "https://other.example" }, { oidcIssuerUrl: "https://other.example", oidcClientSecret: "" }]) {
+      const res = await PATCH(request(body));
+      expect(res.status).toBe(400);
+      expect(res.body.field).toBe("oidcClientSecret");
+    }
+    expect(mocks.updateSettings).not.toHaveBeenCalled();
+    expect((await PATCH(request({ oidcIssuerUrl: "https://other.example", oidcClientSecret: "new-secret" }))).status).toBe(200);
+  });
+
+  it("keeps the saved secret for the same issuer, and lets the issuer be cleared", async () => {
+    expect((await PATCH(request({ oidcIssuerUrl: "https://idp.example.com/", oidcClientId: "c2" }))).status).toBe(200);
+    expect((await PATCH(request({ oidcIssuerUrl: "" }))).status).toBe(200);
+    expect(mocks.updateSettings).toHaveBeenCalledTimes(2);
   });
 });

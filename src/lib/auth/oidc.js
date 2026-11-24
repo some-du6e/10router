@@ -18,6 +18,11 @@ function trimTrailingSlashes(value) {
   return (value || "").trim().replace(/\/+$/, "");
 }
 
+// The saved client secret only ever goes to the saved issuer.
+export function sameOidcIssuer(a, b) {
+  return trimTrailingSlashes(String(a || "")) === trimTrailingSlashes(String(b || ""));
+}
+
 function normalizeScopes(value) {
   return (value || DEFAULT_SCOPES).trim() || DEFAULT_SCOPES;
 }

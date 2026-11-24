@@ -1,10 +1,8 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { getSettings } from "@/lib/localDb";
-import { fetchOidcDiscovery, getPublicOrigin, probeOidcClientSecret } from "@/lib/auth/oidc";
+import { fetchOidcDiscovery, getPublicOrigin, probeOidcClientSecret, sameOidcIssuer } from "@/lib/auth/oidc";
 import { dashboardSessionAllowed } from "@/lib/auth/dashboardAccess.js";
-
-const normalizeIssuer = (value) => String(value || "").trim().replace(/\/+$/, "");
 
 export async function POST(request) {
   try {
@@ -22,7 +20,7 @@ export async function POST(request) {
     const secretInBody = Object.prototype.hasOwnProperty.call(body, "clientSecret");
     // The stored secret only ever goes to the stored issuer's token endpoint: a
     // test against another issuer has to bring its own secret.
-    const sameIssuer = !!issuerUrl && normalizeIssuer(issuerUrl) === normalizeIssuer(settings.oidcIssuerUrl);
+    const sameIssuer = !!issuerUrl && sameOidcIssuer(issuerUrl, settings.oidcIssuerUrl);
     if (!secretInBody && !sameIssuer && settings.oidcClientSecret) {
       return NextResponse.json(
         { error: "Enter the client secret to test a different issuer; the saved one is only sent to the saved issuer." },

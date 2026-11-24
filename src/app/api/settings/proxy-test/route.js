@@ -5,6 +5,12 @@ import { privateUrlRejected, proxyUrlProblem } from "@/lib/network/privateUrls.j
 export async function POST(request) {
   try {
     const body = await request.json();
+    for (const field of ["proxyUrl", "testUrl"]) {
+      const value = body?.[field];
+      if (value !== undefined && value !== null && typeof value !== "string") {
+        return NextResponse.json({ ok: false, error: `${field} must be a string`, field }, { status: 400 });
+      }
+    }
     // The proxy and the page fetched through it get the same rule as a saved
     // proxy: a remote session can't aim either at a private host.
     if (typeof body?.proxyUrl === "string" && body.proxyUrl.trim()) {

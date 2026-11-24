@@ -10,7 +10,7 @@ import { detectQuotaTransitions, getQuotaRemainingPercentage } from "../../src/l
 import { dispatchNotificationEvent, sendNotificationChannel } from "../../src/lib/notifications/index.js";
 import { createPinnedLookup, notificationFetch } from "../../src/lib/notifications/http.js";
 import { NOTIFICATION_EVENTS } from "../../src/lib/notifications/constants.js";
-import { normalizeNotificationChannelInput, redactNotificationChannel } from "../../src/lib/notifications/validation.js";
+import { normalizeNotificationChannelInput, PRIVATE_NETWORK_NOT_ALLOWED, redactNotificationChannel } from "../../src/lib/notifications/validation.js";
 import { buildSlackPayload, normalizeSlackLayout } from "../../src/lib/notifications/slackLayout.js";
 
 describe("quota notification transitions", () => {
@@ -96,6 +96,36 @@ describe("notification channels", () => {
       config: { url: "https://example.com/hook" },
       configuredSecrets: { headers: true },
     });
+  });
+
+  it("keeps stored secrets only while the channel stays on the host they were saved for", () => {
+    const existing = {
+      name: "Deploy webhook",
+      type: "webhook",
+      isActive: true,
+      events: [NOTIFICATION_EVENTS.QUOTA_RESET],
+      config: { url: "https://hooks.example.com/a", bearerToken: "saved-token", headers: { "X-Webhook-Secret": "v" } },
+    };
+    const samePlace = normalizeNotificationChannelInput({ type: "webhook", config: { url: "https://hooks.example.com/b" } }, existing);
+    expect(samePlace.config).toMatchObject({ bearerToken: "saved-token", headers: { "X-Webhook-Secret": "v" } });
+    const moved = normalizeNotificationChannelInput({ type: "webhook", config: { url: "https://elsewhere.example/hook" } }, existing);
+    expect(moved.config).toMatchObject({ url: "https://elsewhere.example/hook", bearerToken: "", headers: {} });
+
+    const ntfy = { name: "ntfy", type: "ntfy", isActive: true, events: [NOTIFICATION_EVENTS.QUOTA_RESET], config: { serverUrl: "https://ntfy.sh/", topic: "t", token: "tk" } };
+    expect(normalizeNotificationChannelInput({ type: "ntfy", config: { topic: "t2" } }, ntfy).config.token).toBe("tk");
+    expect(normalizeNotificationChannelInput({ type: "ntfy", config: { serverUrl: "https://ntfy.example", topic: "t" } }, ntfy).config.token).toBe("");
+  });
+
+  it("a caller that may not use internal hosts can't turn on private network delivery or move a channel that has it", () => {
+    const body = { name: "LAN ntfy", type: "ntfy", config: { serverUrl: "http://10.0.0.4", topic: "t", allowPrivateNetwork: true } };
+    expect(() => normalizeNotificationChannelInput(body, null, { blocksPrivateNetwork: true })).toThrow(PRIVATE_NETWORK_NOT_ALLOWED);
+    const saved = normalizeNotificationChannelInput(body);
+    expect(saved.config.allowPrivateNetwork).toBe(true);
+    // Already on for this host: other edits pass; another host doesn't.
+    expect(normalizeNotificationChannelInput({ ...body, name: "renamed" }, saved, { blocksPrivateNetwork: true }).name).toBe("renamed");
+    const moved = { ...body, config: { ...body.config, serverUrl: "http://10.0.0.5" } };
+    expect(() => normalizeNotificationChannelInput(moved, saved, { blocksPrivateNetwork: true })).toThrow(PRIVATE_NETWORK_NOT_ALLOWED);
+    expect(normalizeNotificationChannelInput({ ...body, config: { ...body.config, allowPrivateNetwork: false } }, saved, { blocksPrivateNetwork: true }).config.allowPrivateNetwork).toBe(false);
   });
 
   it("sends a Slack payload without following redirects", async () => {

@@ -141,7 +141,7 @@ export async function resolveKimchiModels(credentials, options = {}) {
   const token = readToken(credentials);
   if (!token) return null;
 
-  const endpoint = credentials?.providerSpecificData?.kimchiEndpoint || options.endpoint || KIMCHI_API;
+  const endpoint = options.endpoint || KIMCHI_API;
   const key = cacheKey(credentials, endpoint);
   const now = Date.now();
   if (!options.forceRefresh) {
