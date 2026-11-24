@@ -82,14 +82,22 @@ export function backupDbLite(adapter, destDir, destName = "data.sqlite") {
       .all(`SELECT name, sql FROM main.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`)
       .filter((t) => !excluded.has(t.name));
 
-    adapter.transaction(() => {
+    // A deferred transaction, not adapter.transaction's IMMEDIATE one: the copy
+    // only reads main, so main gets a read lock and another process sharing
+    // the file (the Go gateway) can still write while a large copy runs.
+    adapter.exec("BEGIN");
+    try {
       for (const t of tables) {
         // Recreate table structure in backup DB, then copy rows.
         const createSql = t.sql.replace(/CREATE TABLE\s+/i, "CREATE TABLE bak.");
         adapter.exec(createSql);
         adapter.exec(`INSERT INTO bak.${t.name} SELECT * FROM main.${t.name}`);
       }
-    });
+      adapter.exec("COMMIT");
+    } catch (error) {
+      try { adapter.exec("ROLLBACK"); } catch {}
+      throw error;
+    }
   } finally {
     try { adapter.exec("DETACH DATABASE bak"); } catch {}
   }

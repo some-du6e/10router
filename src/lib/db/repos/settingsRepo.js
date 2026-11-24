@@ -1,6 +1,7 @@
 import { stripRetiredSettings } from "../helpers/retiredSettings.js";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { bumpConfigGenerationSync } from "../helpers/configGeneration.js";
 
 // getSettings() is called several times per routed request (chat handler,
 // auth account selection, limit-hold config), each of which hit the DB,
@@ -142,6 +143,7 @@ export async function updateSettings(updates) {
       `INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
       [stringifyJson(next)],
     );
+    bumpConfigGenerationSync(db);
   });
   invalidateSettingsCache();
   return mergeWithDefaults(next);

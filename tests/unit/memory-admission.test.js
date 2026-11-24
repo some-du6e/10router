@@ -12,8 +12,12 @@ import {
   resolveHighWater,
   heapFitWarning,
   idleWhile,
+  heapAfterLastFullCollection,
+  onFullCollection,
 } from "@/sse/services/memoryAdmission.js";
 import { FORMATS } from "open-sse/translator/formats.js";
+import v8 from "node:v8";
+import vm from "node:vm";
 
 const MB = 1024 * 1024;
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -32,6 +36,8 @@ function gate(overrides = {}) {
     rss: () => 0,
     heapHighWaterPct: 0,
     heapStats: () => ({ used_heap_size: 0, heap_size_limit: 0 }),
+    // No full collection known: the heap check reads used_heap_size.
+    heapAfterGc: () => null,
     logger: quietLog(),
     ...overrides,
   });
@@ -270,6 +276,74 @@ describe("heap backstop", () => {
     // 700 + 3 × 60 > 850, though the heap alone is under it.
     expect((await g.acquire({ bodyLength: 60 * MB })).refused).toBe("heap");
     expect((await g.acquire({ bodyLength: 40 * MB })).ticket).toBeTruthy();
+  });
+
+  // Production, 2026-11-24: refusals at "heap 885MB" that one collection took
+  // to 126 MB. Under load used_heap_size is mostly garbage V8 hasn't collected.
+  it("measures what survived the last full collection, not garbage waiting for one", async () => {
+    const heap = { used: 900 * MB, live: 200 * MB };
+    const g = heapGate(heap, { heapAfterGc: () => heap.live, maxWaitMs: 20 });
+    await g.acquire({ bodyLength: 1 * MB });
+    // 900 used is over the 850 mark, but only 200 survived a collection.
+    expect((await g.acquire({ bodyLength: 1 * MB })).ticket).toBeTruthy();
+    // When what survives a collection nears the mark, it refuses.
+    heap.live = 860 * MB;
+    expect(await g.acquire({ bodyLength: 1 * MB })).toEqual({ refused: "heap", retryAfterSec: 7 });
+  });
+
+  it("reads the heap used, garbage included, when no full collection ran recently", async () => {
+    const g = heapGate({ used: 900 * MB }, { heapAfterGc: () => null, maxWaitMs: 20 });
+    await g.acquire({ bodyLength: 1 * MB });
+    expect((await g.acquire({ bodyLength: 1 * MB })).refused).toBe("heap");
+  });
+
+  it("refuses past the hard stop on the heap used, whatever the last collection left", async () => {
+    // 97% of 1000 MB: a heap filling faster than V8 collects.
+    const heap = { used: 980 * MB };
+    const g = heapGate(heap, { heapAfterGc: () => 100 * MB, heapHardStopPct: 97, maxWaitMs: 20 });
+    await g.acquire({ bodyLength: 1 * MB });
+    expect((await g.acquire({ bodyLength: 1 * MB })).refused).toBe("heap");
+    heap.used = 960 * MB;
+    expect((await g.acquire({ bodyLength: 1 * MB })).ticket).toBeTruthy();
+  });
+
+  it("lets waiters in when a full collection runs, without waiting for the recheck", async () => {
+    const heap = { used: 900 * MB, live: 900 * MB };
+    let onCollection = null;
+    const g = heapGate(heap, {
+      heapAfterGc: () => heap.live,
+      recheckMs: 60 * 1000,
+      subscribeFullCollections: (listener) => { onCollection = listener; },
+    });
+    await g.acquire({ bodyLength: 1 * MB });
+    const waiting = g.acquire({ bodyLength: 1 * MB });
+    await tick();
+    expect(g.stats().waiting).toBe(1);
+    heap.live = 150 * MB;
+    onCollection();
+    expect(g.stats().waiting).toBe(0);
+    expect((await waiting).ticket).toBeTruthy();
+  });
+
+  it("logs the heap that survived the last collection next to the heap used", async () => {
+    const logger = quietLog();
+    const g = heapGate({ used: 900 * MB }, { heapAfterGc: () => 870 * MB, maxWaitMs: 20, logger });
+    await g.acquire({ bodyLength: 1 * MB });
+    await g.acquire({ bodyLength: 1 * MB });
+    expect(logger.warn.mock.calls[0][1]).toMatch(/heap 870MB live \(900MB used\) \+ 2MB coming \(high water 850MB of 1000MB\)/);
+  });
+
+  it("learns what a real full collection left in the heap", async () => {
+    v8.setFlagsFromString("--expose-gc");
+    const runGc = vm.runInNewContext("gc");
+    const seen = new Promise((resolve) => { const stop = onFullCollection(() => { stop(); resolve(); }); });
+    runGc();
+    await seen;
+    const live = heapAfterLastFullCollection(60 * 1000);
+    expect(live).toBeGreaterThan(0);
+    expect(live).toBeLessThanOrEqual(v8.getHeapStatistics().heap_size_limit);
+    // Too old to trust: unknown.
+    expect(heapAfterLastFullCollection(-1)).toBeNull();
   });
 
   it("keeps a request answered early counted until its routing settles (pendUntil)", async () => {

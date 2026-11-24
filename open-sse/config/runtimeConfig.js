@@ -162,7 +162,17 @@ export const MEMORY_ADMISSION = {
   // of the new one) may reach; over it, new requests wait. The resident-memory
   // high water counts those bodies the same way, pendingRssCopies times.
   // Env: MEMORY_HEAP_HIGH_WATER_PCT (0 turns the check off).
+  // "In use" is what survived the last full (mark-compact) collection, while
+  // one ran in the last liveHeapMaxAgeMs: until V8 collects, used_heap_size
+  // is mostly garbage under load (875 MB that a collection took to 126 MB),
+  // and V8 runs out only when what survives a collection nears the limit.
   heapHighWaterPct: envInt("MEMORY_HEAP_HIGH_WATER_PCT", 85, { max: 100 }),
+  liveHeapMaxAgeMs: envInt("MEMORY_LIVE_HEAP_MAX_AGE_MS", 60 * 1000),
+  // Percent of the heap limit that used_heap_size, garbage included, plus the
+  // bodies coming may reach whatever the last collection left. A last guard
+  // only: V8 collects before the old generation fills, so in practice what
+  // the last collection left is what trips the gate. Env: MEMORY_HEAP_HARD_STOP_PCT.
+  heapHardStopPct: envInt("MEMORY_HEAP_HARD_STOP_PCT", 97, { max: 100 }),
   // A heap limit over this fraction of the container's memory gets a warning
   // on the first chat request: resident memory follows the heap's peak plus
   // what lives outside it, and the kernel kills the process at the
