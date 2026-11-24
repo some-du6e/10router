@@ -19,6 +19,8 @@ on:
       - "src/app/api/settings/**"
       - "src/app/api/usage/**"
       - "src/app/api/v1/models/**"
+      - "src/app/api/translator/send/**"
+      - "open-sse/executors/**"
       - "src/app/(dashboard)/dashboard/proxy-pools/**"
       - "src/app/(dashboard)/dashboard/providers/**"
       - "tests/unit/proxy-routing*.test.js"
@@ -47,6 +49,8 @@ jobs:
           unit/proxy-routing.test.js
           unit/proxy-routing-wiring.test.js
           unit/proxy-routing-auth.test.js
+          unit/proxy-routing-chat-block.test.js
+          unit/perplexity-web.test.js
           unit/background-token-refresh.test.js
           unit/oauth-probe-refresh-persistence.test.js
           unit/soonest-reset.test.js
