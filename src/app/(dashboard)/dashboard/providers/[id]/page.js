@@ -1022,12 +1022,13 @@ export default function ProviderDetailPage() {
                     const res = await fetch(`/api/providers/${conn.id}`, {
                       method: "PUT",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ proxyPoolId: proxyPoolId || null }),
+                      // A menu pick replaces a legacy per-account proxy URL.
+                      body: JSON.stringify({ proxyPoolId: proxyPoolId || null, connectionProxyEnabled: false, connectionProxyUrl: "" }),
                     });
                     if (res.ok) {
                       setConnections(prev => prev.map(c =>
                         c.id === conn.id
-                          ? { ...c, providerSpecificData: { ...c.providerSpecificData, proxyPoolId: proxyPoolId || null } }
+                          ? { ...c, providerSpecificData: { ...c.providerSpecificData, proxyPoolId: proxyPoolId || null, connectionProxyEnabled: false, connectionProxyUrl: "" } }
                           : c
                       ));
                     }

@@ -232,7 +232,9 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
 
   const saveProvider = (pid: string, value: string) => save(async () => {
     const res = await fetch("/api/settings", { cache: "no-store" });
-    const current = ((res.ok ? await res.json() : {}) as Settings).providerStrategies || {};
+    // The PATCH replaces the whole map, so saving on a failed read would drop every other provider's entry.
+    if (!res.ok) return res;
+    const current = ((await res.json()) as Settings).providerStrategies || {};
     const override = { ...(current[pid] || {}) };
     if (value === INHERIT) delete override.proxyPoolId;
     else override.proxyPoolId = value;

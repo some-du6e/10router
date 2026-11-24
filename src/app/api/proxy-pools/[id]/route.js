@@ -6,6 +6,7 @@ import {
   updateProxyPool,
 } from "@/models";
 import { getSettings } from "@/lib/db/index.js";
+import { normalizeLayerSetting } from "@/lib/network/proxyRouting.js";
 
 function normalizeProxyPoolUpdate(body = {}) {
   const updates = {};
@@ -118,9 +119,9 @@ export async function DELETE(request, { params }) {
     // Deleting a pool a provider or Global still uses would block those requests.
     const settings = await getSettings();
     const boundLayers = [
-      ...(settings.globalProxyPoolId === id ? ["Global"] : []),
+      ...(normalizeLayerSetting(settings.globalProxyPoolId) === id ? ["Global"] : []),
       ...Object.entries(settings.providerStrategies || {})
-        .filter(([, strategy]) => strategy?.proxyPoolId === id)
+        .filter(([, strategy]) => normalizeLayerSetting(strategy?.proxyPoolId) === id)
         .map(([providerId]) => providerId),
     ];
     if (boundLayers.length > 0) {

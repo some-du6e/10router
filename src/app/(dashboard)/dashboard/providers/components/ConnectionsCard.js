@@ -166,7 +166,8 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
       </div>
       <div className="flex w-full flex-wrap items-center justify-between gap-2 sm:w-auto sm:justify-end">
         <div className="flex flex-wrap gap-1">
-          {(proxyPools || []).length > 0 && (
+          {/* Shown with no pools too: Inherit and Direct still apply. */}
+          {(
             <div className="relative" ref={proxyDropdownRef}>
               <button
                 onClick={() => setShowProxyDropdown((v) => !v)}
@@ -422,8 +423,8 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
 
   const handleUpdateProxy = async (connId, proxyPoolId) => {
     try {
-      const res = await fetch(`/api/providers/${connId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ proxyPoolId: proxyPoolId || null }) });
-      if (res.ok) setConnections((prev) => prev.map((c) => c.id === connId ? { ...c, providerSpecificData: { ...c.providerSpecificData, proxyPoolId: proxyPoolId || null } } : c));
+      const res = await fetch(`/api/providers/${connId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ proxyPoolId: proxyPoolId || null, connectionProxyEnabled: false, connectionProxyUrl: "" }) });
+      if (res.ok) setConnections((prev) => prev.map((c) => c.id === connId ? { ...c, providerSpecificData: { ...c.providerSpecificData, proxyPoolId: proxyPoolId || null, connectionProxyEnabled: false, connectionProxyUrl: "" } } : c));
     } catch (e) { console.log("proxy error:", e); }
   };
 

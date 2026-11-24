@@ -50,7 +50,7 @@ async function usageForConnection(connection) {
   const isExpired = expiresAt ? new Date(expiresAt).getTime() <= Date.now() + 60_000 : false;
 
   if (isExpired && connection.refreshToken) {
-    const refreshed = await refreshCodexToken(connection.refreshToken).catch(() => null);
+    const refreshed = await refreshCodexToken(connection.refreshToken, proxyOptions).catch(() => null);
     if (refreshed?.accessToken) {
       accessToken = refreshed.accessToken;
       await updateProviderCredentials(connection.id, refreshed).catch(() => {});

@@ -44,8 +44,8 @@ export const refreshClaudeOAuthToken = (refreshToken) =>
 export const refreshGoogleToken = (refreshToken, clientId, clientSecret) =>
   _refreshGoogleToken(refreshToken, clientId, clientSecret, log);
 
-export const refreshCodexToken = (refreshToken) =>
-  _refreshCodexToken(refreshToken, log);
+export const refreshCodexToken = (refreshToken, proxyOptions = null) =>
+  _refreshCodexToken(refreshToken, log, proxyOptions);
 
 export const refreshIflowToken = (refreshToken) =>
   _refreshIflowToken(refreshToken, log);

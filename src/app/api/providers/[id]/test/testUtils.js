@@ -1,6 +1,7 @@
 import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
 import { updateProviderCredentials } from "@/sse/services/credentialSave.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
+import { toProxyOptions } from "@/lib/network/proxyRouting.js";
 import { testProxyUrl } from "@/lib/network/proxyTest";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { getDefaultModel } from "open-sse/config/providerModels.js";
@@ -513,30 +514,14 @@ async function fetchWithConnectionProxy(url, options = {}, effectiveProxy = null
     options.signal = AbortSignal.timeout(15000);
   }
 
-  // Vercel relay: forward via relay URL
-  if (effectiveProxy?.vercelRelayUrl) {
-    const { proxyAwareFetch } = await import("open-sse/utils/proxyFetch.js");
-    return proxyAwareFetch(url, options, {
-      vercelRelayUrl: effectiveProxy.vercelRelayUrl,
-    });
-  }
-
-  // Direct skips the system proxy too, the way real requests do.
-  if (effectiveProxy?.direct) {
-    const { proxyAwareFetch } = await import("open-sse/utils/proxyFetch.js");
-    return proxyAwareFetch(url, options, { direct: true });
-  }
-
-  if (!effectiveProxy?.connectionProxyEnabled || !effectiveProxy?.connectionProxyUrl) {
+  // No account route at all: plain fetch (system proxy). Otherwise the account's
+  // whole route, strictness and Direct included, the way real requests take it.
+  const route = toProxyOptions(effectiveProxy);
+  if (!route.vercelRelayUrl && !route.direct && !(route.connectionProxyEnabled && route.connectionProxyUrl)) {
     return fetch(url, options);
   }
-
   const { proxyAwareFetch } = await import("open-sse/utils/proxyFetch.js");
-  return proxyAwareFetch(url, options, {
-    connectionProxyEnabled: true,
-    connectionProxyUrl: effectiveProxy.connectionProxyUrl,
-    connectionNoProxy: effectiveProxy.connectionNoProxy || "",
-  });
+  return proxyAwareFetch(url, options, route);
 }
 
 async function testApiKeyConnection(connection, effectiveProxy = null) {
