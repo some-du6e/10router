@@ -109,12 +109,12 @@ http.createServer((req, res) => {
     const model = String(body.model || "");
     const stream = body.stream === true;
     const started = Date.now();
-    let finished = false;
     log({ id, event: "request", path: req.url, model, stream });
     res.on("close", () => {
-      if (!finished) log({ id, event: "closed-by-client", model, afterS: ((Date.now() - started) / 1000).toFixed(1) });
+      // Not yet ended (a drip stream is answered long before it ends).
+      if (!res.writableEnded) log({ id, event: "closed-by-client", model, afterS: ((Date.now() - started) / 1000).toFixed(1) });
     });
-    const answer = (fn) => { if (res.destroyed) return; finished = true; fn(); log({ id, event: "answered", model, stream, afterS: ((Date.now() - started) / 1000).toFixed(1), status: res.statusCode }); };
+    const answer = (fn) => { if (res.destroyed) return; fn(); log({ id, event: "answered", model, stream, afterS: ((Date.now() - started) / 1000).toFixed(1), status: res.statusCode }); };
     const reply = () => (stream ? streamReply(res, model) : jsonReply(res, model));
     const after = (ms, fn) => {
       const t = setTimeout(() => answer(fn), ms);

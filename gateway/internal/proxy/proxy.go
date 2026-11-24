@@ -190,6 +190,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Upgrade") != "" {
 		w = upgradeWriter{w}
 	}
+	// A nil Content-Type stops net/http sniffing one for a reply Node sent
+	// without it; the upstream's own value is added to it as usual.
+	w.Header()["Content-Type"] = nil
 	if p.requestTimeout > 0 && hasBody(r) {
 		timedOut := &atomic.Bool{}
 		rc := http.NewResponseController(w)
@@ -291,10 +294,17 @@ func (p *Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) 
 		return
 	}
 	if r.Context().Err() != nil {
-		// The client left; the upstream request was cancelled with it.
-		return
+		// The client left, or the drain closed a long-lived stream. Drop the
+		// connection, as Node's destroyed socket would; returning would send
+		// an empty 200.
+		panic(http.ErrAbortHandler)
 	}
-	p.logger.Printf("[Gateway] proxy error: %s %s: %v", r.Method, r.URL.Path, err)
+	// %q and a cap: the path is the client's, and this goes to the log.
+	path := r.URL.Path
+	if len(path) > 200 {
+		path = path[:200] + "..."
+	}
+	p.logger.Printf("[Gateway] proxy error: %s %q: %v", r.Method, path, err)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Length", strconv.Itoa(len(upstreamErrorBody)))
 	w.Header().Set("Retry-After", "1")

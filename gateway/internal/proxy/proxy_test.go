@@ -362,6 +362,25 @@ func TestAcceptEncodingIsTheClients(t *testing.T) {
 	}
 }
 
+func TestNoContentTypeSniffing(t *testing.T) {
+	s := newStack(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Raw, so the upstream's own server doesn't sniff one either.
+		conn, rw, _ := http.NewResponseController(w).Hijack()
+		defer conn.Close()
+		_, _ = rw.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n<html>hi</html>")
+		_ = rw.Flush()
+	}), Options{})
+	res, err := http.Get(s.front.URL + "/api/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if ct, ok := res.Header["Content-Type"]; ok || string(body) != "<html>hi</html>" {
+		t.Fatalf("Content-Type %q (want none), body %q", ct, body)
+	}
+}
+
 func TestH2CUpgradeServedAsHTTP1(t *testing.T) {
 	seen := make(chan http.Header, 1)
 	s := newStack(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

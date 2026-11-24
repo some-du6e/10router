@@ -42,9 +42,11 @@ client ──► :20128  10router-gateway  (PID 1, Go)
 | `KEEP_ALIVE_TIMEOUT` | `5000` | The public idle keep-alive timeout, read the way Next's standalone `server.js` reads it: `parseInt`, and anything not positive leaves the default. |
 | `SHUTDOWN_DRAIN_TIMEOUT_MS` | `180000` | Parsed exactly like `server-drain.js` does. Both processes read it. |
 | `TRUST_PROXY` | unset | Read by the client-IP rule, the same value Node reads. |
-| `GATEWAY_PEER_TOKEN` | random | At least 32 characters, or the gateway refuses to start. Set it only to run the gateway with no command, in front of a Node you started yourself with the same value. |
+| `GATEWAY_PEER_TOKEN` | random | Leave it unset; the gateway makes one per boot and gives it to Node. A value under 32 characters stops the gateway from starting. |
 
 The request-body timeout (300 s), headers timeout (60 s) and header size cap (16 KiB) are Node's defaults, which nothing in this repo changes, so they are constants rather than settings.
+
+The binary always starts Node itself (`10router-gateway -- node custom-server.js`) and refuses to run without a command. Relaying to a Node started some other way can't prove that both sides hold the token, and a Node without it would take every relayed client for a local one.
 
 Phase 2 adds `GATEWAY_NATIVE_ROUTES` (for example `POST /v1/messages`) and `GATEWAY_NATIVE_PROVIDERS` (provider node ids or prefixes such as `openai-compatible-chat-*`). Both are allowlists: a request is native only if its route and every provider it could reach are listed. Everything else is proxied.
 
@@ -63,7 +65,8 @@ It may hand a request to Node until the first response byte has gone to the clie
 - **No buffering.** Request bodies stream to Node as they arrive, and `FlushInterval: -1` flushes every chunk Node writes. One SSE event goes out as one flush. A test holds back the second megabyte of a 4 MB body until the upstream reports it has the first, so a proxy that buffered would deadlock there.
 - **Headers pass through.** That covers `Authorization`, `x-api-key`, `anthropic-beta` and everything else. `Host` is the client's, because Node's origin checks, tunnel detection and local-client rule read it. `ReverseProxy` drops `Forwarded`, `X-Forwarded-For`, `-Host` and `-Proto` before `Rewrite`, and any header a client names in `Connection`. The gateway puts every header in custom-server.js's `FORWARDING_HEADERS` back as the client sent it and adds none of its own, since Node's rule decides whose forwarding headers count. Node never honoured `Connection` tokens, so a client can't use them to strip a front proxy's `X-Real-IP`.
 - **The query string is the client's, byte for byte.** `ReverseProxy` re-encodes a query that has a `;` or a bad `%` escape, which drops those parameters and sorts the rest. The gateway restores the original.
-- **Header size.** Node's default cap is 16 KiB, so the gateway's is too, instead of Go's 1 MiB.
+- **Header size.** Node's default cap is 16 KiB, request line included, so the gateway's is too, instead of Go's 1 MiB. `net/http` adds 4 KiB of slack to `MaxHeaderBytes`, so the setting is 12 KiB. Node behind the gateway gets `--max-http-header-size=20480` (appended to `NODE_OPTIONS`), room for a full 16 KiB plus the peer headers, so the gateway is the one that answers `431`.
+- **No content sniffing.** Go's server would guess a `Content-Type` for a reply Node sent without one. The gateway turns that off, so the header is Node's or absent.
 - **Hop-by-hop headers stop at the gateway in both directions.** These are `Connection` and the headers it lists, `Keep-Alive`, `Proxy-Connection`, `TE` (except `trailers`), `Transfer-Encoding` and `Upgrade`. `Expect: 100-continue` is answered by the gateway and not sent on.
 - **No transparent gzip.** The loopback transport has `DisableCompression`, so the client's own `Accept-Encoding` reaches Node untouched. Node compresses or doesn't, as before. The transport also ignores `HTTP_PROXY`, which 10router users set for upstream calls.
 - **Timeouts are never shorter than Node's.** The gateway sets no write timeout and no response-header timeout, so streams can run 10 minutes and more. Node sends early SSE headers after 30 s and owns the 240 s upstream headers limit. The request-body bound runs as a read deadline that lifts as soon as the body has been read, so it never cuts a response. A body that misses it gets Node's bare `408` and the upstream request is cancelled.
@@ -84,7 +87,7 @@ Behind the gateway, Node's TCP peer is always the gateway on loopback. Without h
 
 - On every request it deletes any client copy of `x-9r-gw-token`, `x-9r-gw-peer-ip` and `x-9r-gw-peer-port`. It then sets them to its token and the address and port of the connection it accepted. An IPv4 client of an IPv6 listener is written `::ffff:a.b.c.d`, the spelling Node's socket would report.
 - custom-server.js removes the three headers from every request. When `GATEWAY_PEER_TOKEN` is set, the socket is loopback, the token matches (constant-time compare) and the IP parses, it uses the handed peer in place of `req.socket.remoteAddress` for everything: `isOnThisMachine`, `clientKeysFor`, `isTunnelTraffic`, the `x-9r-socket-ip` and `-port` stamps, and the Codex WebSocket bridge's peer. The token leaves `process.env` at boot so Node's children don't inherit it. With `GATEWAY_MODE=off` the variable is unset and none of this code runs.
-- It fails closed. A loopback request that carries any of the headers but can't prove them (wrong token, no token, a peer that isn't an address) gets the peer `unknown`, which is never this machine. Falling back to the socket would make it local, since behind the gateway the socket is always loopback. For the same reason the gateway refuses to start with a token shorter than 32 characters, or with no token when it relays to a Node it didn't start.
+- It fails closed. A loopback request that carries any of the headers but can't prove them (wrong token, no token, a peer that isn't an address) gets the peer `unknown`, which is never this machine. Falling back to the socket would make it local, since behind the gateway the socket is always loopback. For the same reason the gateway refuses to start with a token shorter than 32 characters, or without a Node command of its own.
 - A request that reaches Node's loopback port directly, from inside the container, carries none of the headers and is treated as it is today: a loopback client. That covers the Codex bridge's own POST and Node's self-calls.
 
 The rule itself runs unchanged in Node. `gateway/internal/clientip` is a Go port of it (`isLoopbackHost`, `isOnThisMachine`, `clientKeysFor`, `isTrustedProxyPeer`, `isTunnelTraffic`), down to JavaScript quirks such as `Number("")` being 0 in a `TRUST_PROXY` prefix. In phase 1 it only decides who sees the health endpoint's counters. Phase 2's native routes use it. Both implementations are held to one table, `gateway/internal/clientip/testdata/parity.json`. `go test` reads it, and so does `tests/unit/gateway-clientip-parity.test.js` against custom-server.js. A rule change in one place fails the other until the table and both ports agree.
@@ -93,7 +96,7 @@ The rule itself runs unchanged in Node. `gateway/internal/clientip` is a Go port
 
 The gateway follows `server-drain.js`, and Node runs its own drain alongside.
 
-1. On the first `SIGTERM` or `SIGINT`, the gateway logs `[Gateway] SIGTERM: draining N in-flight request(s)...`, marks itself draining and forwards the signal to Node.
+1. On the first `SIGTERM` or `SIGINT`, the gateway logs `[Gateway] SIGTERM: draining N in-flight request(s)...` and marks itself draining. It passes the signal on to Node 250 ms later, so a request it admitted just before has reached Node by the time Node closes its listener and idle connections.
 2. `http.Server.Shutdown` closes the listener, so new connections are refused. It also closes each keep-alive connection as it goes idle.
 3. A request that still arrives on an open connection gets the same `503` JSON body (`server_draining`), `Retry-After: 5` and `Connection: close`. An upgrade gets the bare `503`.
 4. The never-ending dashboard streams (`/api/usage/stream`, the console-log stream, MCP SSE) close at once.
@@ -102,6 +105,7 @@ The gateway follows `server-drain.js`, and Node runs its own drain alongside.
 7. A repeat signal within 1.5 s is the same stop arriving twice: a process-group kill reaches both processes. The gateway ignores it, and so does Node. A later repeat forwards the signal, gives Node 2 s and exits 1.
 8. The gateway's deadline is the drain timeout plus 3 s. Node's own timeout fires first, then its listeners get their 2 s. After that the gateway kills Node and exits 1.
 9. `SHUTDOWN_DRAIN_TIMEOUT_MS=0` stops both at once, as before.
+10. `SIGHUP` and `SIGQUIT` are ignored. As PID 1, Node ignored them too, because the kernel drops a default-action signal to a namespace's init. Go's runtime would otherwise exit on them with no drain.
 
 Docker's `stop_grace_period` must still exceed the drain timeout. The compose file's 3m30s does.
 

@@ -708,7 +708,7 @@ delete process.env.GATEWAY_PEER_TOKEN;
 const GATEWAY_ON = GATEWAY_TOKEN_TEXT !== "";
 const GATEWAY_TOKEN = GATEWAY_TOKEN_TEXT.length >= 32 ? Buffer.from(GATEWAY_TOKEN_TEXT) : null;
 if (GATEWAY_ON && !GATEWAY_TOKEN) {
-  console.warn("[Gateway] GATEWAY_PEER_TOKEN is shorter than 32 characters; the gateway's peer headers are ignored");
+  console.warn("[Gateway] GATEWAY_PEER_TOKEN is shorter than 32 characters; every request relayed with peer headers gets the peer \"unknown\"");
 }
 const GATEWAY_HEADERS = ["x-9r-gw-token", "x-9r-gw-peer-ip", "x-9r-gw-peer-port"];
 
@@ -911,7 +911,12 @@ if (require.main === module) {
     // Repo checkout has no standalone build next to us. `next start` builds its HTTP
     // server in-process, so the wrapper above still sanitizes every request.
     const nextBin = require.resolve("next/dist/bin/next");
-    process.argv = [process.argv[0], nextBin, "start", ...process.argv.slice(2)];
+    // `next start` reads HOSTNAME and KEEP_ALIVE_TIMEOUT only as flags; behind
+    // the gateway it must stay on loopback with the keep-alive it was given.
+    const gatewayArgs = GATEWAY_ON
+      ? ["--hostname", process.env.HOSTNAME || "127.0.0.1", "--keepAliveTimeout", process.env.KEEP_ALIVE_TIMEOUT || "30000"]
+      : [];
+    process.argv = [process.argv[0], nextBin, "start", ...gatewayArgs, ...process.argv.slice(2)];
     require(nextBin);
   }
 }

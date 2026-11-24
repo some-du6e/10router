@@ -7,8 +7,7 @@
 // starts the command with PORT=GATEWAY_APP_PORT and HOSTNAME=127.0.0.1, and
 // relays every request to it. GATEWAY_MODE=off (the default) replaces itself
 // with the command, so the app server runs exactly as it would without the
-// gateway. With no command, proxy mode relays to an app server already
-// listening on GATEWAY_APP_PORT.
+// gateway.
 package main
 
 import (
@@ -47,9 +46,19 @@ func main() {
 		os.Exit(replaceWith(args, logger))
 	}
 
+	// Relaying to a Node this process didn't start can't prove the token is
+	// on both sides, and a Node without it would take every client for local.
+	if len(args) == 0 {
+		logger.Printf("[Gateway] no app server command given (10router-gateway -- node custom-server.js)")
+		os.Exit(2)
+	}
+
 	// Before the child starts, so a signal in between isn't lost.
 	signals := make(chan os.Signal, 4)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	// As PID 1, Node ignored these (the kernel drops a default-action signal
+	// to a namespace's init); Go's runtime would exit on them, with no drain.
+	signal.Ignore(syscall.SIGHUP, syscall.SIGQUIT)
 	os.Exit(gateway.Run(gateway.Options{
 		Config:  cfg,
 		Command: args,

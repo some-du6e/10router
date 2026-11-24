@@ -17,6 +17,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -59,9 +60,21 @@ type Options struct {
 	OnListening func(addr string)
 }
 
-// MaxHeaderBytes is Node's default --max-http-header-size: a client's
-// headers may take no more memory here than they could in Node.
-const MaxHeaderBytes = 16 << 10
+// Header size. net/http allows MaxHeaderBytes plus 4096 bytes of slack, so
+// 12 KiB here caps a client at Node's default --max-http-header-size of
+// 16 KiB, request line included. Node behind the gateway gets
+// appMaxHeaderSize, room for that plus the peer headers the gateway adds, so
+// the gateway is the one that answers 431.
+const (
+	MaxHeaderBytes   = 12 << 10
+	appMaxHeaderSize = 20 << 10
+)
+
+// SignalSettle is how long the gateway waits after it stops admitting
+// requests before it passes the signal on to the app server. A request
+// admitted just before then has reached Node by the time Node's own drain
+// closes its listener and idle connections.
+const SignalSettle = 250 * time.Millisecond
 
 // Gateway is the public-facing handler.
 type Gateway struct {
@@ -187,6 +200,17 @@ func randomToken() string {
 
 func seconds(d time.Duration) int { return int((d + 500*time.Millisecond) / time.Second) }
 
+// envValue is name's value in a KEY=value list, or "".
+func envValue(env []string, name string) string {
+	value := ""
+	for _, kv := range env {
+		if strings.HasPrefix(kv, name+"=") {
+			value = kv[len(name)+1:]
+		}
+	}
+	return value
+}
+
 // sigName is the name Node logs a signal by.
 func sigName(sig os.Signal) string {
 	switch sig {
@@ -228,6 +252,7 @@ func Run(o Options) int {
 			"HOSTNAME":           "127.0.0.1",
 			"KEEP_ALIVE_TIMEOUT": strconv.FormatInt(config.AppKeepAliveTimeout.Milliseconds(), 10),
 			"GATEWAY_PEER_TOKEN": cfg.PeerToken,
+			"NODE_OPTIONS":       strings.TrimSpace(envValue(o.Env, "NODE_OPTIONS") + " --max-http-header-size=" + strconv.Itoa(appMaxHeaderSize)),
 		})
 		var err error
 		child, err = supervisor.Start(o.Command, env)
@@ -369,13 +394,14 @@ func (g *Gateway) shutdown(sig os.Signal, srv *http.Server, child *supervisor.Ch
 		sigName(sig), g.tracker.Inflight(), seconds(timeout))
 	startedAt := time.Now()
 	g.tracker.Begin()
-	if child != nil {
-		child.Signal(sig)
-	}
 	shutdownCtx, cancelShutdown := context.WithCancel(context.Background())
 	defer cancelShutdown()
 	// Closes the listener now and each connection once it goes idle.
 	go func() { _ = srv.Shutdown(shutdownCtx) }()
+	if child != nil {
+		forward := time.AfterFunc(SignalSettle, func() { child.Signal(sig) })
+		defer forward.Stop()
+	}
 
 	idle := make(chan struct{})
 	go func() {
