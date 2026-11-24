@@ -118,4 +118,10 @@ node scripts/release.js "Release title" "Notes"
 git tag v0.4.x && git push origin v0.4.x
 ```
 
-Workflow: `app/.github/workflows/docker-publish.yml`
+Workflow: `.github/workflows/docker-publish.yml`
+
+### Master builds
+
+`.github/workflows/deploy-image.yml` builds an image for each master commit that changes what goes into it. It builds for `linux/amd64` only and runs the gateway E2E on the image (`.github/e2e/gateway/run.sh`). It then pushes `ghcr.io/some-du6e/10router:<full commit sha>`, checks that an anonymous pull works, and fast-forwards the `deploy` branch to that commit.
+
+A server that deploys the `deploy` branch builds `Dockerfile.deploy` instead of `Dockerfile`, passing the commit as the `SOURCE_COMMIT` build arg. That file is only `FROM` the commit's image, so the server compiles nothing and never gets an image that failed the E2E. Everything `next build` reads is fixed in that image, and the image is built with none of it set. That covers the `NEXT_PUBLIC_*` build args and `next.config.mjs` settings such as `TENROUTER_PROXY_CLIENT_MAX_BODY_SIZE`. A server that needs any of them has to build `Dockerfile` itself. Everything else, `NEXT_PUBLIC_BASE_URL` in server code included, is read from the container's environment at runtime.

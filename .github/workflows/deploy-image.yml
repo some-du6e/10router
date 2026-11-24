@@ -1,18 +1,13 @@
 name: Deploy image
 
-# Builds the production image in CI, so the server never compiles the app.
-# For each master commit that changes what goes into the image:
-#   1. build it from Dockerfile
-#   2. run the gateway E2E on it (.github/e2e/gateway/run.sh: the image as
-#      shipped, then with GATEWAY_MODE=proxy)
-#   3. push it as ghcr.io/<owner>/<repo>:<commit>
-#   4. fast-forward the `deploy` branch to that commit
-# A server that deploys `deploy` builds Dockerfile.deploy, which only pulls
-# that image, so an image that failed the E2E never reaches it.
+# Builds the production image in CI, so the server never compiles it. The server
+# deploys the `deploy` branch with Dockerfile.deploy, which only pulls the image
+# pushed here for that commit, and `deploy` moves only after the image passed
+# the gateway E2E and an anonymous pull. See DOCKER.md, "Master builds".
 #
-# Master runs go one at a time. A commit that lands during a run waits, and of
-# several waiting only the newest runs, carrying the others. Pull requests that
-# change this workflow or Dockerfile.deploy run steps 1-2 and push nothing.
+# A master run builds master as it is when the run starts, so re-running an old
+# run or starting one by hand deploys the newest commit. Runs go one at a time:
+# a commit that lands mid-run waits, and of several waiting only the newest runs.
 on:
   push:
     branches: [master]
@@ -22,6 +17,7 @@ on:
       - "!gitbook/**"
       - "!tests/**"
       - "!**/*.md"
+      - "THIRD_PARTY_NOTICES.md"
       - "!.github/**"
       - ".github/workflows/deploy-image.yml"
   pull_request:
@@ -45,6 +41,8 @@ jobs:
       PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.PUBLISH == 'true' && 'master' || '' }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -52,7 +50,10 @@ jobs:
       - name: Install dependencies (for the E2E seed)
         run: bun install --ignore-scripts
       - name: Image name
-        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}" >> "$GITHUB_ENV"
+        run: |
+          commit="$(git rev-parse HEAD)"
+          echo "COMMIT=$commit" >> "$GITHUB_ENV"
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}:$commit" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@v3
       - name: Build the image
         uses: docker/build-push-action@v6
@@ -61,12 +62,12 @@ jobs:
           platforms: linux/amd64
           load: true
           tags: ${{ env.IMAGE }}
-          build-args: SOURCE_COMMIT=${{ github.sha }}
+          build-args: SOURCE_COMMIT=${{ env.COMMIT }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ env.COMMIT }}
           cache-from: type=gha,scope=deploy-image
-          cache-to: ${{ env.PUBLISH == 'true' && 'type=gha,mode=max,scope=deploy-image' || '' }}
+          cache-to: ${{ env.PUBLISH == 'true' && 'type=gha,mode=max,scope=deploy-image,ignore-error=true' || '' }}
           provenance: false
           sbom: false
       - name: E2E (GATEWAY_MODE unset, then proxy)
@@ -75,14 +76,17 @@ jobs:
         run: |
           set -o pipefail
           bash .github/e2e/gateway/run.sh 2>&1 | tee e2e.txt
-      # What the server will build: the docker driver resolves FROM from the
-      # local image store, and the base's labels carry over.
+      # The docker driver resolves FROM from the local image store, and the
+      # base's labels carry over. Without SOURCE_COMMIT the server's build must
+      # stop rather than pull some other tag, so the ARG has no default.
       - name: Dockerfile.deploy resolves to this image
         run: |
+          grep -qx 'ARG SOURCE_COMMIT' Dockerfile.deploy \
+            || { echo "Dockerfile.deploy must declare SOURCE_COMMIT with no default"; exit 1; }
           docker buildx build --builder default --load -f Dockerfile.deploy \
-            --build-arg SOURCE_COMMIT="$GITHUB_SHA" -t deploy-check .
+            --build-arg SOURCE_COMMIT="$COMMIT" -t deploy-check .
           got="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' deploy-check)"
-          [ "$got" = "$GITHUB_SHA" ] || { echo "Dockerfile.deploy built revision '$got', want $GITHUB_SHA"; exit 1; }
+          [ "$got" = "$COMMIT" ] || { echo "Dockerfile.deploy built revision '$got', want $COMMIT"; exit 1; }
       - name: Log in to GHCR
         if: env.PUBLISH == 'true'
         uses: docker/login-action@v3
@@ -92,25 +96,39 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Push the image
         if: env.PUBLISH == 'true'
-        run: docker push "$IMAGE"
-      # Through the refs API, so GitHub refuses anything but a fast-forward and
-      # a re-run of an older commit can't move the deploy backwards.
+        run: |
+          docker push "$IMAGE"
+          echo "Pushed \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+      # The server builds Dockerfile.deploy with `docker build --pull` and no
+      # registry login, so the package has to be public.
+      - name: The server can pull it
+        if: env.PUBLISH == 'true'
+        run: |
+          docker logout ghcr.io
+          docker buildx build --builder default --pull --load -f Dockerfile.deploy \
+            --build-arg SOURCE_COMMIT="$COMMIT" -t deploy-pulled .
+          got="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' deploy-pulled)"
+          [ "$got" = "$COMMIT" ] || { echo "pulled revision '$got', want $COMMIT"; exit 1; }
+      # Through the refs API, so GitHub refuses anything but a fast-forward.
       - name: Move deploy to this commit
         if: env.PUBLISH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/deploy" > /dev/null 2>&1; then
-            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/deploy" -f sha="$GITHUB_SHA" -F force=false > /dev/null
+          current="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/deploy" --jq .object.sha 2> /dev/null || true)"
+          if [ "$current" = "$COMMIT" ]; then
+            echo "deploy is already at $COMMIT"
+          elif [[ "$current" =~ ^[0-9a-f]{40}$ ]]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/deploy" -f sha="$COMMIT" -F force=false > /dev/null
+            echo "deploy: $current -> $COMMIT"
           else
-            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref=refs/heads/deploy -f sha="$GITHUB_SHA" > /dev/null
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref=refs/heads/deploy -f sha="$COMMIT" > /dev/null
+            echo "deploy created at $COMMIT"
           fi
-          echo "deploy -> $GITHUB_SHA"
       - name: Summary
         if: always()
         run: |
           {
-            echo "Image: \`$IMAGE\` (published: $PUBLISH)"
             echo '```'
             grep -E '^(PASS|FAIL)' e2e.txt 2> /dev/null | head -100
             echo '```'
@@ -123,3 +141,7 @@ jobs:
             e2e.txt
             e2e-out/*.json
             e2e-out/*.log
+            e2e-out/*.ps
+            e2e-out/*.norm
+            e2e-out/*.raw
+            e2e-out/*.dashboard

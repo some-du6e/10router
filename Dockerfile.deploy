@@ -1,8 +1,7 @@
-# What a server that deploys the `deploy` branch builds, in place of Dockerfile.
-# .github/workflows/deploy-image.yml builds this commit's image from Dockerfile,
-# runs the gateway E2E on it, pushes it, and only then moves `deploy` here, so
-# the server pulls that image and compiles nothing. SOURCE_COMMIT is the commit
-# being deployed (Coolify passes it while include_source_commit_in_build is
-# on). Unset, the image reference is invalid and the build stops.
+# check=skip=InvalidDefaultArgInFrom
+# What a server that deploys the `deploy` branch builds in place of Dockerfile:
+# the image .github/workflows/deploy-image.yml built and tested for this commit.
+# Coolify passes SOURCE_COMMIT while include_source_commit_in_build is on. It
+# has no default on purpose: unset, the reference is invalid and the build stops.
 ARG SOURCE_COMMIT
 FROM ghcr.io/some-du6e/10router:${SOURCE_COMMIT}

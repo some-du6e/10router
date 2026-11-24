@@ -31,14 +31,12 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# The build args come after npm install because every RUN after an ARG sees it:
-# declared above, a value that changes per commit (SOURCE_COMMIT) would rerun
-# the apk and npm installs on every build instead of reusing their layers.
+# Build args go after the installs: every RUN after an ARG sees it, so one that
+# changes per commit (SOURCE_COMMIT) would rerun them on every build.
+# tests/unit/dockerfile-build-args.test.js holds this.
 
-# Git commit, passed as a build arg (by .github/workflows/deploy-image.yml, and
-# by Coolify while `include_source_commit_in_build` is on). `.git` is stripped
-# from the build context by `.dockerignore`, so `git rev-parse` in
-# next.config.mjs falls back to this.
+# Git commit, as a build arg. `.git` is stripped from the build context by
+# `.dockerignore`, so `git rev-parse` in next.config.mjs falls back to this.
 ARG SOURCE_COMMIT
 
 # Optional Google Analytics 4 measurement ID. Next inlines NEXT_PUBLIC_* at build

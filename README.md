@@ -209,6 +209,8 @@ Published multi-platform images (`linux/amd64` + `linux/arm64`):
 - Docker Hub: [`some-du6e/10router`](https://hub.docker.com/r/some-du6e/10router)
 - GHCR: [`ghcr.io/some-du6e/10router`](https://github.com/some-du6e/10router/pkgs/container/10router)
 
+GHCR also holds a `linux/amd64` image tagged with the full commit sha for each master commit that changes the image (see [DOCKER.md](DOCKER.md#master-builds)). Releases are the version tags and `:latest`.
+
 ```bash
 docker run -d \
   --name 10router \
