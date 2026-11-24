@@ -263,8 +263,28 @@ func hasToolResults(msg *Value, ids []*Value) bool {
 	}
 	if role.Is("user") {
 		if c := msg.Get("content"); c.IsArray() {
+			// ids.includes per block is |blocks|×|ids| in Node; with string
+			// ids (the usual case) a set gives the same answer in linear time.
+			var set map[string]bool
+			if len(ids) > 8 {
+				set = make(map[string]bool, len(ids))
+				for _, id := range ids {
+					if !id.IsString() {
+						set = nil
+						break
+					}
+					set[id.str] = true
+				}
+			}
 			for _, b := range c.Items() {
-				if get(b, "type").Is("tool_result") && includesValue(ids, b.Get("tool_use_id")) {
+				if !get(b, "type").Is("tool_result") {
+					continue
+				}
+				if id := b.Get("tool_use_id"); set != nil {
+					if id.IsString() && set[id.str] {
+						return true
+					}
+				} else if includesValue(ids, id) {
 					return true
 				}
 			}

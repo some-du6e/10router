@@ -264,13 +264,21 @@ func (p *prep) talksToAnthropic() bool {
 }
 
 // requireASCIIHeader: fetch sends a header value as a Latin-1 byte string
-// (and throws above U+00FF), and String#trim reads 0xA0 as a space. Only
-// ASCII values mean the same in both.
+// (and throws above U+00FF), and String#trim reads 0xA0 as a space; it also
+// throws on CR, LF and NUL and trims edge whitespace, while net/http refuses
+// other control characters. Printable ASCII without edge spaces goes out the
+// same from both.
 func requireASCIIHeader(v string) {
 	for i := 0; i < len(v); i++ {
 		if v[i] >= 0x80 {
 			decline("a non-ASCII header value")
 		}
+		if v[i] < 0x20 || v[i] == 0x7F {
+			decline("a header value with control characters")
+		}
+	}
+	if v != "" && (v[0] == ' ' || v[len(v)-1] == ' ') {
+		decline("a header value with edge spaces")
 	}
 }
 
@@ -499,10 +507,10 @@ func applyBodyOverrides(body *Value, o *Overrides) *Value {
 	for _, k := range dropList(o.Drop) {
 		out.Delete(k)
 	}
-	// parseBodyOverride: JSON.parse of the saved text. Parse reads bytes the
-	// way request.text() does, which drops a BOM JSON.parse would reject.
-	if jsTrim(o.Body) != "" && !strings.HasPrefix(o.Body, string(rune(0xFEFF))) {
-		merge, err := Parse([]byte(o.Body))
+	// parseBodyOverride: JSON.parse of the saved text, a string already (so
+	// no UTF-8 decoding: a lone surrogate stays, a BOM is a syntax error).
+	if jsTrim(o.Body) != "" {
+		merge, err := parseText(o.Body)
 		if IsDecline(err) {
 			decline("a body override the parser doesn't take")
 		}

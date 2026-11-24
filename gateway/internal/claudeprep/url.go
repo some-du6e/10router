@@ -13,6 +13,19 @@ import (
 // than this models (IDNA, IPv4 shorthands, dot segments, percent-encoding),
 // go to Node.
 
+// badPorts is the Fetch standard's port blocking list: Node's fetch refuses
+// these for http(s) ("bad port"), so a base URL on one fails in Node.
+var badPorts = map[int]bool{
+	0: true, 1: true, 7: true, 9: true, 11: true, 13: true, 15: true, 17: true, 19: true, 20: true, 21: true, 22: true, 23: true,
+	25: true, 37: true, 42: true, 43: true, 53: true, 69: true, 77: true, 79: true, 87: true, 95: true, 101: true, 102: true,
+	103: true, 104: true, 109: true, 110: true, 111: true, 113: true, 115: true, 117: true, 119: true, 123: true, 135: true,
+	137: true, 139: true, 143: true, 161: true, 179: true, 389: true, 427: true, 465: true, 512: true, 513: true, 514: true,
+	515: true, 526: true, 530: true, 531: true, 532: true, 540: true, 548: true, 554: true, 556: true, 563: true, 587: true,
+	601: true, 636: true, 989: true, 990: true, 993: true, 995: true, 1719: true, 1720: true, 1723: true, 2049: true,
+	3659: true, 4045: true, 4190: true, 5060: true, 5061: true, 6000: true, 6566: true, 6665: true, 6666: true, 6667: true,
+	6668: true, 6669: true, 6679: true, 6697: true, 10080: true,
+}
+
 type parsedURL struct {
 	scheme, host, port, path string
 	query                    *string
@@ -54,6 +67,9 @@ func parseURL(s string) (parsedURL, bool) {
 			if err != nil || n > 65535 || strings.TrimLeft(u.port, "0123456789") != "" {
 				return u, false
 			}
+			if badPorts[n] {
+				return u, false
+			}
 			u.port = strconv.Itoa(n)
 			if (u.scheme == "https" && n == 443) || (u.scheme == "http" && n == 80) {
 				u.port = ""
@@ -82,6 +98,10 @@ func parseURL(s string) (parsedURL, bool) {
 	}
 	for j := 0; j < len(path); j++ {
 		if !isPathChar(path[j]) {
+			return u, false
+		}
+		// fetch sends a bad escape as written; Go's url.Parse refuses it.
+		if path[j] == '%' && (j+2 >= len(path) || hexVal(path[j+1]) < 0 || hexVal(path[j+2]) < 0) {
 			return u, false
 		}
 	}
@@ -188,6 +208,25 @@ func (u parsedURL) String() string {
 
 type param struct{ name, value string }
 
+// toUSV is a WebIDL USVString conversion: each lone surrogate (its WTF-8
+// sequence here) becomes one U+FFFD, as new URLSearchParams(string) does
+// before parsing.
+func toUSV(s string) string {
+	if !strings.Contains(s, "\xed") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0xED && i+2 < len(s) && s[i+1] >= 0xA0 && s[i+1] <= 0xBF {
+			b.WriteString(string(rune(0xFFFD)))
+			i += 2
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
 func percentDecode(s string) []byte {
 	out := make([]byte, 0, len(s))
 	for i := 0; i < len(s); i++ {
@@ -263,7 +302,7 @@ func applyURLOverrides(url string, o *Overrides) string {
 	}
 	// Only searchParams.set rewrites the query: an override that parses to no
 	// pairs ("&") leaves it exactly as the URL parser wrote it.
-	if sets := parseURLEncoded(strings.TrimPrefix(o.Query, "?")); len(sets) > 0 {
+	if sets := parseURLEncoded(toUSV(strings.TrimPrefix(o.Query, "?"))); len(sets) > 0 {
 		params := []param{}
 		if u.query != nil {
 			params = parseURLEncoded(*u.query)

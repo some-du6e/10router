@@ -189,7 +189,7 @@ Nothing turns native until it matches Node byte for byte on recorded traffic.
    In place for `internal/claudeprep` (phase 2a), the request half:
    - **Corpus.** `tests/helpers/claudeprepCorpus.js` generates the cases. Its JSON writer can emit what `JSON.stringify` never does: `1.0`, `1e3`, big integers, duplicate and integer-like keys, escapes, CRLF and tab whitespace, and invalid UTF-8 bytes. The large corpus also runs every capability family against every thinking intent and every `(level)` suffix.
    - **Recorder.** `tests/unit/gateway-claudeprep-parity.test.js` is part of the default vitest suite. It runs each case through chat.ts's body steps (restated there, since `internal/route` owns them) and the real `handleChatCore`. A `vi.mock` of `proxyAwareFetch`, under the executor, captures the URL, the headers object and the body bytes, with keys redacted as `{{apiKey}}`. Nothing leaves the process.
-   - **Fixtures.** The repo keeps 162 fixtures in `gateway/internal/claudeprep/testdata/fixtures`, with the prose cut short. The core cases keep histories of 50 to 120 messages and 12 to 48 tools. The test fails if Node no longer makes them, or no longer matches the table export, so a Node change that would break parity fails in Node's own suite as well.
+   - **Fixtures.** The repo keeps 174 fixtures in `gateway/internal/claudeprep/testdata/fixtures`, with the prose cut short. The core cases keep histories of 50 to 120 messages and 12 to 48 tools. The test fails if Node no longer makes them, or no longer matches the table export, so a Node change that would break parity fails in Node's own suite as well.
    - **Recording.** `CLAUDEPREP_RECORD=1` rewrites the fixtures and `tables.json`. With `CLAUDEPREP_LARGE=1` and `CLAUDEPREP_OUT` it writes the large corpus instead: about 1,100 cases, including histories of 1,000 to 1,400 messages.
 2. **Transform tests.** The Go request preparation runs on every fixture's client body and must produce the same upstream body bytes as Node. JSON key order and number formatting count, because the upstream's prompt cache keys on bytes. This is where most of phase 2's risk sits.
 
@@ -238,20 +238,20 @@ The request rewrite is ported and held byte-identical to Node. Nothing calls it 
 
 The body is edited as a `Value` tree with JavaScript's semantics, never `map[string]any`. Objects keep JavaScript's key order: array-index keys first, ascending, then insertion order, and a repeated key keeps its first slot. Strings are UTF-16 code units held as WTF-8, so a lone surrogate survives. Numbers are float64 and are written back the way `Number#toString` writes them. `JSON.stringify` doesn't keep a client's spelling, and the port matches Node's bytes, not the client's: `1.0` goes out as `1`, `1e3` as `1000`, an escaped `é` as the character itself, and a big integer loses the same digits it loses in Node. A client that already sends `JSON.stringify` output, which Claude Code does, gets its own bytes back. The body is decoded the way `request.text()` decodes it: a BOM is dropped and each ill-formed UTF-8 sequence becomes one U+FFFD.
 
-The capability tables (capabilities.js, thinkingLevels.js, the vision name patterns, the identity presets, the beta-flag field tables) and the constants Node exports (the default max tokens, the API version and host, the Claude Code prompt, the continuation texts, the limit-hold sentinel) aren't restated in Go. `gateway/internal/claudeprep/tables.json` is exported from Node and embedded, and the Node parity test fails when the export is stale.
+The capability tables (capabilities.js, thinkingLevels.js, the vision name patterns, the identity presets, the beta-flag field tables) and the constants Node exports (the default max tokens, the level budgets, the API version and host, the Claude Code prompt, the continuation texts, the limit-hold sentinel, the GA thinking displays, the web search tool type) aren't restated in Go. `gateway/internal/claudeprep/tables.json` is exported from Node and embedded, and the Node parity test fails when the export is stale.
 
 Whatever the port doesn't model it hands back with a `*DeclineError` (`claudeprep.IsDecline`), and the gateway proxies that request. That covers:
 
 - any input on which Node would throw, such as a null content block or a non-string `text`, and a connection Node refuses (`blockedReason`);
 - a level or effort that names an `Object.prototype` member (`constructor`), which Node's table lookups would find;
-- JSON nested more than 5,000 deep;
-- non-ASCII header values, which fetch sends as Latin-1;
+- JSON nested more than 512 deep (Node's own recursion fails a few thousand down);
+- header values that aren't printable ASCII without edge spaces: fetch sends Latin-1, throws on CR, LF and NUL, and trims, while net/http refuses other control characters;
 - the web search tool, which needs Node's built-in search hooks;
 - mid-conversation `tool_addition`/`tool_removal` blocks;
 - a top-level `allOf`/`anyOf`/`oneOf` or `$ref` in a tool's `input_schema`, which Node flattens;
 - a `json_schema` `response_format`;
 - non-ASCII model ids and client-identity headers;
-- base URLs the WHATWG URL rules would rewrite beyond plain `http(s)://host[:port]/path?query`;
+- base URLs that aren't plain `http(s)://host[:port]/path?query`: no scheme, a port fetch blocks, dot segments, backslashes, bad escapes, characters the URL parser would percent-encode, IPv6 or underscore hosts. `Request.URL` is the string Node hands fetch; 2c's sender normalizes host case and a default port, as fetch does;
 - providers other than `openai-compatible-*`, and models not routed to the Messages API.
 
 ### Interfaces for 2b and 2c

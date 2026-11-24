@@ -35,10 +35,12 @@ const (
 // It never goes through map[string]any, so nothing reorders keys or rounds
 // numbers in a way Node doesn't.
 type Value struct {
-	kind  Kind
-	b     bool
-	f     float64
-	num   string // the number's own text when it is already Number#toString's
+	kind Kind
+	b    bool
+	f    float64
+	// str: a string's content, or a number's own text when it is already
+	// Number#toString's ("" otherwise). One field for both keeps a Value at
+	// 64 bytes: a 4 MB body of tiny values is millions of them.
 	str   string
 	plain bool // str needs no escaping inside quotes
 	arr   []*Value
@@ -67,7 +69,19 @@ func Undefined() *Value { return undefinedValue }
 func Null() *Value { return nullValue }
 
 // Bool is a JSON boolean.
-func Bool(b bool) *Value { return &Value{kind: KindBool, b: b} }
+func Bool(b bool) *Value {
+	if b {
+		return trueValue
+	}
+	return falseValue
+}
+
+// Scalars are never edited in place (a Set replaces the pointer), so these
+// are shared.
+var (
+	trueValue  = &Value{kind: KindBool, b: true}
+	falseValue = &Value{kind: KindBool}
+)
 
 // Number is a JSON number with value f.
 func Number(f float64) *Value { return &Value{kind: KindNumber, f: f} }
@@ -223,7 +237,8 @@ func (v *Value) Has(key string) bool {
 }
 
 // Set is v[key] = val: a member keeps its slot, a new one goes where
-// JavaScript would enumerate it.
+// JavaScript would enumerate it. v must be an object: inside Prepare
+// anything else is a decline, elsewhere it panics.
 func (v *Value) Set(key string, val *Value) {
 	if v == nil || v.kind != KindObject {
 		// A property set on a primitive throws in strict-mode Node; on an
@@ -266,7 +281,14 @@ func (v *Value) Delete(key string) {
 		return
 	}
 	o.members = append(o.members[:i], o.members[i+1:]...)
-	o.index = nil
+	if o.index != nil {
+		// Patched in place (the slice copy above is the same order of work),
+		// so a big object doesn't rebuild its map after every delete.
+		delete(o.index, key)
+		for _, m := range o.members[i:] {
+			o.index[m.key]--
+		}
+	}
 }
 
 // Keys is Object.keys(v).
@@ -344,7 +366,12 @@ const maxDepth = 512
 // request.text() (UTF-8 with replacement characters, a leading BOM dropped),
 // then JSON.parse.
 func Parse(data []byte) (*Value, error) {
-	text := decodeUTF8(data)
+	return parseText(decodeUTF8(data))
+}
+
+// parseText is JSON.parse of a string Node already holds (WTF-8 here, a
+// lone surrogate kept): no byte decoding, no BOM rule.
+func parseText(text string) (*Value, error) {
 	p := parser{s: text}
 	p.ws()
 	v, err := p.value(0)
@@ -663,7 +690,7 @@ func (p *parser) number() (*Value, error) {
 		digits--
 	}
 	if simple && digits <= 15 && text != "-0" {
-		v.num = text
+		v.str = text
 	}
 	return v, nil
 }
@@ -810,8 +837,8 @@ func (v *Value) appendJSON(dst []byte) []byte {
 		}
 		return append(dst, "false"...)
 	case KindNumber:
-		if v.num != "" {
-			return append(dst, v.num...)
+		if v.str != "" {
+			return append(dst, v.str...)
 		}
 		if math.IsNaN(v.f) || math.IsInf(v.f, 0) {
 			return append(dst, "null"...)

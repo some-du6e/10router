@@ -542,17 +542,21 @@ const SCENARIOS = [
   // One case per edge a review found, each checked against Node.
   scenario("edge-probes", (rng, i) => {
     const small = { messages: SMALL ? 6 : 50, toolCount: SMALL ? 3 : undefined };
-    switch (i % 5) {
+    switch (i % 7) {
       case 0: // an empty thinkingLevel: output_config.effort "" (not null)
         return { model: "claude-opus-4-7", headers: CC_HEADERS, body: ccBody(rng, "claude-opus-4-7", { ...small, thinking: null, extra: { thinkingConfig: { thinkingLevel: "" } } }) };
       case 1: // a query override with no pairs leaves the base query as written
         return { model: "claude-opus-4-8", headers: CC_HEADERS, psd: { baseUrl: "https://gateway.example.test/v1?key=a%20b&flag", overrides: { query: "&" } }, body: ccBody(rng, "claude-opus-4-8", small) };
       case 2: // a __proto__ header line sets nothing
         return { model: "claude-opus-4-8", headers: CC_HEADERS, psd: { overrides: { headers: "__proto__: x\nx-real: 1" } }, body: ccBody(rng, "claude-opus-4-8", small) };
-      case 3: // a hex string budget above 2^53 rounds once
-        return { model: "qwen3-max", headers: CC_HEADERS, body: ccBody(rng, "qwen3-max", { ...small, thinking: { type: "enabled", budget_tokens: "0x20000000000001" } }) };
-      default: // a percent-encoded BOM in a query parameter stays
+      case 3: // a hex string budget above 2^53 rounds once (digit-by-digit gives ...870, Node ...900)
+        return { model: "qwen3-max", headers: CC_HEADERS, body: ccBody(rng, "qwen3-max", { ...small, thinking: { type: "enabled", budget_tokens: "0x200000000000011" } }) };
+      case 4: // a percent-encoded BOM in a query parameter stays
         return { model: "claude-opus-4-8", headers: CC_HEADERS, psd: { overrides: { query: "%EF%BB%BFk=1" } }, body: ccBody(rng, "claude-opus-4-8", small) };
+      case 5: // a lone surrogate typed into the query override: one U+FFFD
+        return { model: "claude-opus-4-8", headers: CC_HEADERS, psd: { overrides: { query: "a=x" + String.fromCharCode(0xd800) + "y" } }, body: ccBody(rng, "claude-opus-4-8", small) };
+      default: // a lone surrogate in a body override stays a lone surrogate
+        return { model: "claude-opus-4-8", headers: CC_HEADERS, psd: { overrides: { body: "{\"metadata\":{\"tag\":\"x" + String.fromCharCode(0xd800) + "y\"}}" } }, body: ccBody(rng, "claude-opus-4-8", small) };
     }
   }),
   scenario("translator-fields", (rng) => {
@@ -632,6 +636,10 @@ const SCENARIOS = [
     const body = ccBody(rng, model, { messages: SMALL ? 6 : 50, toolCount: SMALL ? 3 : undefined, thinking: null, extra: { reasoning_effort: " constructor" } });
     return { model, headers: CC_HEADERS, body, expectDecline: "Object.prototype" };
   }),
+  scenario("decline-bad-port", (rng) => {
+    const model = "claude-opus-4-8";
+    return { model, headers: CC_HEADERS, psd: { baseUrl: "http://gateway.example.test:6000/v1" }, body: ccBody(rng, model, { messages: SMALL ? 6 : 50, toolCount: SMALL ? 3 : undefined }), expectDecline: "WHATWG parser" };
+  }),
   scenario("decline-blocked-connection", (rng) => {
     const model = "claude-opus-4-8";
     return { model, headers: CC_HEADERS, psd: { blockedReason: "proxy pool unavailable" }, body: ccBody(rng, model, { messages: SMALL ? 8 : 50, toolCount: SMALL ? 4 : undefined }), expectDecline: "blocked" };
@@ -645,7 +653,7 @@ const SCENARIOS = [
 const smallCount = {
   "thinking-matrix": 40, "endpoint-overrides": 22, "tool-choice": 6, "max-tokens": 6, "cc-basic": 3, "empty-blocks": 4, params: 6,
   "stream-shapes": 12, "cc-dedupe": 4, "cc-images-tool-errors": 4, "broken-ids": 2, "numbers-and-keys": 3, "limit-hold-banner": 3,
-  "oauth-token-key": 3, "base-urls": 9, "provider-thinking": 12, "prefill-repair": 4, "odd-tool-calls": 2, "edge-probes": 5,
+  "oauth-token-key": 3, "base-urls": 9, "provider-thinking": 12, "prefill-repair": 4, "odd-tool-calls": 2, "edge-probes": 7,
 };
 
 function toFixture(name, spec, seed) {
