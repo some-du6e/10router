@@ -336,12 +336,17 @@ func (g *Gate) Acquire(ctx context.Context, bodyLength int64) (*Ticket, *Refusal
 		return nil, nil, ctx.Err()
 	case <-timer.C:
 		g.mu.Lock()
+		// Queue order first: room that appeared since the last pump goes to
+		// the waiters from the front, this one included if it is there. Go
+		// may wake waiters whose deadlines nearly coincide in either order,
+		// where Node's timers fire in the order they were set.
+		g.pump()
 		if !g.remove(w) {
 			g.mu.Unlock()
 			return <-w.ready, nil, nil
 		}
-		// Out of turn but it fits now: let it in rather than turn it away.
-		// Decided before the waiters behind it get the room.
+		// Still waiting, behind one that doesn't fit: out of turn but it fits
+		// now, let it in rather than turn it away.
 		var t *Ticket
 		var r *Refusal
 		if why := g.blocker(length); why != "" {

@@ -620,6 +620,26 @@
     "ownerManagementKeyId": null,
     "disabledBy": null,
     "expiresAtSetBy": null
+   },
+   {
+    "id": "id-sk-text-spend",
+    "key": "sk-text-spend",
+    "name": "sk-text-spend",
+    "machineId": null,
+    "isActive": 1,
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": 5,
+    "allowedModels": null,
+    "expiresAt": null,
+    "spentUsd": "0x10",
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    }
   ],
   "combos": [
@@ -2950,6 +2970,74 @@
     "chat": "pass",
     "key": "sk-allowlist-non-strings",
     "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-text-spend local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-text-spend"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 402
+   }
+  },
+  {
+   "name": "sk-text-spend local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-text-spend"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 402
+   }
+  },
+  {
+   "name": "sk-text-spend remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-text-spend"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 402
+   }
+  },
+  {
+   "name": "sk-text-spend remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-text-spend"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 402
    }
   },
   {

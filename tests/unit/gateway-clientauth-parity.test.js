@@ -57,6 +57,8 @@ const db = {
     { key: "sk-allow-suffix-member", isActive: 1, allowedModels: JSON.stringify(["hot/model-c(high)"]) },
     { key: "sk-allowlist-not-array", isActive: 1, allowedModels: JSON.stringify({ main: true }) },
     { key: "sk-allowlist-non-strings", isActive: 1, allowedModels: JSON.stringify([7, null]) },
+    // Text SQLite can't read as a number, which Number() reads as 16.
+    { key: "sk-text-spend", isActive: 1, budgetUsd: 5, spentUsd: "0x10" },
   ],
   combos: {
     main: ["hot/model-a", "hot/model-b"],

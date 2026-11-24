@@ -279,7 +279,7 @@ func resolveAliasFrom(alias string, aliases *jsjson.Object) (Info, bool, error) 
 		}
 		ps, ok1 := prov.(string)
 		ms, ok2 := model.(string)
-		if !ok1 || !ok2 || HasProtoKey(ps) {
+		if !ok1 || !ok2 || HasProtoKey(ps) || HasProtoKey(ms) {
 			return Info{}, false, declined("alias %q stores a non-string provider or model", alias)
 		}
 		return Info{Provider: resolveProviderAlias(ps), Model: ms}, true, nil

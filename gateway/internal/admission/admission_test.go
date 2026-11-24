@@ -250,25 +250,28 @@ func TestOutOfTurnAdmitWhenTheWaitEnds(t *testing.T) {
 func TestTimedOutFrontWaiterKeepsItsTurn(t *testing.T) {
 	var mem atomic.Int64
 	mem.Store(2000)
-	g := gate(Options{HighWaterBytes: 1000, PendingCopies: 1, MaxWait: 60 * time.Millisecond, Recheck: time.Hour, Memory: mem.Load})
+	g := gate(Options{HighWaterBytes: 1000, PendingCopies: 1, MaxWait: 300 * time.Millisecond, Recheck: time.Hour, Memory: mem.Load})
 	a, _, _ := g.Acquire(context.Background(), 10)
 	defer a.Release()
+	waitFor := func(n int) {
+		for deadline := time.Now().Add(time.Second); g.Snapshot().Waiting < n; time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("never %d waiting", n)
+			}
+		}
+	}
 	front := make(chan *Ticket, 1)
 	go func() {
 		tk, _, _ := g.Acquire(context.Background(), 300)
 		front <- tk
 	}()
-	for g.Snapshot().Waiting < 1 {
-		time.Sleep(time.Millisecond)
-	}
+	waitFor(1)
 	behind := make(chan *Ticket, 1)
 	go func() {
 		tk, _, _ := g.Acquire(context.Background(), 300)
 		behind <- tk
 	}()
-	for g.Snapshot().Waiting < 2 {
-		time.Sleep(time.Millisecond)
-	}
+	waitFor(2)
 	// Room for one 300-byte body now (500 + 10 + 300 fits, a second doesn't),
 	// with no recheck to notice before the front waiter's timer.
 	mem.Store(500)

@@ -16,6 +16,7 @@
 package clientauth
 
 import (
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -175,8 +176,20 @@ func checkLimits(k *db.APIKey, model string, c Config) error {
 			return declined("a model the key's allowlist refuses (Node answers 403)")
 		}
 	}
-	if k.BudgetUsd != nil && k.SpentUsd >= *k.BudgetUsd {
-		return declined("a spent budget (Node answers 402)")
+	if k.BudgetUsd != nil {
+		// Node reads a spend column with Number(): text such as "0x10" is a
+		// number to it, and budgetState makes NaN 0. Neither is read the same
+		// way here.
+		if k.SpendNotNumeric {
+			return declined("a spend column holding something other than a number")
+		}
+		spent := k.SpentUsd
+		if math.IsNaN(spent) {
+			spent = 0
+		}
+		if spent >= *k.BudgetUsd {
+			return declined("a spent budget (Node answers 402)")
+		}
 	}
 	return nil
 }
@@ -227,7 +240,8 @@ func (l *Lookup) alias(raw string) (any, bool) {
 // comboMembers is lookup.comboModels: the members, and a fusion combo's judge.
 func (l *Lookup) comboMembers(name string) ([]string, error) {
 	if l == nil || l.Combos == nil {
-		return nil, nil
+		// Without the combos, a combo name would be matched as a plain id.
+		return nil, declined("no combo lookup for the allowlist walk")
 	}
 	members, err := l.Combos.ComboModels(name)
 	if err != nil || len(members) == 0 {

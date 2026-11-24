@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -178,6 +179,32 @@ func TestDeclinesComboStrategiesThatIsNotAnObject(t *testing.T) {
 	_, err = IsModelAllowed("main", []string{"hot/model-a", "hot/model-b"}, &Lookup{Combos: combos, Settings: db.Settings{Merged: settings}})
 	if !decline.Is(err) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// Without a lookup a combo can't be walked, so an allowlist is Node's to check.
+func TestDeclinesAllowlistWithoutALookup(t *testing.T) {
+	if _, err := IsModelAllowed("main", []string{"MAIN"}, nil); !decline.Is(err) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// Spend Node reads its own way: NaN is 0 to budgetState, and text that SQLite
+// couldn't read as a number may still be one to Number().
+func TestBudgetWithSpendNodeReadsItsOwnWay(t *testing.T) {
+	zero := 0.0
+	check := func(k *db.APIKey) error {
+		_, err := Check(Request{Header: http.Header{"X-Api-Key": {"sk"}}, PeerIP: "203.0.113.7", Host: "x.test", Model: "main"},
+			Config{Rule: clientip.NewRule(""), RequireAPIKey: true, Policy: func(string) (*db.APIKey, error) { return k, nil }, Now: time.Now()})
+		return err
+	}
+	nan := &db.APIKey{Key: "sk", IsActive: true, BudgetUsd: &zero, SpentUsd: math.NaN()}
+	if err := check(nan); !decline.Is(err) || !strings.Contains(err.Error(), "spent budget") {
+		t.Errorf("a $0 budget with NaN spend is spent in Node: %v", err)
+	}
+	text := &db.APIKey{Key: "sk", IsActive: true, BudgetUsd: &zero, SpendNotNumeric: true}
+	if err := check(text); !decline.Is(err) {
+		t.Errorf("non-numeric spend: %v", err)
 	}
 }
 
