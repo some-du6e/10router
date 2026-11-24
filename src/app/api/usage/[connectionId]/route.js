@@ -7,6 +7,7 @@ import { getUsageForProvider } from "open-sse/services/usage.js";
 import { isUnrecoverableRefreshError } from "open-sse/services/tokenRefresh.js";
 import { getExecutor } from "open-sse/executors/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
+import { toProxyOptions } from "@/lib/network/proxyRouting.js";
 import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
 
 // Detect auth-expired messages returned by usage providers instead of throwing
@@ -24,6 +25,8 @@ function isAuthExpiredMessage(usage) {
  * @returns Promise<{ connection, refreshed: boolean }>
  */
 export async function refreshAndUpdateCredentials(connection, force = false, proxyOptions = null) {
+  // A blocked account's refresh would reach the provider from this machine's IP.
+  if (proxyOptions?.blockedReason) throw new Error(proxyOptions.blockedReason);
   // Re-read latest tokens: OpenAI rotates the refresh token on every refresh, and
   // refreshing with a stale snapshot (reuse) revokes the whole session → account logout.
   let latest;
@@ -120,15 +123,8 @@ export async function GET(request, { params }) {
       return Response.json({ message: "Usage not available for this connection" });
     }
 
-    // Resolve connection proxy config; force strictProxy=false so quota/refresh fall back to direct on failure
-    const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData);
-    const proxyOptions = {
-      connectionProxyEnabled: proxyConfig.connectionProxyEnabled === true,
-      connectionProxyUrl: proxyConfig.connectionProxyUrl || "",
-      connectionNoProxy: proxyConfig.connectionNoProxy || "",
-      vercelRelayUrl: proxyConfig.vercelRelayUrl || "",
-      strictProxy: false,
-    };
+    const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData, connection.provider);
+    const proxyOptions = toProxyOptions(proxyConfig);
 
     // Refresh credentials only for OAuth connections (apikey has no token refresh)
     if (isOAuth) {

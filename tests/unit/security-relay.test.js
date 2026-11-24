@@ -24,6 +24,13 @@ vi.mock("@/models", () => ({
   }),
 }));
 
+// The connection proxy resolver reads pools and settings from the database module.
+vi.mock("@/lib/db/index.js", async (orig) => ({
+  ...(await orig()),
+  getProxyPoolById: vi.fn(async (id) => state.pools.find((p) => p.id === id) || null),
+  getSettings: vi.fn(async () => ({})),
+}));
+
 const { executeMock } = vi.hoisted(() => ({ executeMock: vi.fn() }));
 vi.mock("../../open-sse/executors/index.js", () => ({ getExecutor: vi.fn(() => ({ execute: executeMock, noAuth: true })) }));
 vi.mock("../../open-sse/utils/requestLogger.js", () => ({

@@ -6,6 +6,8 @@ import {
   updateProxyPool,
 } from "@/models";
 import { proxyUrlProblem } from "@/lib/network/privateUrls.js";
+import { getSettings } from "@/lib/db/index.js";
+import { normalizeLayerSetting } from "@/lib/network/proxyRouting.js";
 
 function normalizeProxyPoolUpdate(body = {}) {
   const updates = {};
@@ -120,6 +122,21 @@ export async function DELETE(request, { params }) {
           error: "Proxy pool is currently in use",
           boundConnectionCount,
         },
+        { status: 409 }
+      );
+    }
+
+    // Deleting a pool a provider or Global still uses would block those requests.
+    const settings = await getSettings();
+    const boundLayers = [
+      ...(normalizeLayerSetting(settings.globalProxyPoolId) === id ? ["Global"] : []),
+      ...Object.entries(settings.providerStrategies || {})
+        .filter(([, strategy]) => normalizeLayerSetting(strategy?.proxyPoolId) === id)
+        .map(([providerId]) => providerId),
+    ];
+    if (boundLayers.length > 0) {
+      return NextResponse.json(
+        { error: `Proxy pool is used by ${boundLayers.join(", ")}`, boundLayers },
         { status: 409 }
       );
     }

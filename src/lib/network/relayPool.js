@@ -25,7 +25,7 @@ export async function saveRelayPool({ type, name, deployUrl, relayKey }) {
   const origin = originOf(deployUrl);
   const same = (await getProxyPools({})).filter((p) => p.type === type && originOf(p.proxyUrl) === origin);
   if (!same.length) {
-    const proxyPool = await createProxyPool({ name, proxyUrl, type, noProxy: "", isActive: true, strictProxy: false });
+    const proxyPool = await createProxyPool({ name, proxyUrl, type, noProxy: "", isActive: true, strictProxy: true });
     return { proxyPool, created: true };
   }
   // Only the URL changes: a pool the operator switched off stays off.

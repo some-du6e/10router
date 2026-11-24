@@ -10,6 +10,7 @@ import { resolveKimchiModels } from "open-sse/services/kimchiModels.js";
 import { resolveQoderModels } from "open-sse/services/qoderModels.js";
 import { resolveGrokCliModels } from "open-sse/services/grokCliModels.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
+import { toProxyOptions } from "@/lib/network/proxyRouting.js";
 import { resolveCursorModels } from "open-sse/services/cursorModels.js";
 
 const GEMINI_CLI_MODELS_URL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
@@ -383,19 +384,13 @@ const PROVIDER_MODELS_CONFIG = {
   },
   "grok-cli": {
     customResolver: async (connection) => {
-      const proxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+      const proxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {}, connection.provider);
       const result = await resolveGrokCliModels({
         ...connection,
         connectionId: connection.id,
       }, {
         log: console,
-        proxyOptions: {
-          connectionProxyEnabled: proxy.connectionProxyEnabled === true,
-          connectionProxyUrl: proxy.connectionProxyUrl || "",
-          connectionNoProxy: proxy.connectionNoProxy || "",
-          vercelRelayUrl: proxy.vercelRelayUrl || "",
-          strictProxy: proxy.strictProxy === true,
-        },
+        proxyOptions: toProxyOptions(proxy),
         onCredentialsRefreshed: async (refreshed) => {
           await updateProviderCredentials(connection.id, refreshed);
         },
@@ -561,7 +556,15 @@ export async function GET(request, { params }) {
       fetchOptions.body = JSON.stringify(config.body);
     }
 
-    const response = await fetch(url, fetchOptions);
+    // The account's own route; no route at all keeps the plain (system proxy) fetch.
+    const route = toProxyOptions(await resolveConnectionProxyConfig(connection.providerSpecificData || {}, connection.provider));
+    if (route.blockedReason) {
+      return NextResponse.json({ error: `Request blocked: ${route.blockedReason}` }, { status: 502 });
+    }
+    const useRoute = route.vercelRelayUrl || route.direct || (route.connectionProxyEnabled && route.connectionProxyUrl);
+    const response = useRoute
+      ? await (await import("open-sse/utils/proxyFetch.js")).proxyAwareFetch(url, fetchOptions, route)
+      : await fetch(url, fetchOptions);
 
     if (!response.ok) {
       const errorText = await response.text();

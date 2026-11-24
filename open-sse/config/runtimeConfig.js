@@ -122,10 +122,10 @@ export const SAME_REQUEST_ERROR_STATUSES = new Set([HTTP_STATUS.BAD_REQUEST, HTT
 // translated, then serialized for the upstream) until its reply starts streaming
 // (a non-streamed one: until it ends), so a burst of big prompts can take the
 // process past its memory limit. A request that would push the held total over
-// the budget, or that arrives while the process is above its high-water mark,
-// waits in a FIFO queue; if it still can't go after maxWaitMs it gets a 503 with
-// Retry-After, which agents retry. With nothing in flight a request is always
-// admitted, however big.
+// the budget, or that would take resident memory or the V8 heap past their
+// high-water marks, waits in a FIFO queue; if it still can't go after
+// maxWaitMs it gets a 503 with Retry-After, which agents retry. With nothing
+// in flight a request is always admitted, however big.
 const MB = 1024 * 1024;
 export const MEMORY_ADMISSION = {
   // Bytes of request bodies (times bodyCopies) admitted requests may hold.
@@ -144,8 +144,36 @@ export const MEMORY_ADMISSION = {
   // off when there is none. Env: MEMORY_HIGH_WATER_MB (0 turns the check off).
   highWaterMb: envInt("MEMORY_HIGH_WATER_MB", -1),
   highWaterFraction: 0.8,
-  // How often waiting requests recheck resident memory, which drops without
-  // any request ending (garbage collection).
+  // Copies of its body a request that hasn't started replying is about to add
+  // to the heap and, outside it, to resident memory: its text, parsed body,
+  // translated body and the bytes sent upstream, built again on each 429
+  // fallback. A burst let in at once doesn't show in either yet. Measured
+  // through the real route (tests/bench/admission-herd-benchmark.test.js,
+  // Node 22, bodies with non-Latin-1 text), a request in flight takes about
+  // 1.8-1.9× its body of live heap and 3.5-5.4× of resident memory over a
+  // fresh process. The heap check covers the heap's part. Outside the heap
+  // are the body's bytes and the bytes sent upstream, about 1× each. Once a
+  // process has peaked, V8 keeps the heap pages resident, so new heap
+  // allocations mostly reuse them rather than add to resident memory.
+  pendingHeapCopies: 3,
+  pendingRssCopies: 2,
+  // Percent of the V8 heap limit (heap_size_limit) that the heap in use plus
+  // pendingHeapCopies × the bodies of admitted requests not yet replying (and
+  // of the new one) may reach; over it, new requests wait. The resident-memory
+  // high water counts those bodies the same way, pendingRssCopies times.
+  // Env: MEMORY_HEAP_HIGH_WATER_PCT (0 turns the check off).
+  heapHighWaterPct: envInt("MEMORY_HEAP_HIGH_WATER_PCT", 85, { max: 100 }),
+  // A heap limit over this fraction of the container's memory gets a warning
+  // on the first chat request: resident memory follows the heap's peak plus
+  // what lives outside it, and the kernel kills the process at the
+  // container's limit. V8's own default for a 2 GiB container is about half.
+  maxHeapOfContainer: 0.6,
+  // A request without Content-Length counts as a body this long until it has
+  // been read, so a burst of them can't all go in at 0 bytes.
+  // Env: INFLIGHT_UNKNOWN_BODY_MB.
+  unknownBodyBytes: envInt("INFLIGHT_UNKNOWN_BODY_MB", 4) * MB,
+  // How often waiting requests recheck resident memory and the heap, which
+  // drop without any request ending (garbage collection).
   recheckMs: 250,
 };
 

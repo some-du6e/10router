@@ -15,7 +15,8 @@ function normalizeProxyPoolInput(body = {}) {
   const proxyUrl = typeof body?.proxyUrl === "string" ? body.proxyUrl.trim() : "";
   const noProxy = typeof body?.noProxy === "string" ? body.noProxy.trim() : "";
   const isActive = body?.isActive === undefined ? true : body.isActive === true;
-  const strictProxy = body?.strictProxy === true;
+  // Strict unless asked otherwise: a dead proxy must not mean requests leave from this IP.
+  const strictProxy = body?.strictProxy !== false;
   const type = VALID_PROXY_TYPES.includes(body?.type) ? body.type : "http";
 
   if (!name) {

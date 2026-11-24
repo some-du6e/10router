@@ -8,6 +8,7 @@ import PropTypes from "prop-types";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails";
 import CooldownTimer from "./CooldownTimer";
+import { PROXY_DIRECT } from "@/lib/network/proxyRouting.js";
 
 export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onReauth, onDelete, oneByOneStatus = null, autoPing = null }) {
   const { blurClass } = useBlurEmails();
@@ -17,13 +18,16 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
 
   const proxyPoolMap = new Map((proxyPools || []).map((pool) => [pool.id, pool]));
   const boundProxyPoolId = connection.providerSpecificData?.proxyPoolId || null;
-  const boundProxyPool = boundProxyPoolId ? proxyPoolMap.get(boundProxyPoolId) : null;
+  const isDirectProxy = boundProxyPoolId === PROXY_DIRECT;
+  const boundProxyPool = boundProxyPoolId && !isDirectProxy ? proxyPoolMap.get(boundProxyPoolId) : null;
   const hasLegacyProxy = connection.providerSpecificData?.connectionProxyEnabled === true && !!connection.providerSpecificData?.connectionProxyUrl;
   const hasAnyProxy = !!boundProxyPoolId || hasLegacyProxy;
-  const proxyDisplayText = boundProxyPool
+  const proxyDisplayText = isDirectProxy
+    ? "Direct (no proxy)"
+    : boundProxyPool
     ? `Pool: ${boundProxyPool.name}`
     : boundProxyPoolId
-      ? `Pool: ${boundProxyPoolId} (inactive/missing)`
+      ? `Pool: ${boundProxyPoolId} (off or missing: requests blocked)`
       : hasLegacyProxy
         ? `Legacy: ${connection.providerSpecificData?.connectionProxyUrl}`
         : "";
@@ -261,7 +265,8 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
       <div className="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end">
         <div className="grid flex-1 grid-cols-3 gap-1 sm:flex sm:flex-none">
           {/* Proxy button with inline dropdown */}
-          {(proxyPools || []).length > 0 && (
+          {/* Shown with no pools too: Inherit and Direct still apply. */}
+          {(
             <div className="relative" ref={proxyDropdownRef}>
               <button
                 onClick={() => setShowProxyDropdown((v) => !v)}
@@ -279,7 +284,13 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
                     onClick={() => handleSelectProxy("__none__")}
                     className={`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${!boundProxyPoolId ? "text-primary font-medium" : "text-text-main"}`}
                   >
-                    None
+                    Inherit
+                  </button>
+                  <button
+                    onClick={() => handleSelectProxy(PROXY_DIRECT)}
+                    className={`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${isDirectProxy ? "text-primary font-medium" : "text-text-main"}`}
+                  >
+                    Direct (no proxy)
                   </button>
                   {(proxyPools || []).map((pool) => (
                     <button

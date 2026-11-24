@@ -481,6 +481,9 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
     connectionProxyUrl: credentials?.providerSpecificData?.connectionProxyUrl || "",
     connectionNoProxy: credentials?.providerSpecificData?.connectionNoProxy || "",
     vercelRelayUrl: credentials?.providerSpecificData?.vercelRelayUrl || "",
+    strictProxy: credentials?.providerSpecificData?.strictProxy === true,
+    direct: credentials?.providerSpecificData?.direct === true,
+    blockedReason: credentials?.providerSpecificData?.blockedReason || "",
   };
 
   if (proxyOptions.vercelRelayUrl) {
@@ -521,6 +524,8 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   // A 401/403 sent the request through a token refresh and a retry.
   let authRetried = false;
   try {
+    // Refuse before any executor runs: not every executor sends through proxyAwareFetch.
+    if (proxyOptions.blockedReason) throw new Error(`[ProxyFetch] Request blocked: ${proxyOptions.blockedReason}`);
     const result = await runAttempt({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, onBetasRejected, onHeadersBudget, imageCacheKey, bodyCache });
     upstreamRespondedAt = Date.now();
     providerResponse = result.response;
@@ -573,7 +578,7 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
       // refreshWithRetry's 2nd/3rd attempt reuses the already-consumed RT →
       // invalid_grant → auth_failed retryable=false.
       const newCredentials = await refreshWithRetry(async () => {
-        const result = await executor.refreshCredentials(credentials, log);
+        const result = await executor.refreshCredentials(credentials, log, proxyOptions);
         if (result?.refreshToken && result.refreshToken !== credentials.refreshToken) {
           if (result.accessToken) credentials.accessToken = result.accessToken;
           credentials.refreshToken = result.refreshToken;
@@ -610,7 +615,8 @@ async function runChatCore({ body, modelInfo, credentials, log, onCredentialsRef
   }
   // A reply is under way and nothing is sent again, so the stream doesn't keep
   // the body's bytes alive. Emptied, not dropped: executor closures still hold
-  // the cache. A failed attempt leaves them for the account loop's next one.
+  // the cache. A failed attempt leaves them for the account loop's next one
+  // (which drops them before waiting for a warm key).
   if (providerResponse.ok) bodyCache.last = bodyCache.clientRequest = null;
 
   // Hung up with an error in hand: a disconnect, not a failure. Either during

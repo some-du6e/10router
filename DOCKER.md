@@ -72,6 +72,8 @@ docker run -d \
 
 The container sees your browser come from the Docker gateway, not loopback, so the dashboard treats it as a remote session: it refuses custom endpoint, key, Ollama Local host, self-hosted provider, Azure endpoint, proxy (the global outbound proxy too), GitLab and OIDC issuer URLs on a private, LAN or loopback host (an Ollama at `http://host.docker.internal:11434`, a model server on your LAN) with "URL not allowed", and won't turn on a notification channel's "Allow private network" option. `ALLOW_PRIVATE_ENDPOINT_URLS=true` lets a signed-in dashboard session use them. It needs login on (the default); with `requireLogin` off it does nothing. Endpoints you saved before keep working either way.
 
+`-e GATEWAY_MODE=proxy` runs the Go gateway in front of the Node server: the gateway takes `PORT`, and Node moves to the loopback port `GATEWAY_APP_PORT` (default 20129) inside the container. Unset or `off`, the default, runs Node alone as before. See `docs/GO_GATEWAY.md`.
+
 ## Update to latest
 
 ```bash

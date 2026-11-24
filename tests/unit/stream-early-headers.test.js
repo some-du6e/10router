@@ -445,6 +445,28 @@ describe("handleChat with early headers", () => {
     expect(state.markCalls.map((c) => c[0])).toEqual(["c1"]);
   });
 
+  // Routing goes on after the early headers (fallbacks build the body again),
+  // so memory admission keeps counting it as not yet replying until it settles.
+  it("a request answered early stays counted as not yet replying until routing settles", async () => {
+    const { memoryAdmissionStats } = await import("@/sse/services/memoryAdmission.js");
+    const before = memoryAdmissionStats().pendingBytes;
+    state.core = (args, n) => (n === 1 ? later(40_000, fail(503, "slow then overloaded"), args.clientSignal) : later(20_000, () => ok(CLAUDE_REPLY), args.clientSignal));
+    const p = request("/v1/messages", claudeBody, { earlyHeaders: true });
+    await vi.advanceTimersByTimeAsync(DELAY);
+    const res = await p;
+    expect(res.status).toBe(200);
+    expect(memoryAdmissionStats().pendingBytes).toBeGreaterThan(before);
+    const out = read(res);
+    // 50 s: the first account failed at 40 s, the second answers at 60 s.
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(out.text).not.toContain("message_start");
+    expect(memoryAdmissionStats().pendingBytes).toBeGreaterThan(before);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await out.pump;
+    expect(out.text.endsWith(CLAUDE_REPLY)).toBe(true);
+    expect(memoryAdmissionStats().pendingBytes).toBe(before);
+  });
+
   it("slow first combo model, second answers", async () => {
     state.settings.combos = { duo: ["slowp/m1", "fastp/m2"] };
     state.core = (args) => (args.modelInfo.provider === "slowp"

@@ -16,6 +16,13 @@ const mocks = vi.hoisted(() => ({
   getAuthBootstrapState: vi.fn(),
   getBootstrapSecret: vi.fn(),
   validateNewPassword: vi.fn(),
+  getProxyPoolById: vi.fn(async (id) => (id === "eu" ? { id: "eu" } : null)),
+  clearRequestDetailFullData: vi.fn(async () => {}),
+}));
+
+vi.mock("@/lib/db/index.js", () => ({
+  getProxyPoolById: mocks.getProxyPoolById,
+  clearRequestDetailFullData: mocks.clearRequestDetailFullData,
 }));
 
 vi.mock("next/server", () => ({
@@ -278,5 +285,38 @@ describe("PATCH /api/settings OIDC issuer", () => {
     expect((await PATCH(request({ oidcIssuerUrl: "https://idp.example.com/", oidcClientId: "c2" }))).status).toBe(200);
     expect((await PATCH(request({ oidcIssuerUrl: "" }))).status).toBe(200);
     expect(mocks.updateSettings).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("PATCH /api/settings proxy layers", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getSettings.mockResolvedValue({ providerStrategies: { claude: { proxyPoolId: "gone", fallbackStrategy: "round-robin" } } });
+    mocks.updateSettings.mockImplementation(async (body) => body);
+  });
+
+  it("refuses a provider layer changed to a pool that doesn't exist", async () => {
+    const response = await PATCH(request({ providerStrategies: { codex: { proxyPoolId: "missing" } } }));
+    expect(response.status).toBe(400);
+    expect(mocks.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("lets an unchanged stale entry through, so other pages can save the whole map", async () => {
+    const response = await PATCH(request({ providerStrategies: { claude: { proxyPoolId: "gone", fallbackStrategy: "fill-first" }, codex: { proxyPoolId: " eu " } } }));
+    expect(response.status).toBe(200);
+    expect(mocks.updateSettings).toHaveBeenCalledWith({
+      providerStrategies: { claude: { proxyPoolId: "gone", fallbackStrategy: "fill-first" }, codex: { proxyPoolId: "eu" } },
+    });
+  });
+
+  it("stores Inherit as no value and accepts Direct", async () => {
+    await PATCH(request({ providerStrategies: { codex: { proxyPoolId: "__none__" }, github: { proxyPoolId: "__direct__" } } }));
+    expect(mocks.updateSettings).toHaveBeenCalledWith({ providerStrategies: { codex: {}, github: { proxyPoolId: "__direct__" } } });
+  });
+
+  it("checks the Global layer the same way", async () => {
+    expect((await PATCH(request({ globalProxyPoolId: "missing" }))).status).toBe(400);
+    await PATCH(request({ globalProxyPoolId: "__none__" }));
+    expect(mocks.updateSettings).toHaveBeenLastCalledWith({ globalProxyPoolId: null });
   });
 });

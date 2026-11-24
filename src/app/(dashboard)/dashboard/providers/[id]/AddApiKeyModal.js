@@ -6,6 +6,7 @@ import { Button, Badge, Input, Modal, Select } from "@/shared/components";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { planBulkAdd } from "@/shared/utils/bulkAdd";
 import { describePastedKeyConfig, parsePastedKeyConfig } from "@/shared/utils/parsePastedKeyConfig";
+import { PROXY_DIRECT } from "@/lib/network/proxyRouting.js";
 
 const BULK_PLACEHOLDER = `name1|sk-key1\nname2|sk-key2\nsk-key-only-auto-named`;
 
@@ -487,10 +488,11 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
           value={formData.proxyPoolId}
           onChange={(e) => setFormData({ ...formData, proxyPoolId: e.target.value })}
           options={[
-            { value: NONE_PROXY_POOL_VALUE, label: "None" },
+            { value: NONE_PROXY_POOL_VALUE, label: "Inherit" },
+            { value: PROXY_DIRECT, label: "Direct (no proxy)" },
             ...(proxyPools || []).map((pool) => ({ value: pool.id, label: pool.name })),
           ]}
-          placeholder="None"
+          placeholder="Inherit"
         />
 
         {(proxyPools || []).length === 0 && (

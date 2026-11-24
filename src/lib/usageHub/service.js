@@ -71,7 +71,7 @@ export async function hubApiCall(body) {
   if (isDemo()) {
     result = demoResponse(account, operation, data);
   } else {
-    const proxyOptions = await resolveConnectionProxyConfig(account.providerSpecificData);
+    const proxyOptions = await resolveConnectionProxyConfig(account.providerSpecificData, account.provider);
     if (account.authType === "oauth") {
       account = (await refreshAndUpdateCredentials(account, false, proxyOptions)).connection;
     }

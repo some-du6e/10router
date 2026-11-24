@@ -1,0 +1,4 @@
+# Copied into the Docker image and run by /bin/sh: a CRLF checkout (Git for
+# Windows' default) would make the shebang "/bin/sh\r" and the container fail
+# to start.
+scripts/docker-entrypoint.sh text eol=lf

@@ -501,7 +501,7 @@ function bridgeCodexTurn(request, port, headers, peerIp, send, done, { errorFram
   return req;
 }
 
-function handleCodexUpgrade(req, socket, head, port) {
+function handleCodexUpgrade(req, socket, head, port, peerIp) {
   const key = req.headers["sec-websocket-key"];
   if (!key || String(req.headers["sec-websocket-version"] || "") !== "13") {
     socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
@@ -533,7 +533,6 @@ function handleCodexUpgrade(req, socket, head, port) {
   );
   socket.setNoDelay(true);
 
-  const peerIp = socket.remoteAddress || "";
   // Codex tags the connection's purpose here; a malformed value just means we
   // treat the connection as a normal turn.
   let isPrewarm = false;
@@ -693,6 +692,69 @@ const LAUNCH_NONCE_KEY = Symbol.for("10router.launchNonce");
 if (globalThis[LAUNCH_NONCE_KEY] === undefined) globalThis[LAUNCH_NONCE_KEY] = process.env.TENROUTER_LAUNCH_NONCE || null;
 delete process.env.TENROUTER_LAUNCH_NONCE;
 
+// ─── Behind the Go gateway ───────────────────────────────────────────────────
+//
+// With GATEWAY_MODE=proxy the gateway (gateway/, docs/GO_GATEWAY.md) holds the
+// public port and relays every request here over loopback, so this process's
+// TCP peer is always the gateway. The gateway sends the peer it accepted as
+// x-9r-gw-peer-ip / x-9r-gw-peer-port, with the token it started this process
+// with (GATEWAY_PEER_TOKEN). With that token on a loopback socket, the handed
+// peer stands in for the socket in every rule above, so they run on the
+// client's own connection as they would with no gateway in front. Without the
+// env var (GATEWAY_MODE=off) none of this runs. The token leaves the env, like
+// the launch nonce, so children don't inherit it.
+const GATEWAY_TOKEN_TEXT = String(process.env.GATEWAY_PEER_TOKEN || "");
+delete process.env.GATEWAY_PEER_TOKEN;
+// Both, so a token pinned in an env file does nothing once GATEWAY_MODE is
+// back to off. The gateway hands Node the mode it settled on ("proxy" or
+// "native"), so this never re-parses a value the gateway read differently.
+function gatewayEnabled(env) {
+  return String(env.GATEWAY_PEER_TOKEN || "") !== "" && ["proxy", "native"].includes(String(env.GATEWAY_MODE || "").trim().toLowerCase());
+}
+const GATEWAY_ON = gatewayEnabled({ GATEWAY_PEER_TOKEN: GATEWAY_TOKEN_TEXT, GATEWAY_MODE: process.env.GATEWAY_MODE });
+const GATEWAY_TOKEN = GATEWAY_TOKEN_TEXT.length >= 32 ? Buffer.from(GATEWAY_TOKEN_TEXT) : null;
+if (GATEWAY_ON && !GATEWAY_TOKEN) {
+  console.warn("[Gateway] GATEWAY_PEER_TOKEN is shorter than 32 characters; every request relayed with peer headers gets the peer \"unknown\"");
+}
+const GATEWAY_HEADERS = ["x-9r-gw-token", "x-9r-gw-peer-ip", "x-9r-gw-peer-port"];
+
+// The peer the gateway handed over for this request, or null to use the
+// socket. Removes the gateway's headers either way. A loopback request with
+// none of them is this machine's own (the Codex bridge's POST, a self-call),
+// as before. One that carries them but can't prove them is a relayed client
+// nobody can place, so it is "unknown": never this machine.
+const UNPROVEN_PEER = { ip: "unknown", port: "" };
+// Node takes maxHeadersCount header lines (1000 by default) and can drop the
+// rest without a word, so a request at the cap may have lost the gateway's
+// headers. The gateway itself never sends that many.
+const DEFAULT_MAX_HEADERS_COUNT = 1000;
+function mayHaveLostHeaders(req) {
+  const limit = (req.socket && req.socket.server && req.socket.server.maxHeadersCount) || DEFAULT_MAX_HEADERS_COUNT;
+  return Array.isArray(req.rawHeaders) && req.rawHeaders.length / 2 >= limit;
+}
+function gatewayPeer(req, socketIp) {
+  if (!GATEWAY_ON) return null;
+  const headers = req.headers;
+  const sent = GATEWAY_HEADERS.some((name) => headers[name] !== undefined);
+  const token = headers["x-9r-gw-token"];
+  const ip = String(headers["x-9r-gw-peer-ip"] || "");
+  const port = String(headers["x-9r-gw-peer-port"] || "");
+  for (const name of GATEWAY_HEADERS) delete headers[name];
+  if (!isLoopbackHost(socketIp)) return null;
+  if (!sent) return mayHaveLostHeaders(req) ? UNPROVEN_PEER : null;
+  if (!GATEWAY_TOKEN || typeof token !== "string" || !net.isIP(ip)) return UNPROVEN_PEER;
+  const given = Buffer.from(token);
+  if (given.length !== GATEWAY_TOKEN.length || !crypto.timingSafeEqual(given, GATEWAY_TOKEN)) return UNPROVEN_PEER;
+  return { ip, port };
+}
+
+// The peer of an upgrade (the Codex WebSocket), the same way.
+function upgradePeerIp(req, socket) {
+  const socketIp = socket.remoteAddress || "";
+  const handed = gatewayPeer(req, socketIp);
+  return handed ? handed.ip : socketIp;
+}
+
 let backgroundRefreshStarted = false;
 
 function startBackgroundTokenRefreshFromCustomServer() {
@@ -737,7 +799,9 @@ http.createServer = (...args) => {
   const rest = args.filter((a) => typeof a !== "function");
   if (!handler) return origCreate(...args);
   const wrapped = (req, res) => {
-    const socketIp = req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : "";
+    const tcpPeerIp = req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : "";
+    const handed = gatewayPeer(req, tcpPeerIp);
+    const socketIp = handed ? handed.ip : tcpPeerIp;
     // A Codex WebSocket turn's loopback POST from this process, sent just
     // before a shutdown signal, is still served and counted. One whose TCP
     // connect hadn't been accepted when server.close() ran is reset instead,
@@ -773,13 +837,20 @@ http.createServer = (...args) => {
     // readiness proof only (src/lib/launchProof.js): a relay or proxy has its
     // own connection, so it gets a proof for that one. Nothing keys or trusts on it.
     req.headers["x-9r-socket-ip"] = socketIp;
-    req.headers["x-9r-socket-port"] = String(req.socket?.remotePort ?? "");
+    req.headers["x-9r-socket-port"] = handed ? handed.port : String(req.socket?.remotePort ?? "");
     req.headers["x-9r-peer-token"] = PEER_TOKEN;
     if (!local) req.headers["x-9r-via-proxy"] = "1";
     if (proxyHop) req.headers["x-9r-proxy-hop"] = proxyHop;
     if (viaTunnel) req.headers["x-9r-via-tunnel"] = "1";
     return handler(req, res);
   };
+  // Behind the gateway, room for the peer headers it adds to a client's
+  // full --max-http-header-size, so the gateway is the one that answers 431.
+  if (GATEWAY_ON) {
+    const options = rest[0] && typeof rest[0] === "object" ? rest[0] : {};
+    if (options.maxHeaderSize === undefined) options.maxHeaderSize = http.maxHeaderSize + 4096;
+    if (rest[0] !== options) rest.unshift(options);
+  }
   const server = origCreate(...rest, wrapped);
   drain.addServer(server);
   server.once("listening", () => {
@@ -800,7 +871,7 @@ http.createServer = (...args) => {
       if (requestPath === CODEX_WS_PATH || requestPath === "/backend-api/codex/v1/responses") {
         const port = this.address() && this.address().port;
         if (port) {
-          handleCodexUpgrade(req, socket, head, port);
+          handleCodexUpgrade(req, socket, head, port, upgradePeerIp(req, socket));
           return true;
         }
       }
@@ -850,7 +921,7 @@ http.createServer = (...args) => {
   return server;
 };
 
-module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY, drain, isLoopbackHost, isOnThisMachine, clientIpFor, clientKeysFor, isTrustedProxyPeer, isTunnelTraffic } };
+module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY, drain, isLoopbackHost, isOnThisMachine, clientIpFor, clientKeysFor, isTrustedProxyPeer, isTunnelTraffic, upgradePeerIp, gatewayEnabled } };
 
 if (require.main === module) {
   // Before the app loads: its own signal listeners must not see SIGTERM first.
@@ -863,7 +934,12 @@ if (require.main === module) {
     // Repo checkout has no standalone build next to us. `next start` builds its HTTP
     // server in-process, so the wrapper above still sanitizes every request.
     const nextBin = require.resolve("next/dist/bin/next");
-    process.argv = [process.argv[0], nextBin, "start", ...process.argv.slice(2)];
+    // `next start` reads HOSTNAME and KEEP_ALIVE_TIMEOUT only as flags; behind
+    // the gateway it must stay on loopback with the keep-alive it was given.
+    const gatewayArgs = GATEWAY_ON
+      ? ["--hostname", process.env.HOSTNAME || "127.0.0.1", "--keepAliveTimeout", process.env.KEEP_ALIVE_TIMEOUT || "30000"]
+      : [];
+    process.argv = [process.argv[0], nextBin, "start", ...gatewayArgs, ...process.argv.slice(2)];
     require(nextBin);
   }
 }

@@ -20,7 +20,8 @@ import {
 } from "@/lib/auth/dashboardSession";
 import { clearSetupToken } from "@/lib/auth/setupToken";
 import { sanitizeAutoComboSetting } from "@/sse/services/autoCombo.js";
-import { clearRequestDetailFullData } from "@/lib/db/index.js";
+import { clearRequestDetailFullData, getProxyPoolById } from "@/lib/db/index.js";
+import { normalizeLayerSetting, PROXY_DIRECT } from "@/lib/network/proxyRouting.js";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -174,6 +175,31 @@ export async function PATCH(request) {
       const clean = sanitizeAutoComboSetting(key, body[key]);
       if (!clean) return NextResponse.json({ error: `Invalid ${key}` }, { status: 400 });
       body[key] = clean;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "globalProxyPoolId")) {
+      const value = normalizeLayerSetting(body.globalProxyPoolId);
+      if (value && value !== PROXY_DIRECT && !(await getProxyPoolById(value))) {
+        return NextResponse.json({ error: "Proxy pool not found" }, { status: 400 });
+      }
+      body.globalProxyPoolId = value;
+    }
+
+    // The provider layer gets the same check, so a stale pick can't save a pool that blocks every request.
+    // Only a changed value is checked: pages save the whole map, and an entry saved
+    // before this check must not make every unrelated save fail.
+    if (body.providerStrategies && typeof body.providerStrategies === "object") {
+      const stored = (await getSettings()).providerStrategies || {};
+      for (const [providerId, strategy] of Object.entries(body.providerStrategies)) {
+        if (!strategy || typeof strategy !== "object" || !("proxyPoolId" in strategy)) continue;
+        const value = normalizeLayerSetting(strategy.proxyPoolId);
+        const unchanged = value === normalizeLayerSetting(stored[providerId]?.proxyPoolId);
+        if (value && value !== PROXY_DIRECT && !unchanged && !(await getProxyPoolById(value))) {
+          return NextResponse.json({ error: "Proxy pool not found" }, { status: 400 });
+        }
+        if (value) strategy.proxyPoolId = value;
+        else delete strategy.proxyPoolId;
+      }
     }
 
     const settings = await updateSettings(body);

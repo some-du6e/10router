@@ -262,6 +262,11 @@ async function fetchVia(url, options, proxyOptions, noHeadersTimeout = false) {
     return send(target, dispatcher ? { ...init, dispatcher } : init);
   };
 
+  // The account's proxy can't be used (its pool is off or gone): send nothing
+  // rather than leave from this machine's IP.
+  const blockedReason = normalizeString(proxyOptions?.blockedReason);
+  if (blockedReason) throw new Error(`[ProxyFetch] Request blocked: ${blockedReason}`);
+
   // Vercel relay: forward request via relay headers
   const vercelRelayUrl = normalizeString(proxyOptions?.vercelRelayUrl);
   if (vercelRelayUrl) {
@@ -275,7 +280,8 @@ async function fetchVia(url, options, proxyOptions, noHeadersTimeout = false) {
   }
 
   const connectionProxyUrl = resolveConnectionProxyUrl(targetUrl, proxyOptions);
-  const envProxyUrl = connectionProxyUrl ? null : normalizeProxyUrl(getEnvProxyUrl(targetUrl));
+  // Direct was chosen on purpose, so the system proxy doesn't apply either.
+  const envProxyUrl = connectionProxyUrl || proxyOptions?.direct === true ? null : normalizeProxyUrl(getEnvProxyUrl(targetUrl));
   const proxyUrl = connectionProxyUrl || envProxyUrl;
 
   if (proxyUrl) {

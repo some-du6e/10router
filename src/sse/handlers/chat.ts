@@ -64,7 +64,7 @@ import { detectClientTool } from "open-sse/utils/clientDetector.js";
 import { sanitizeNodeQuirks } from "@/shared/utils/nodeQuirks.js";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers.js";
 import { recordEndpointRequests } from "@/lib/endpointRequestLog.js";
-import { withMemoryAdmission } from "../services/memoryAdmission.js";
+import { withMemoryAdmission, idleWhile } from "../services/memoryAdmission.js";
 import type { AdmissionTicket } from "../services/memoryAdmission.js";
 import { readJsonObject, missingModel } from "../utils/requestBody.js";
 
@@ -342,7 +342,15 @@ async function admittedChat(
   // Next aborts request.signal only when the client leaves before the response ends.
   if (!earlyHeaders || !(body.stream === true || json) || !KEEPALIVE_FORMATS.has(sourceFormat)) return route(request.signal);
   const delayMs = json ? NON_STREAM_EARLY_HEADERS_MS : STREAM_EARLY_HEADERS_MS;
-  return respondWithEarlyHeaders({ run: route, sourceFormat, json, delayMs, signal: request.signal, log });
+  // Headers sent early don't end routing: until it settles the request keeps
+  // building upstream bodies (fallbacks, warm-key waits), so memory admission
+  // keeps counting them as not yet on the heap.
+  const run = (signal: AbortSignal) => {
+    const routed = route(signal);
+    ticket?.pendUntil(routed);
+    return routed;
+  };
+  return respondWithEarlyHeaders({ run, sourceFormat, json, delayMs, signal: request.signal, log });
 }
 
 async function handleRoutedChat({ body, modelStr, settings, clientRawRequest, request, apiKey, routingFailures, signal = null, ingressCombo = null, sourceFormat }: RoutedChatArgs): Promise<Response> {
@@ -672,6 +680,8 @@ async function holdUntilClear({ first, attempt: rerun, willStream, sourceFormat,
     return rerun();
   };
   if (!willStream) {
+    // It sleeps for up to hours: memory admission doesn't count it as about to
+    // allocate while it does, only while each re-attempt runs.
     const settled = await awaitLimitClear({
       retryAtMs: first.retryAtMs,
       attempt,
@@ -679,6 +689,7 @@ async function holdUntilClear({ first, attempt: rerun, willStream, sourceFormat,
       model: model || modelStr,
       signal,
       log,
+      sleep: (ms: number, s: AbortSignal | null) => idleWhile(abortableSleep(ms, s), s),
     } as Parameters<typeof awaitLimitClear>[0]) as { response?: Response } | null;
     return settled?.response || first.response;
   }
@@ -918,8 +929,9 @@ async function routeSingleModelChat(
   const excludeConnectionIds = new Set<string>();
   // What the last account's attempt sent and its client request, so the next
   // one reuses them when they come out the same (chatCore). Emptied once a
-  // reply starts; a later pass starts without it.
-  const attemptCache = {};
+  // reply starts; a later pass starts without it. `last` also goes before a
+  // wait for a warm key, below.
+  const attemptCache: { last?: unknown; clientRequest?: unknown } = {};
   const accountFailures: { account?: string; status?: number; error?: string }[] = [];
   const accountErrors: AccountError[] = [];
   passAccountErrors = accountErrors;
@@ -960,8 +972,14 @@ async function routeSingleModelChat(
     if (credentials?.warmRetryAtMs) {
       const waitMs = Math.max(0, credentials.warmRetryAtMs - Date.now());
       log.info("CACHE", `waiting ${waitMs}ms for a key holding this conversation's prompt cache`);
-      cacheWaitedMs += waitMs;
-      await abortableSleep(waitMs, signal);
+      // The wait takes seconds, many requests wait at once, and an attempt is
+      // rebuilt in one serialize: while it waits, a request keeps its client
+      // body only, not the last attempt's bytes and translated body.
+      attemptCache.last = null;
+      // Awake, it may wait for memory room too; that counts toward the budget.
+      const sleptAt = Date.now();
+      await idleWhile(abortableSleep(waitMs, signal), signal);
+      cacheWaitedMs += Math.max(waitMs, Date.now() - sleptAt);
       continue;
     }
 

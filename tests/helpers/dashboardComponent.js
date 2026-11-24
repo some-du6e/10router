@@ -16,6 +16,8 @@ export function dashboardComponent(path, imports = {}, componentName = null) {
     presets: [
       [require("next/dist/compiled/babel/preset-react"), { runtime: "classic" }],
       [require("next/dist/compiled/babel/preset-env"), { targets: { node: "current" }, modules: "commonjs" }],
+      // .ts/.tsx sources. Presets run last to first, so this strips the types before the others.
+      ...(/\.tsx?$/.test(path) ? [[require("next/dist/compiled/babel/preset-typescript"), { isTSX: true, allExtensions: true }]] : []),
     ],
   });
   // One cell per hook call, in call order, as React keeps them.
@@ -40,6 +42,11 @@ export function dashboardComponent(path, imports = {}, componentName = null) {
     useCallback(callback, deps) {
       const [slot, isNew] = cell(() => ({ value: callback, deps }));
       if (!isNew && depsChanged(slot.deps, deps)) Object.assign(slot, { value: callback, deps });
+      return slot.value;
+    },
+    useMemo(create, deps) {
+      const [slot, isNew] = cell(() => ({ value: create(), deps }));
+      if (!isNew && depsChanged(slot.deps, deps)) Object.assign(slot, { value: create(), deps });
       return slot.value;
     },
     useRef(initial) {
