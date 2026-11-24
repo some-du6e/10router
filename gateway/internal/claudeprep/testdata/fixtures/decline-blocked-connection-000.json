@@ -1,0 +1,35 @@
+{
+ "name": "decline-blocked-connection-000",
+ "seed": 595,
+ "inputs": {
+  "provider": "openai-compatible-chat-5f0c1d2e-0000-4000-8000-00000000c1a0",
+  "model": "claude-opus-4-8",
+  "apiKey": "sk-synthetic-declineblockedconnection-0000",
+  "providerSpecificData": {
+   "apiType": "chat",
+   "baseUrl": "https://gateway.example.test/v1",
+   "modelRoutes": {
+    "claude-opus-4-8": "anthropic"
+   },
+   "blockedReason": "proxy pool unavailable"
+  },
+  "providerThinking": null,
+  "keyHasBudget": false,
+  "catalog": null
+ },
+ "request": {
+  "headers": {
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27",
+   "anthropic-version": "2023-06-01",
+   "accept": "application/json",
+   "content-type": "application/json"
+  },
+  "body": "{\"model\":\"combo-4\",\"max_tokens\":32000,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":31999},\"metadata\":{\"user_id\":\"user_AHefWYjoheQw0g8XR7RauzJedpAexCd9_account__session_LVhJP77p\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"delta bravo and zone on the on graph worker module field alpha of offset\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"cache a queue stream delta yield\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"array\",\"description\":\"and\",\"items\":{\"type\":\"string\"}},\"task_1\":{\"type\":\"string\",\"description\":\"layer index\"},\"task_2\":{\"type\":\"object\",\"description\":\"alpha\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"task_3\":{\"type\":\"array\",\"description\":\"index\",\"items\":{\"type\":\"string\"}},\"task_4\":{\"type\":\"object\",\"description\":\"on zone\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"task_5\":{\"type\":\"string\",\"description\":\"of token\"}},\"required\":[\"task_0\"]}},{\"name\":\"Bash\",\"description\":\"is module\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"number\",\"description\":\"bravo\",\"minimum\":0},\"bash_1\":{\"type\":\"array\",\"description\":\"cache\",\"items\":{\"type\":\"string\"}},\"bash_2\":{\"type\":\"string\",\"description\":\"parser\"},\"bash_3\":{\"type\":\"integer\",\"description\":\"stream\",\"minimum\":0}},\"required\":[\"bash_0\"],\"additionalProperties\":false}},{\"name\":\"Glob\",\"description\":\"delta parser offset decode\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"string\",\"description\":\"offset\"}},\"required\":[\"glob_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"Grep\",\"description\":\"bravo to parser\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"number\",\"description\":\"the\",\"minimum\":0},\"grep_1\":{\"type\":\"array\",\"description\":\"index\",\"items\":{\"type\":\"string\"}},\"grep_2\":{\"type\":\"array\",\"description\":\"config\",\"items\":{\"type\":\"string\"}},\"grep_3\":{\"type\":\"boolean\",\"description\":\"join\"},\"grep_4\":{\"type\":\"number\",\"description\":\"for worker\",\"minimum\":0}},\"required\":[\"grep_0\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\ndelta join vector of update token in\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"yield is\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"a queue update index token yield zone\",\"signature\":\"EqRfYeSXCuSNs5r5O4SpCXXsur==\"},{\"type\":\"text\",\"text\":\"update\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":132},\"id\":\"toolu_01BUvPmWORewbnFmfbsUV3AG\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01BUvPmWORewbnFmfbsUV3AG\",\"content\":\"// TODO: handle the empty case\"},{\"type\":\"text\",\"text\":\"layer\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"zone and parser filter handler field yield update layer\",\"signature\":\"EqlIls9BhdTpbgViOBRtLEiKk7Nu==\"},{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":387},\"id\":\"toolu_01F9Q9YV7kkeyk9tbB8Gy6Np\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01F9Q9YV7kkeyk9tbB8Gy6Np\",\"content\":[{\"type\":\"text\",\"text\":\"let count = 0;\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"record echo graph worker buffer bravo cache of for\",\"signature\":\"EqJVK4nDcv4KhbYXdWOUJAp6Uiw==\"},{\"type\":\"text\",\"text\":\"alpha to\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_3.ts\",\"limit\":63},\"id\":\"toolu_015d4tCGO45q14ulsjIOHNgL\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_015d4tCGO45q14ulsjIOHNgL\",\"content\":\"  return items.filter(Boolean);\\nthrow new Error(\\\"unexpected end\\\");\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"kernel for bravo\"}]}]}"
+ },
+ "expectDecline": "blocked",
+ "node": {
+  "error": "sent 0 upstream requests"
+ }
+}

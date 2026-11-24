@@ -28,6 +28,14 @@ on:
       - "open-sse/utils/**"
       - "src/shared/utils/endpointOverrides.ts"
       - "src/shared/utils/nodeQuirks.ts"
+      - "src/sse/handlers/chat.ts"
+      - "src/sse/utils/requestBody.js"
+      # Constants and tables the Go port embeds through tables.json.
+      - "open-sse/providers/shared.js"
+      - "open-sse/providers/registry/openai.js"
+      - "open-sse/config/runtimeConfig.js"
+      - "open-sse/config/appConstants.js"
+      - "open-sse/config/providers.js"
   workflow_dispatch:
 
 permissions:
@@ -62,14 +70,17 @@ jobs:
           CLAUDEPREP_OUT: ${{ runner.temp }}/claudeprep-fixtures
         run: |
           ./node_modules/.bin/vitest run unit/gateway-claudeprep-parity.test.js
-          ls "$CLAUDEPREP_OUT" | wc -l
           du -sh "$CLAUDEPREP_OUT"
+          # The Go test must load every fixture: the committed ones and these.
+          total=$(( $(ls "$CLAUDEPREP_OUT" | wc -l) + $(ls ../gateway/internal/claudeprep/testdata/fixtures | wc -l) ))
+          echo "CLAUDEPREP_MIN_FIXTURES=$total" >> "$GITHUB_ENV"
+          echo "fixtures: $total"
       - name: Go parity test (committed + large corpus)
         working-directory: gateway
         env:
           CLAUDEPREP_FIXTURES: ${{ runner.temp }}/claudeprep-fixtures
           CLAUDEPREP_REPORT: ${{ runner.temp }}/claudeprep-report.txt
-        run: go test -count=1 -run 'TestParityWithNode|TestJS' -v ./internal/claudeprep 2>&1 | tee "$RUNNER_TEMP/claudeprep-go.txt" | grep -v -E '^\s+--- PASS|^=== RUN' ; exit "${PIPESTATUS[0]}"
+        run: go test -count=1 -v ./internal/claudeprep 2>&1 | tee "$RUNNER_TEMP/claudeprep-go.txt" | grep -v -E '^\s+--- PASS|^=== RUN' ; exit "${PIPESTATUS[0]}"
       - name: Summary
         if: always()
         run: |

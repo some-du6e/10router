@@ -12,27 +12,9 @@ import (
 // route: buildUrl, buildHeaders, transformRequest, then finalizeBody with
 // the final headers, then JSON.stringify.
 
-const anthropicAPIHost = "api.anthropic.com"
-
-// Beta flags and the body fields they unlock (claudeMessageCompat.js).
-var (
-	betaBodyFields = []struct {
-		flag   string
-		fields []string
-	}{
-		{"context-management-2025-06-27", []string{"context_management"}},
-		{"dangerous-tool-use-2026-09-03", []string{"safeguards"}},
-	}
-	firstPartyBetaFields = []struct {
-		flag   string
-		fields []string
-	}{
-		{"dangerous-tool-use-2026-09-03", []string{"safeguards"}},
-	}
-	// FIRST_PARTY_BETAS in anthropicBeta.ts: the first-party field flags, then the tool-change flags.
-	firstPartyBetas     = []string{"dangerous-tool-use-2026-09-03", "mid-conversation-tool-changes-2026-07-01", "inline-tools-2026-09-15"}
-	alwaysStrippedBetas = []string{"claude-code-20250219"}
-)
+// ALWAYS_STRIPPED in anthropicBeta.ts (not exported there; the fixtures'
+// Claude Code beta header holds it to Node's).
+var alwaysStrippedBetas = []string{"claude-code-20250219"}
 
 // endpointSettingsPresent is endpointSettings(...) !== null.
 func endpointSettingsPresent(n NodeSettings) bool {
@@ -41,20 +23,20 @@ func endpointSettingsPresent(n NodeSettings) bool {
 
 func (p *prep) execute(body *Value, stream bool) *Request {
 	n := p.in.Connection.Node
-	settings := endpointSettingsPresent(n)
-	if settings && n.Overrides != nil && n.Overrides.Stream == "never" {
+	// Overrides present implies endpoint settings present.
+	if n.Overrides != nil && n.Overrides.Stream == "never" {
 		stream = false // connectionOverrides: the send's own stream flag
 	}
 	url := p.routeURL
-	if settings && n.Overrides != nil {
+	if n.Overrides != nil {
 		url = applyURLOverrides(url, n.Overrides)
 	}
 	headers := p.buildHeaders(stream)
-	if settings {
+	if endpointSettingsPresent(n) {
 		p.applyEndpointHeaders(headers)
 	}
 	body = p.transformRequest(body)
-	if settings && n.Overrides != nil {
+	if n.Overrides != nil {
 		body = applyBodyOverrides(body, n.Overrides)
 	}
 	body = finalizeBody(body, headers, p.in.Provider, p.models)
@@ -76,11 +58,11 @@ func (p *prep) transformRequest(body *Value) *Value {
 	}
 	// The Messages path: fields whose beta flag won't go out.
 	body = body.Spread()
-	for _, e := range betaBodyFields {
-		if !n.StripBeta && !contains(n.DroppedBetas, e.flag) {
+	for flag, fields := range tbl.BetaBodyFields {
+		if !n.StripBeta && !contains(n.DroppedBetas, flag) {
 			continue
 		}
-		for _, f := range e.fields {
+		for _, f := range fields {
 			body.Delete(f)
 		}
 	}
@@ -152,9 +134,9 @@ func finalizeBody(body *Value, headers *Value, provider string, models Models) *
 	// tool_choice rule with the outgoing thinking and model.
 	sent := sentBetas(headers)
 	var drop []string
-	for _, e := range firstPartyBetaFields {
-		if !contains(sent, e.flag) {
-			drop = append(drop, e.fields...)
+	for flag, fields := range tbl.FirstPartyBetaFields {
+		if !contains(sent, flag) {
+			drop = append(drop, fields...)
 		}
 	}
 	present := false
@@ -202,13 +184,16 @@ func (p *prep) buildHeaders(stream bool) *Value {
 	n := in.Connection.Node
 	h := Object()
 	h.Set("Content-Type", String("application/json"))
-	h.Set("anthropic-version", String(defaultAnthropicAPIVersion))
+	h.Set("anthropic-version", String(anthropicAPIVersion))
 	key := in.Connection.APIKey
 	if key == "" {
 		key = in.Connection.AccessToken
 	}
+	requireASCIIHeader(in.Connection.APIKey)
+	requireASCIIHeader(in.Connection.AccessToken)
 	h.Set("x-api-key", String(key))
 	if beta := in.ClientHeaders["anthropic-beta"]; beta != "" {
+		requireASCIIHeader(beta)
 		k := "anthropic-beta"
 		if !h.Has("anthropic-beta") && h.Has("Anthropic-Beta") {
 			k = "Anthropic-Beta"
@@ -278,6 +263,17 @@ func (p *prep) talksToAnthropic() bool {
 	return strings.TrimSuffix(urlHostname(base), ".") == anthropicAPIHost
 }
 
+// requireASCIIHeader: fetch sends a header value as a Latin-1 byte string
+// (and throws above U+00FF), and String#trim reads 0xA0 as a space. Only
+// ASCII values mean the same in both.
+func requireASCIIHeader(v string) {
+	for i := 0; i < len(v); i++ {
+		if v[i] >= 0x80 {
+			decline("a non-ASCII header value")
+		}
+	}
+}
+
 var headerNameRe = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 
 type headerOp struct {
@@ -305,6 +301,7 @@ func parseHeaderLines(text string) []headerOp {
 		}
 		name, value := jsTrim(l[:i]), jsTrim(l[i+1:])
 		if headerNameRe.MatchString(name) && !strings.ContainsAny(value, "\r\n\x00") {
+			requireASCIIHeader(value)
 			ops = append(ops, headerOp{name: name, value: value})
 		}
 	}
@@ -498,8 +495,13 @@ func applyBodyOverrides(body *Value, o *Overrides) *Value {
 	for _, k := range dropList(o.Drop) {
 		out.Delete(k)
 	}
-	if jsTrim(o.Body) != "" {
+	// parseBodyOverride: JSON.parse of the saved text. Parse reads bytes the
+	// way request.text() does, which drops a BOM JSON.parse would reject.
+	if jsTrim(o.Body) != "" && !strings.HasPrefix(o.Body, string(rune(0xFEFF))) {
 		merge, err := Parse([]byte(o.Body))
+		if IsDecline(err) {
+			decline("a body override the parser doesn't take")
+		}
 		if err == nil && merge.IsObject() {
 			deepMerge(out, merge)
 		}

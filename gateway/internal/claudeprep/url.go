@@ -117,7 +117,9 @@ func plainHost(host string) (string, bool) {
 		}
 	}
 	if last := labels[len(labels)-1]; last[0] >= '0' && last[0] <= '9' {
-		if len(labels) != 4 {
+		// IPv4: WHATWG reserializes it (a trailing dot goes), so only the
+		// canonical dotted quad is known to stay as written.
+		if len(labels) != 4 || strings.HasSuffix(host, ".") {
 			return "", false
 		}
 		for _, l := range labels {

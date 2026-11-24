@@ -4,7 +4,8 @@
  "inputs": {
   "provider": "openai-compatible-chat-5f0c1d2e-0000-4000-8000-00000000c1a0",
   "model": "claude-opus-4-8",
-  "apiKey": "sk-ant-oat01-synthetic-not-a-real-token-0000",
+  "apiKey": "sk-synthetic-plain-0000",
+  "accessToken": "sk-ant-oat01-synthetic-not-a-real-token-0000",
   "providerSpecificData": {
    "apiType": "chat",
    "baseUrl": "https://gateway.example.test/v1",

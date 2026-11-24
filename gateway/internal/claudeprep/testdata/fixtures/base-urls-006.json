@@ -1,0 +1,64 @@
+{
+ "name": "base-urls-006",
+ "seed": 47871,
+ "inputs": {
+  "provider": "openai-compatible-chat-5f0c1d2e-0000-4000-8000-00000000c1a0",
+  "model": "claude-sonnet-4-6",
+  "apiKey": "sk-synthetic-baseurls006-0000",
+  "providerSpecificData": {
+   "apiType": "chat",
+   "baseUrl": "http://gateway.example.test:8080/v1",
+   "modelRoutes": {
+    "claude-sonnet-4-6": "anthropic"
+   },
+   "overrides": {
+    "query": "x=1&y=a%20b"
+   }
+  },
+  "providerThinking": null,
+  "keyHasBudget": false,
+  "catalog": null
+ },
+ "request": {
+  "headers": {
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27",
+   "anthropic-version": "2023-06-01",
+   "accept": "application/json",
+   "content-type": "application/json"
+  },
+  "body": "{\"model\":\"combo-2\",\"max_tokens\":32000,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":31999},\"metadata\":{\"user_id\":\"user_BOMX6AbJTrWmKEmIN7d0WmSxRmTTbaKm_account__session_O9fhbHQC\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"index of worker for record delta join record in record index module record filter\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"to\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"string\",\"description\":\"alpha delta\"},\"task_1\":{\"type\":\"object\",\"description\":\"update with\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"task_2\":{\"type\":\"array\",\"description\":\"field\",\"items\":{\"type\":\"string\"}},\"task_3\":{\"type\":\"boolean\",\"description\":\"delta\"},\"task_4\":{\"type\":\"object\",\"description\":\"config for\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"task_5\":{\"type\":\"number\",\"description\":\"vector\",\"minimum\":0}},\"required\":[\"task_0\"]}},{\"name\":\"Bash\",\"description\":\"record for and offset worker alpha field layer\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"number\",\"description\":\"buffer\",\"minimum\":0}},\"required\":[\"bash_0\"]}},{\"name\":\"Glob\",\"description\":\"token encode encode join\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"array\",\"description\":\"node\",\"items\":{\"type\":\"string\"}},\"glob_1\":{\"type\":\"array\",\"description\":\"join on\",\"items\":{\"type\":\"string\"}},\"glob_2\":{\"type\":\"array\",\"description\":\"is\",\"items\":{\"type\":\"string\"}},\"glob_3\":{\"type\":\"object\",\"description\":\"queue with\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"glob_0\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"Grep\",\"description\":\"graph is join graph bravo for\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"string\",\"description\":\"with index\"},\"grep_1\":{\"type\":\"array\",\"description\":\"token\",\"items\":{\"type\":\"string\"}}},\"required\":[\"grep_0\"],\"additionalProperties\":false},\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nhandler delta update and handler filter token\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"field a\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"token worker and\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":318},\"id\":\"toolu_01iUkJZzPsAO7A3hVuGzuc6Q\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01iUkJZzPsAO7A3hVuGzuc6Q\",\"content\":\"import { join } from \\\"node:path\\\";\\nthrow new Error(\\\"unexpected end\\\");\\nimport { join } from \\\"node:path\\\";\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"join on yield\",\"signature\":\"EqwmC2k1weKskHxyYjtSu69mBP2hEl2d6inA2==\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":363},\"id\":\"toolu_01ydg8iKaDJVUTiai4rdR3Km\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01ydg8iKaDJVUTiai4rdR3Km\",\"content\":[{\"type\":\"text\",\"text\":\"// TODO: handle the empty case\\nlet count = 0;\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"filter config stream layer to for queue\",\"signature\":\"EqIVtZbfrwYoiRP==\"},{\"type\":\"text\",\"text\":\"graph join field\"},{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_3.ts\",\"limit\":186},\"id\":\"toolu_01ZmZGtGQtMph58SIdVjMd7J\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"and module\",\"signature\":\"EqvyHqKJaMjh5AzgXHmtcvbp0O==\"},{\"type\":\"text\",\"text\":\"worker offset token\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_4.ts\",\"limit\":391},\"id\":\"toolu_01OaMeZ20HvXKCKr6yYscsym\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01OaMeZ20HvXKCKr6yYscsym\",\"content\":\"throw new Error(\\\"unexpected end\\\");\\nif (!result) return null;\"},{\"type\":\"text\",\"text\":\"decode\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"config with record\"}]}]}"
+ },
+ "node": {
+  "url": "http://gateway.example.test:8080/v1/messages?x=1&y=a+b",
+  "headers": [
+   [
+    "Content-Type",
+    "application/json"
+   ],
+   [
+    "anthropic-version",
+    "2023-06-01"
+   ],
+   [
+    "x-api-key",
+    "{{apiKey}}"
+   ],
+   [
+    "Authorization",
+    "Bearer {{apiKey}}"
+   ],
+   [
+    "Accept",
+    "text/event-stream"
+   ],
+   [
+    "anthropic-beta",
+    "interleaved-thinking-2025-05-14,context-management-2025-06-27"
+   ]
+  ],
+  "body": "{\"model\":\"claude-sonnet-4-6\",\"max_tokens\":32000,\"stream\":true,\"metadata\":{\"user_id\":\"user_BOMX6AbJTrWmKEmIN7d0WmSxRmTTbaKm_account__session_O9fhbHQC\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\"},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\"},{\"type\":\"text\",\"text\":\"index of worker for record delta join record in record index module record filter\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"to\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"string\",\"description\":\"alpha delta\"},\"task_1\":{\"type\":\"object\",\"description\":\"update with\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"task_2\":{\"type\":\"array\",\"description\":\"field\",\"items\":{\"type\":\"string\"}},\"task_3\":{\"type\":\"boolean\",\"description\":\"delta\"},\"task_4\":{\"type\":\"object\",\"description\":\"config for\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"task_5\":{\"type\":\"number\",\"description\":\"vector\",\"minimum\":0}},\"required\":[\"task_0\"]},\"type\":\"custom\"},{\"name\":\"Bash\",\"description\":\"record for and offset worker alpha field layer\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"number\",\"description\":\"buffer\",\"minimum\":0}},\"required\":[\"bash_0\"]},\"type\":\"custom\"},{\"name\":\"Glob\",\"description\":\"token encode encode join\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"array\",\"description\":\"node\",\"items\":{\"type\":\"string\"}},\"glob_1\":{\"type\":\"array\",\"description\":\"join on\",\"items\":{\"type\":\"string\"}},\"glob_2\":{\"type\":\"array\",\"description\":\"is\",\"items\":{\"type\":\"string\"}},\"glob_3\":{\"type\":\"object\",\"description\":\"queue with\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"glob_0\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"type\":\"custom\"},{\"name\":\"Grep\",\"description\":\"graph is join graph bravo for\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"string\",\"description\":\"with index\"},\"grep_1\":{\"type\":\"array\",\"description\":\"token\",\"items\":{\"type\":\"string\"}}},\"required\":[\"grep_0\"],\"additionalProperties\":false},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nhandler delta update and handler filter token\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"field a\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"token worker and\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":318},\"id\":\"toolu_01iUkJZzPsAO7A3hVuGzuc6Q\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01iUkJZzPsAO7A3hVuGzuc6Q\",\"content\":\"import { join } from \\\"node:path\\\";\\nthrow new Error(\\\"unexpected end\\\");\\nimport { join } from \\\"node:path\\\";\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"join on yield\",\"signature\":\"EqwmC2k1weKskHxyYjtSu69mBP2hEl2d6inA2==\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":363},\"id\":\"toolu_01ydg8iKaDJVUTiai4rdR3Km\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01ydg8iKaDJVUTiai4rdR3Km\",\"content\":[{\"type\":\"text\",\"text\":\"// TODO: handle the empty case\\nlet count = 0;\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"filter config stream layer to for queue\",\"signature\":\"EqIVtZbfrwYoiRP==\"},{\"type\":\"text\",\"text\":\"graph join field\"},{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_3.ts\",\"limit\":186},\"id\":\"toolu_01ZmZGtGQtMph58SIdVjMd7J\"},{\"type\":\"thinking\",\"thinking\":\"and module\",\"signature\":\"EqvyHqKJaMjh5AzgXHmtcvbp0O==\"},{\"type\":\"text\",\"text\":\"worker offset token\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_4.ts\",\"limit\":391},\"id\":\"toolu_01OaMeZ20HvXKCKr6yYscsym\",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01OaMeZ20HvXKCKr6yYscsym\",\"content\":\"throw new Error(\\\"unexpected end\\\");\\nif (!result) return null;\"},{\"type\":\"text\",\"text\":\"decode\"},{\"type\":\"text\",\"text\":\"config with record\"}]}],\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"high\"}}",
+  "sha256": "81ed675037c3cf88ebd8c7ff9a5b6c7f46594bde1e1e26c23100f8bdfdbf0d7d"
+ }
+}

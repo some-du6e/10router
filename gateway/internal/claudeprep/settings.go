@@ -1,77 +1,79 @@
 package claudeprep
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 )
 
 // ParseNodeSettings decodes a connection's providerSpecificData JSON (as
-// stored in providerConnections.data) into NodeSettings. A field with a type
-// sanitizeNodeQuirks never writes is an error, so the caller proxies the
-// request rather than guess how Node would read it; so is a null
-// droppedBetas, on which Node's beta filter throws.
+// stored in providerConnections.data) into NodeSettings. Keys match exactly,
+// as Node reads them (encoding/json alone would also take "BASEURL"). A
+// field with a type sanitizeNodeQuirks never writes is an error, so the
+// caller proxies the request rather than guess how Node would read it; so is
+// a null droppedBetas, on which Node's beta filter throws.
 func ParseNodeSettings(data []byte) (NodeSettings, error) {
-	var raw struct {
-		APIType             *string           `json:"apiType"`
-		BaseURL             *string           `json:"baseUrl"`
-		ModelRoutes         map[string]string `json:"modelRoutes"`
-		DroppedBetas        json.RawMessage   `json:"droppedBetas"`
-		StripBeta           *bool             `json:"stripBeta"`
-		MaxCompletionTokens *bool             `json:"maxCompletionTokens"`
-		APIKeyHeader        *string           `json:"apiKeyHeader"`
-		AuthHeader          *string           `json:"authHeader"`
-		Mimic               *string           `json:"mimic"`
-		CustomHeaders       *string           `json:"customHeaders"`
-		Overrides           *struct {
-			Path    string `json:"path"`
-			Query   string `json:"query"`
-			Headers string `json:"headers"`
-			Body    string `json:"body"`
-			Drop    string `json:"drop"`
-			Models  string `json:"models"`
-			Stream  string `json:"stream"`
-			Timeout string `json:"timeout"`
-			Retries string `json:"retries"`
-			Proxy   string `json:"proxy"`
-		} `json:"overrides"`
-		BlockForeignTools *bool `json:"blockForeignTools"`
-		StripReasoning    *bool `json:"stripReasoning"`
-	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	if err := dec.Decode(&raw); err != nil {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return NodeSettings{}, fmt.Errorf("claudeprep: providerSpecificData: %w", err)
 	}
-	str := func(p *string) string {
-		if p == nil {
-			return ""
+	var n NodeSettings
+	var err error
+	field := func(key string, dst any) {
+		if err != nil {
+			return
 		}
-		return *p
+		v, ok := raw[key]
+		if !ok || string(v) == "null" {
+			return
+		}
+		if e := json.Unmarshal(v, dst); e != nil {
+			err = fmt.Errorf("claudeprep: providerSpecificData.%s: %w", key, e)
+		}
 	}
-	flag := func(p *bool) bool { return p != nil && *p }
-	n := NodeSettings{
-		APIType: str(raw.APIType), BaseURL: str(raw.BaseURL), ModelRoutes: raw.ModelRoutes,
-		StripBeta: flag(raw.StripBeta), MaxCompletionTokens: flag(raw.MaxCompletionTokens),
-		APIKeyHeader: str(raw.APIKeyHeader), AuthHeader: str(raw.AuthHeader), Mimic: str(raw.Mimic),
-		CustomHeaders: str(raw.CustomHeaders), BlockForeignTools: flag(raw.BlockForeignTools),
-		StripReasoning: flag(raw.StripReasoning),
-	}
-	if len(raw.DroppedBetas) > 0 {
-		if string(raw.DroppedBetas) == "null" {
+	field("apiType", &n.APIType)
+	field("baseUrl", &n.BaseURL)
+	field("modelRoutes", &n.ModelRoutes)
+	field("stripBeta", &n.StripBeta)
+	field("authHeader", &n.AuthHeader)
+	field("mimic", &n.Mimic)
+	field("customHeaders", &n.CustomHeaders)
+	field("blockForeignTools", &n.BlockForeignTools)
+	field("stripReasoning", &n.StripReasoning)
+	if v, ok := raw["droppedBetas"]; ok {
+		if string(v) == "null" {
 			return NodeSettings{}, fmt.Errorf("claudeprep: providerSpecificData.droppedBetas is null")
 		}
-		if err := json.Unmarshal(raw.DroppedBetas, &n.DroppedBetas); err != nil {
-			return NodeSettings{}, fmt.Errorf("claudeprep: providerSpecificData.droppedBetas: %w", err)
-		}
+		field("droppedBetas", &n.DroppedBetas)
 		if n.DroppedBetas == nil {
 			n.DroppedBetas = []string{}
 		}
 	}
-	if o := raw.Overrides; o != nil {
-		n.Overrides = &Overrides{
-			Path: o.Path, Query: o.Query, Headers: o.Headers, Body: o.Body, Drop: o.Drop,
-			Models: o.Models, Stream: o.Stream, Timeout: o.Timeout, Retries: o.Retries, Proxy: o.Proxy,
+	if v, ok := raw["overrides"]; ok && string(v) != "null" {
+		var o map[string]json.RawMessage
+		if e := json.Unmarshal(v, &o); e != nil {
+			return NodeSettings{}, fmt.Errorf("claudeprep: providerSpecificData.overrides: %w", e)
 		}
+		n.Overrides = &Overrides{}
+		for key, dst := range map[string]*string{
+			"path": &n.Overrides.Path, "query": &n.Overrides.Query, "headers": &n.Overrides.Headers,
+			"body": &n.Overrides.Body, "drop": &n.Overrides.Drop, "models": &n.Overrides.Models,
+			"stream": &n.Overrides.Stream, "timeout": &n.Overrides.Timeout, "retries": &n.Overrides.Retries,
+			"proxy": &n.Overrides.Proxy,
+		} {
+			if s, ok := o[key]; ok && string(s) != "null" {
+				if e := json.Unmarshal(s, dst); e != nil {
+					return NodeSettings{}, fmt.Errorf("claudeprep: providerSpecificData.overrides.%s: %w", key, e)
+				}
+			}
+		}
+	}
+	// chatCore refuses a connection with a truthy blockedReason before any send.
+	if v, ok := raw["blockedReason"]; ok {
+		b, perr := Parse(v)
+		n.Blocked = perr != nil || b.Truthy()
+	}
+	if err != nil {
+		return NodeSettings{}, err
 	}
 	return n, nil
 }

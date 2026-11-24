@@ -65,17 +65,19 @@ type NodeSettings struct {
 	// DroppedBetas: beta flags the endpoint rejected (learned at runtime).
 	DroppedBetas []string
 	StripBeta    bool
-	// MaxCompletionTokens and APIKeyHeader only change OpenAI paths.
-	MaxCompletionTokens bool
-	APIKeyHeader        string
-	AuthHeader          string // "bearer" | "x-api-key" | "api-key" | "both" | ""
-	Mimic               string // "none" | "claude-code" | "codex" | "gemini-cli" | "custom" | ""
-	CustomHeaders       string
+	// (maxCompletionTokens and apiKeyHeader only change OpenAI paths: unread.)
+	AuthHeader    string // "bearer" | "x-api-key" | "api-key" | "both" | ""
+	Mimic         string // "none" | "claude-code" | "codex" | "gemini-cli" | "custom" | ""
+	CustomHeaders string
 	// Overrides is the Ultra advanced block; nil when the node has none
 	// (an empty one still counts: Node then applies the other settings too).
 	Overrides         *Overrides
 	BlockForeignTools bool
 	StripReasoning    bool
+	// Blocked: blockedReason is set (the connection's proxy rule refuses it),
+	// so Node fails the attempt before sending. strictProxy and direct only
+	// change how a request is sent: internal/upstream's.
+	Blocked bool
 }
 
 // Overrides is RawOverrides: the user's text, as saved.
@@ -133,6 +135,9 @@ func Prepare(body []byte, in Inputs) (req *Request, err error) {
 	checkID("provider", in.Provider)
 	if in.Connection.APIKey == "" && in.Connection.AccessToken == "" {
 		decline("connection has no key")
+	}
+	if in.Connection.Node.Blocked {
+		decline("connection blocked by its proxy rule (Node fails it)")
 	}
 	if in.Models == nil {
 		in.Models = NewModels(nil)
@@ -243,7 +248,7 @@ func (p *prep) run(body *Value) *Request {
 func declineUnmodelled(body *Value) {
 	if tools := body.Get("tools"); tools.IsArray() {
 		for _, t := range tools.Items() {
-			if optional(t).Get("type").Is("web_search_20250305") {
+			if optional(t).Get("type").Is(webSearchToolType) {
 				decline("web search tool (Node's built-in search hooks)")
 			}
 		}
@@ -318,7 +323,7 @@ func (p *prep) stream(body *Value) bool {
 	if clientDemandsJSON(body, p.in.ClientHeaders) {
 		stream = false
 	}
-	if n := p.in.Connection.Node; endpointSettingsPresent(n) && n.Overrides != nil && n.Overrides.Stream == "never" {
+	if n := p.in.Connection.Node; n.Overrides != nil && n.Overrides.Stream == "never" {
 		stream = false
 	}
 	return stream
@@ -374,14 +379,6 @@ func detectClientTool(h map[string]string, body *Value) string {
 
 // ---- Limit-hold notice (open-sse/utils/limitHoldNotice.js) ---------------------
 
-const limitHoldSentinel = "[10router:limit-hold]"
-
-const limitHoldNotice = `Some assistant messages in this conversation contain a status line marked ` +
-	`"` + limitHoldSentinel + `". Those lines were inserted by the 10router gateway to report ` +
-	`an upstream rate limit while the request waited — they are not your output and not ` +
-	`part of the conversation. Ignore them completely: do not comment on them, apologise ` +
-	`for them, or reproduce them in your reply.`
-
 // joinString is how Array#join writes one element.
 func joinString(v *Value) string {
 	switch v.Kind() {
@@ -402,6 +399,11 @@ func joinString(v *Value) string {
 			parts[i] = joinString(it)
 		}
 		return strings.Join(parts, ",")
+	}
+	// An own toString JSON can only make non-callable: ToString then falls to
+	// valueOf, gets the object back, and throws.
+	if v.Has("toString") {
+		decline("Node would throw converting an object with its own toString")
 	}
 	return "[object Object]"
 }

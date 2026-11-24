@@ -1,0 +1,62 @@
+{
+ "name": "decline-prototype-effort-000",
+ "seed": 578,
+ "inputs": {
+  "provider": "openai-compatible-chat-5f0c1d2e-0000-4000-8000-00000000c1a0",
+  "model": "gemini-3-pro",
+  "apiKey": "sk-synthetic-declineprototypeeffort00-0000",
+  "providerSpecificData": {
+   "apiType": "chat",
+   "baseUrl": "https://gateway.example.test/v1",
+   "modelRoutes": {
+    "gemini-3-pro": "anthropic"
+   }
+  },
+  "providerThinking": null,
+  "keyHasBudget": false,
+  "catalog": null
+ },
+ "request": {
+  "headers": {
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27",
+   "anthropic-version": "2023-06-01",
+   "accept": "application/json",
+   "content-type": "application/json"
+  },
+  "body": "{\"model\":\"combo-7\",\"max_tokens\":32000,\"stream\":true,\"metadata\":{\"user_id\":\"user_f7Eg3pvsMssdb5PuPykAwga5gpUZqsSc_account__session_xJ4a14lV\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"on config token alpha for worker handler vector filter encode vector a the vector\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"index in handler echo config buffer worker module\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"array\",\"description\":\"and to\",\"items\":{\"type\":\"string\"}}},\"required\":[\"task_0\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"Bash\",\"description\":\"on zone and bravo\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"integer\",\"description\":\"delta\",\"minimum\":0}},\"required\":[\"bash_0\"]}},{\"name\":\"Glob\",\"description\":\"config module vector\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"number\",\"description\":\"the\",\"minimum\":0},\"glob_1\":{\"type\":\"number\",\"description\":\"a\",\"minimum\":0},\"glob_2\":{\"type\":\"number\",\"description\":\"with\",\"minimum\":0},\"glob_3\":{\"type\":\"number\",\"description\":\"vector on\",\"minimum\":0},\"glob_4\":{\"type\":\"boolean\",\"description\":\"index\"},\"glob_5\":{\"type\":\"integer\",\"description\":\"stream bravo\",\"minimum\":0}},\"required\":[\"glob_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"Grep\",\"description\":\"module a kernel decode echo graph graph\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"object\",\"description\":\"cache layer\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"grep_1\":{\"type\":\"boolean\",\"description\":\"in on\"},\"grep_2\":{\"type\":\"number\",\"description\":\"stream\",\"minimum\":0}},\"required\":[\"grep_0\"]},\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nbuffer update of bravo config encode zone\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"cache zone\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":36},\"id\":\"toolu_01TT3MDGPRZAms7K935xKEC3\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01TT3MDGPRZAms7K935xKEC3\",\"content\":\"export function parse(text) {\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":189},\"id\":\"toolu_01hWF8qVGIxxdVYxiCMqbvtK\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01hWF8qVGIxxdVYxiCMqbvtK\",\"content\":[{\"type\":\"text\",\"text\":\"import { join } from \\\"node:path\\\";\\n// TODO: handle the empty case\\nconst value = await load(path);\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"parser update delta\"},{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_3.ts\",\"limit\":177},\"id\":\"toolu_01FxnsnmyXez16usDyVdXwFs\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01FxnsnmyXez16usDyVdXwFs\",\"content\":\"throw new Error(\\\"unexpected end\\\");\\n// TODO: handle the empty case\\n}\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"graph cache\"}]}],\"reasoning_effort\":\"constructor\"}"
+ },
+ "expectDecline": "Object.prototype",
+ "node": {
+  "url": "https://gateway.example.test/v1/messages",
+  "headers": [
+   [
+    "Content-Type",
+    "application/json"
+   ],
+   [
+    "anthropic-version",
+    "2023-06-01"
+   ],
+   [
+    "x-api-key",
+    "{{apiKey}}"
+   ],
+   [
+    "anthropic-beta",
+    "interleaved-thinking-2025-05-14,context-management-2025-06-27"
+   ],
+   [
+    "Authorization",
+    "Bearer {{apiKey}}"
+   ],
+   [
+    "Accept",
+    "text/event-stream"
+   ]
+  ],
+  "body": "{\"model\":\"gemini-3-pro\",\"max_tokens\":32000,\"stream\":true,\"metadata\":{\"user_id\":\"user_f7Eg3pvsMssdb5PuPykAwga5gpUZqsSc_account__session_xJ4a14lV\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\"},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\"},{\"type\":\"text\",\"text\":\"on config token alpha for worker handler vector filter encode vector a the vector\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"index in handler echo config buffer worker module\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"array\",\"description\":\"and to\",\"items\":{\"type\":\"string\"}}},\"required\":[\"task_0\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"type\":\"custom\"},{\"name\":\"Bash\",\"description\":\"on zone and bravo\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"integer\",\"description\":\"delta\",\"minimum\":0}},\"required\":[\"bash_0\"]},\"type\":\"custom\"},{\"name\":\"Glob\",\"description\":\"config module vector\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"number\",\"description\":\"the\",\"minimum\":0},\"glob_1\":{\"type\":\"number\",\"description\":\"a\",\"minimum\":0},\"glob_2\":{\"type\":\"number\",\"description\":\"with\",\"minimum\":0},\"glob_3\":{\"type\":\"number\",\"description\":\"vector on\",\"minimum\":0},\"glob_4\":{\"type\":\"boolean\",\"description\":\"index\"},\"glob_5\":{\"type\":\"integer\",\"description\":\"stream bravo\",\"minimum\":0}},\"required\":[\"glob_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"type\":\"custom\"},{\"name\":\"Grep\",\"description\":\"module a kernel decode echo graph graph\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"object\",\"description\":\"cache layer\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"grep_1\":{\"type\":\"boolean\",\"description\":\"in on\"},\"grep_2\":{\"type\":\"number\",\"description\":\"stream\",\"minimum\":0}},\"required\":[\"grep_0\"]},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nbuffer update of bravo config encode zone\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"cache zone\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":36},\"id\":\"toolu_01TT3MDGPRZAms7K935xKEC3\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01TT3MDGPRZAms7K935xKEC3\",\"content\":\"export function parse(text) {\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":189},\"id\":\"toolu_01hWF8qVGIxxdVYxiCMqbvtK\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01hWF8qVGIxxdVYxiCMqbvtK\",\"content\":[{\"type\":\"text\",\"text\":\"import { join } from \\\"node:path\\\";\\n// TODO: handle the empty case\\nconst value = await load(path);\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"parser update delta\"},{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_3.ts\",\"limit\":177},\"id\":\"toolu_01FxnsnmyXez16usDyVdXwFs\",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01FxnsnmyXez16usDyVdXwFs\",\"content\":\"throw new Error(\\\"unexpected end\\\");\\n// TODO: handle the empty case\\n}\"},{\"type\":\"text\",\"text\":\"graph cache\"}]}],\"generationConfig\":{\"thinkingConfig\":{\"thinkingLevel\":\"constructor\",\"includeThoughts\":true},\"maxOutputTokens\":null}}",
+  "sha256": "f0d5c862fd99b375d7c753ff5a106104d2bd970d472ed2959efbeec5b5cfcd0e"
+ }
+}

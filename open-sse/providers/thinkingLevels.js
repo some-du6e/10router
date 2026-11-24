@@ -5,7 +5,7 @@ import { matchPattern } from "./pricing.js";
 import { resolveKiroEffortPath } from "../config/kiroConstants.js";
 
 // Shared level sets (deduped) — verified against provider docs + wire in thinkingUnified.applyFormat.
-export const L = {
+const L = {
   base: ["none", "low", "medium", "high"],                          // qwen, step, hunyuan, gemini-budget
   onOff: ["none", "thinking"],                                      // zai (binary), minimax (adaptive)
   openai: ["none", "minimal", "low", "medium", "high", "xhigh"],    // GPT-5.x / o-series (no "max")
@@ -34,6 +34,9 @@ export const FORMAT_LEVELS = {
 const CODEX_GPT_5_6_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 // Model-name pattern overrides (glob, first match wins) — more precise than format default.
+// The levels of a reasoning model no format or pattern names.
+export const DEFAULT_LEVELS = L.base;
+
 export const PATTERN_THINKING = [
   { pattern: "*gpt-6.1-sol*", levels: ["low", "medium", "high", "xhigh", "max"] },
   { pattern: "*gpt-6-astra*", levels: ["low", "medium", "high", "xhigh", "max"] },
@@ -60,7 +63,7 @@ export function getThinkingLevels(provider, model) {
   const hit = PATTERN_THINKING.find((entry) =>
     (!entry.provider || entry.provider === provider) && matchPattern(entry.pattern, model)
   );
-  let levels = hit?.levels || FORMAT_LEVELS[caps.thinkingFormat] || L.base;
+  let levels = hit?.levels || FORMAT_LEVELS[caps.thinkingFormat] || DEFAULT_LEVELS;
   if (caps.thinkingCanDisable === false) levels = levels.filter((l) => l !== "none");
   return levels;
 }

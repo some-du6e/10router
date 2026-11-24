@@ -14,7 +14,14 @@
   },
   "providerThinking": null,
   "keyHasBudget": false,
-  "catalog": null
+  "catalog": {
+   "modalities": {
+    "claude-opus-4-8": {
+     "pdf": true,
+     "vision": true
+    }
+   }
+  }
  },
  "request": {
   "headers": {

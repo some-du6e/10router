@@ -1,6 +1,7 @@
 package claudeprep
 
 import (
+	"strconv"
 	"strings"
 )
 
@@ -10,14 +11,8 @@ import (
 // claude, anthropic-compatible-* nor deepseek: no thinking-block rewrite, no
 // cloaking.
 
-const (
-	defaultMaxTokens           = 64000
-	claudeSystemPrompt         = "You are Claude Code, Anthropic's official CLI for Claude."
-	interruptedToolResultText  = "Tool execution was interrupted before a result was returned."
-	prefillContinuationText    = "Continue."
-	webSearchToolType          = "web_search_20250305"
-	defaultAnthropicAPIVersion = "2023-06-01"
-)
+// CLAUDE_BLOCK.WEB_SEARCH_TOOL (schema/blocks.js).
+const webSearchToolType = "web_search_20250305"
 
 func (p *prep) translate(body *Value) *Value {
 	// stripContentTypes: no strip list for a node's models.
@@ -132,10 +127,8 @@ func generateToolCallID(msgIndex, tcIndex int, name *Value) string {
 		}
 		n = "_" + sanitizeChars(name.str)
 	}
-	return "call_msg" + itoa(msgIndex) + "_tc" + itoa(tcIndex) + n
+	return "call_msg" + strconv.Itoa(msgIndex) + "_tc" + strconv.Itoa(tcIndex) + n
 }
-
-func itoa(i int) string { return formatNumber(float64(i)) }
 
 func ensureToolCallIDs(body *Value) {
 	msgs := body.Get("messages")
@@ -147,6 +140,13 @@ func ensureToolCallIDs(body *Value) {
 		if role.Is("assistant") {
 			if tcs := msg.Get("tool_calls"); tcs.Truthy() && tcs.IsArray() {
 				for j, tc := range tcs.Items() {
+					if tc.IsArray() {
+						// Node sets id and type on the array: invisible to JSON.
+						continue
+					}
+					if !tc.IsNullish() && !tc.IsObject() {
+						decline("a tool call that isn't an object")
+					}
 					id := get(tc, "id")
 					if !id.Truthy() || !idPasses(id) {
 						s := sanitizeToolID(id)
@@ -327,7 +327,8 @@ func withClaudeCodePrompt(system *Value) *Value {
 		}
 	}
 	for _, b := range kept {
-		if b.Truthy() && optionalTrim(b) == claudeSystemPrompt {
+		// b?.text?.trim() === CLAUDE_SYSTEM_PROMPT (undefined text reads "" here, which never matches).
+		if trimmedText(b) == claudeSystemPrompt {
 			return Array(kept...)
 		}
 	}
@@ -344,15 +345,6 @@ func trimmedText(b *Value) string {
 		decline("a text that isn't a string, where Node calls trim()")
 	}
 	return jsTrim(t.str)
-}
-
-// optionalTrim is b?.text?.trim() compared with a string: undefined never matches.
-func optionalTrim(b *Value) string {
-	t := optional(b).Get("text")
-	if t.IsNullish() {
-		return "\x00undefined"
-	}
-	return trimmedText(b)
 }
 
 // ---- prepareClaudeRequest -----------------------------------------------------------

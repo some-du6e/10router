@@ -44,6 +44,11 @@ const caps = await import("../../open-sse/providers/capabilities.js");
 const levels = await import("../../open-sse/providers/thinkingLevels.js");
 const vision = await import("../../open-sse/providers/visionPatterns.js");
 const { MIMIC_HEADERS } = await import("../../src/shared/utils/nodeQuirks.js");
+const compat = await import("../../open-sse/config/claudeMessageCompat.js");
+const { DEFAULT_MAX_TOKENS } = await import("../../open-sse/config/runtimeConfig.js");
+const { ANTHROPIC_API_VERSION, ANTHROPIC_API_HOST } = await import("../../open-sse/providers/shared.js");
+const { CLAUDE_SYSTEM_PROMPT } = await import("../../open-sse/config/appConstants.js");
+const { LIMIT_HOLD_SENTINEL } = await import("../../open-sse/utils/limitHold.js");
 const { buildCorpus } = await import("../helpers/claudeprepCorpus.js");
 
 const GATEWAY_DIR = fileURLToPath(new URL("../../gateway/internal/claudeprep/", import.meta.url));
@@ -64,10 +69,22 @@ function tablesText() {
     patternCapabilities: caps.PATTERN_CAPABILITIES,
     thinkingFormatLevels: levels.FORMAT_LEVELS,
     thinkingPatternLevels: levels.PATTERN_THINKING,
-    thinkingDefaultLevels: levels.L.base,
+    thinkingDefaultLevels: levels.DEFAULT_LEVELS,
     visionNotPattern: vision.NOT_VISION.source,
     visionPattern: vision.VISION_NAME.source,
     mimicHeaders: MIMIC_HEADERS,
+    betaBodyFields: compat.CLAUDE_BETA_BODY_FIELDS,
+    firstPartyBetaFields: compat.CLAUDE_FIRST_PARTY_BETA_FIELDS,
+    toolChangeBetas: compat.CLAUDE_TOOL_CHANGE_BETAS,
+    constants: {
+      defaultMaxTokens: DEFAULT_MAX_TOKENS,
+      anthropicApiVersion: ANTHROPIC_API_VERSION,
+      anthropicApiHost: ANTHROPIC_API_HOST,
+      claudeSystemPrompt: CLAUDE_SYSTEM_PROMPT,
+      limitHoldSentinel: LIMIT_HOLD_SENTINEL,
+      interruptedToolResultText: compat.CLAUDE_INTERRUPTED_TOOL_RESULT_TEXT,
+      prefillContinuationText: compat.CLAUDE_PREFILL_CONTINUATION_TEXT,
+    },
   };
   return JSON.stringify(tables, null, 2) + "\n";
 }
@@ -75,6 +92,7 @@ function tablesText() {
 const redact = (value, inputs) => {
   let out = String(value);
   if (inputs.apiKey) out = out.split(inputs.apiKey).join("{{apiKey}}");
+  if (inputs.accessToken) out = out.split(inputs.accessToken).join("{{accessToken}}");
   return out;
 };
 
@@ -98,6 +116,7 @@ async function runNode(fixture) {
   } : null);
   const credentials = {
     apiKey: inputs.apiKey,
+    ...(inputs.accessToken ? { accessToken: inputs.accessToken } : {}),
     connectionId: "conn-synthetic-0001",
     connectionName: "synthetic",
     providerSpecificData: structuredClone(inputs.providerSpecificData),

@@ -26,10 +26,8 @@ type Caps struct {
 	ThinkingCanDisable           bool
 	ThinkingRange                *ThinkingRange
 	ThinkingEffortSupported      bool
-	ThinkingBudgetAccepted       bool
 	ForcedToolChoice             bool
 	ForcedToolChoiceWithThinking bool
-	ContextWindow                float64
 	MaxOutput                    float64
 }
 
@@ -49,10 +47,8 @@ type capsPatch struct {
 	ThinkingCanDisable           *bool          `json:"thinkingCanDisable"`
 	ThinkingRange                *ThinkingRange `json:"thinkingRange"`
 	ThinkingEffortSupported      *bool          `json:"thinkingEffortSupported"`
-	ThinkingBudgetAccepted       *bool          `json:"thinkingBudgetAccepted"`
 	ForcedToolChoice             *bool          `json:"forcedToolChoice"`
 	ForcedToolChoiceWithThinking *bool          `json:"forcedToolChoiceWithThinking"`
-	ContextWindow                *float64       `json:"contextWindow"`
 	MaxOutput                    *float64       `json:"maxOutput"`
 }
 
@@ -74,12 +70,8 @@ func (p *capsPatch) apply(c *Caps) {
 		c.ThinkingRange = p.ThinkingRange
 	}
 	setBool(&c.ThinkingEffortSupported, p.ThinkingEffortSupported)
-	setBool(&c.ThinkingBudgetAccepted, p.ThinkingBudgetAccepted)
 	setBool(&c.ForcedToolChoice, p.ForcedToolChoice)
 	setBool(&c.ForcedToolChoiceWithThinking, p.ForcedToolChoiceWithThinking)
-	if p.ContextWindow != nil {
-		c.ContextWindow = *p.ContextWindow
-	}
 	if p.MaxOutput != nil {
 		c.MaxOutput = *p.MaxOutput
 	}
@@ -99,10 +91,22 @@ type tables struct {
 		Pattern  string   `json:"pattern"`
 		Levels   []string `json:"levels"`
 	} `json:"thinkingPatternLevels"`
-	ThinkingDefaultLevels []string          `json:"thinkingDefaultLevels"`
-	VisionNotPattern      string            `json:"visionNotPattern"`
-	VisionPattern         string            `json:"visionPattern"`
-	MimicHeaders          map[string]string `json:"mimicHeaders"`
+	ThinkingDefaultLevels []string            `json:"thinkingDefaultLevels"`
+	VisionNotPattern      string              `json:"visionNotPattern"`
+	VisionPattern         string              `json:"visionPattern"`
+	MimicHeaders          map[string]string   `json:"mimicHeaders"`
+	BetaBodyFields        map[string][]string `json:"betaBodyFields"`
+	FirstPartyBetaFields  map[string][]string `json:"firstPartyBetaFields"`
+	ToolChangeBetas       map[string][]string `json:"toolChangeBetas"`
+	Constants             struct {
+		DefaultMaxTokens          float64 `json:"defaultMaxTokens"`
+		AnthropicAPIVersion       string  `json:"anthropicApiVersion"`
+		AnthropicAPIHost          string  `json:"anthropicApiHost"`
+		ClaudeSystemPrompt        string  `json:"claudeSystemPrompt"`
+		LimitHoldSentinel         string  `json:"limitHoldSentinel"`
+		InterruptedToolResultText string  `json:"interruptedToolResultText"`
+		PrefillContinuationText   string  `json:"prefillContinuationText"`
+	} `json:"constants"`
 }
 
 var (
@@ -117,7 +121,41 @@ func init() {
 	}
 	notVision = regexp.MustCompile("(?i)" + tbl.VisionNotPattern)
 	visionRe = regexp.MustCompile("(?i)" + tbl.VisionPattern)
+	k := tbl.Constants
+	defaultMaxTokens, anthropicAPIVersion, anthropicAPIHost = k.DefaultMaxTokens, k.AnthropicAPIVersion, k.AnthropicAPIHost
+	claudeSystemPrompt, interruptedToolResultText, prefillContinuationText = k.ClaudeSystemPrompt, k.InterruptedToolResultText, k.PrefillContinuationText
+	limitHoldSentinel = k.LimitHoldSentinel
+	limitHoldNotice = `Some assistant messages in this conversation contain a status line marked ` +
+		`"` + limitHoldSentinel + `". Those lines were inserted by the 10router gateway to report ` +
+		`an upstream rate limit while the request waited ` + "—" + ` they are not your output and not ` +
+		`part of the conversation. Ignore them completely: do not comment on them, apologise ` +
+		`for them, or reproduce them in your reply.`
+	// FIRST_PARTY_BETAS (anthropicBeta.ts): the first-party field flags, then every tool-change flag.
+	for flag := range tbl.FirstPartyBetaFields {
+		firstPartyBetas = append(firstPartyBetas, flag)
+	}
+	for _, flags := range tbl.ToolChangeBetas {
+		firstPartyBetas = union(firstPartyBetas, flags)
+	}
+	if defaultMaxTokens <= 0 || claudeSystemPrompt == "" || limitHoldSentinel == "" || len(tbl.BetaBodyFields) == 0 || len(firstPartyBetas) == 0 {
+		panic("claudeprep: tables.json is missing constants")
+	}
 }
+
+// Node's constants, from tables.json.
+var (
+	defaultMaxTokens          float64
+	anthropicAPIVersion       string
+	anthropicAPIHost          string
+	claudeSystemPrompt        string
+	interruptedToolResultText string
+	prefillContinuationText   string
+	limitHoldSentinel         string
+	// limitHoldNotice is limitHoldNotice.js NOTICE (not exported there; the
+	// limit-hold fixtures hold it to Node's text).
+	limitHoldNotice string
+	firstPartyBetas []string
+)
 
 // Catalog is the synced model catalog capabilities.js reads through
 // setCatalogSource (models.dev data, refreshed by Node): modalities by model,
@@ -127,14 +165,16 @@ type Catalog interface {
 	Limits(provider, model string) (Limits, bool)
 }
 
-// Modalities is a catalog entry's input modalities (true = declared).
+// Modalities is a catalog entry's input modalities the preparation reads
+// (true = declared).
 type Modalities struct {
-	Vision, PDF, AudioInput, VideoInput bool
+	Vision, PDF, AudioInput bool
 }
 
-// Limits is a catalog entry's token limits (0 = not given).
+// Limits is a catalog entry's output limit (0 = not given). The context
+// window it also carries changes nothing here.
 type Limits struct {
-	ContextWindow, MaxOutput float64
+	MaxOutput float64
 }
 
 // Models resolves what the preparation needs to know about a model. The
@@ -168,22 +208,22 @@ func (m tableModels) Capabilities(provider, model string) Caps {
 	if model == "" {
 		return defaultCaps()
 	}
-	if isProtoName(model) || isProtoName(lastSegment(model)) || isProtoName(provider) {
-		decline("a model or provider id that names an Object.prototype member")
+	if isProtoName(model) || isProtoName(lastSegment(model)) {
+		decline("a model id that names an Object.prototype member")
 	}
 	base := lastSegment(model)
-	if provider != "" {
-		if pc, ok := tbl.ProviderCapabilities[provider]; ok {
-			if p, ok := pc[model]; ok {
-				c := defaultCaps()
-				p.apply(&c)
-				return c
-			}
-			if p, ok := pc[base]; ok {
-				c := defaultCaps()
-				p.apply(&c)
-				return c
-			}
+	// PROVIDER_CAPABILITIES[provider || resolveProviderAlias(provider)]: an
+	// openai-compatible node id is neither a table key nor an alias.
+	if pc, ok := tbl.ProviderCapabilities[provider]; ok {
+		if p, ok := pc[model]; ok {
+			c := defaultCaps()
+			p.apply(&c)
+			return c
+		}
+		if p, ok := pc[base]; ok {
+			c := defaultCaps()
+			p.apply(&c)
+			return c
 		}
 	}
 	if p, ok := tbl.ModelCapabilities[base]; ok {
@@ -216,9 +256,6 @@ func (m tableModels) refine(p *capsPatch, provider, model string) Caps {
 			c.AudioInput = c.AudioInput || mod.AudioInput
 		}
 		if lim, ok := m.catalog.Limits(provider, model); ok {
-			if lim.ContextWindow > 0 {
-				c.ContextWindow = lim.ContextWindow
-			}
 			if lim.MaxOutput > 0 {
 				c.MaxOutput = lim.MaxOutput
 			}
@@ -242,9 +279,7 @@ func looksLikeVisionModel(model string) bool {
 }
 
 func (m tableModels) ThinkingLevels(provider, model string) []string {
-	if provider == "kiro" {
-		decline("kiro thinking levels")
-	}
+	// (Node's kiro special case can't apply: Prepare takes openai-compatible nodes only.)
 	c := m.Capabilities(provider, model)
 	if !c.Reasoning {
 		return nil

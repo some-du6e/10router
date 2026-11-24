@@ -136,21 +136,12 @@ func (v *Value) Truthy() bool {
 
 // ---- Arrays ----------------------------------------------------------------
 
-// Items is the array's elements (nil for any other kind). The slice is the
-// array's own; use SetItems to change its length.
+// Items is the array's elements (nil for any other kind), the array's own slice.
 func (v *Value) Items() []*Value {
 	if v == nil || v.kind != KindArray {
 		return nil
 	}
 	return v.arr
-}
-
-// SetItems replaces the array's elements in place (every holder sees it).
-func (v *Value) SetItems(items []*Value) {
-	if items == nil {
-		items = []*Value{}
-	}
-	v.arr = items
 }
 
 // Len is the array's length or the object's member count.
@@ -233,6 +224,11 @@ func (v *Value) Has(key string) bool {
 // Set is v[key] = val: a member keeps its slot, a new one goes where
 // JavaScript would enumerate it.
 func (v *Value) Set(key string, val *Value) {
+	if v == nil || v.kind != KindObject {
+		// A property set on a primitive throws in strict-mode Node; on an
+		// array it is invisible to JSON. Neither is modelled.
+		decline("a property set on something that isn't an object")
+	}
 	o := v.obj
 	if i := o.find(key); i >= 0 {
 		o.members[i].val = val
@@ -253,7 +249,7 @@ func (v *Value) Set(key string, val *Value) {
 		if at == len(o.members)-1 {
 			o.index[key] = at
 		} else {
-			o.reindex()
+			o.index = nil // rebuilt by the next lookup that needs it
 		}
 	}
 }
@@ -269,9 +265,7 @@ func (v *Value) Delete(key string) {
 		return
 	}
 	o.members = append(o.members[:i], o.members[i+1:]...)
-	if o.index != nil {
-		o.reindex()
-	}
+	o.index = nil
 }
 
 // Keys is Object.keys(v).
@@ -445,8 +439,15 @@ func (p *parser) ws() {
 	}
 }
 
+// errTooDeep: V8's JSON.parse takes any depth; past maxDepth the port gives
+// the body to Node rather than recurse further.
+var errTooDeep = &DeclineError{"JSON nested deeper than the port parses"}
+
 func (p *parser) value(depth int) (*Value, error) {
-	if depth > maxDepth || p.i >= len(p.s) {
+	if depth > maxDepth {
+		return nil, errTooDeep
+	}
+	if p.i >= len(p.s) {
 		return nil, ErrSyntax
 	}
 	switch c := p.s[p.i]; {
@@ -476,13 +477,59 @@ func (p *parser) literal(word string, v *Value) (*Value, error) {
 	return v, nil
 }
 
+// object collects members in source order (a repeated key replaces the value
+// in its first slot) and moves array-index keys to the front, ascending, once
+// at the end: JSON.parse's resulting property order, in O(n log n).
 func (p *parser) object(depth int) (*Value, error) {
 	p.i++
-	out := Object()
+	o := &object{}
+	out := &Value{kind: KindObject, obj: o}
 	p.ws()
 	if p.i < len(p.s) && p.s[p.i] == '}' {
 		p.i++
 		return out, nil
+	}
+	var seen map[string]int
+	indexKeys := false
+	add := func(key string, v *Value) {
+		if seen != nil {
+			if i, ok := seen[key]; ok {
+				o.members[i].val = v
+				return
+			}
+		} else {
+			for i := range o.members {
+				if o.members[i].key == key {
+					o.members[i].val = v
+					return
+				}
+			}
+		}
+		o.members = append(o.members, member{key, v})
+		if isArrayIndex(key) {
+			indexKeys = true
+		}
+		if seen != nil {
+			seen[key] = len(o.members) - 1
+		} else if len(o.members) > 16 {
+			seen = make(map[string]int, 64)
+			for i, m := range o.members {
+				seen[m.key] = i
+			}
+		}
+	}
+	done := func() *Value {
+		if indexKeys {
+			sort.SliceStable(o.members, func(a, b int) bool {
+				ka, kb := o.members[a].key, o.members[b].key
+				ia, ib := isArrayIndex(ka), isArrayIndex(kb)
+				if ia && ib {
+					return indexValue(ka) < indexValue(kb)
+				}
+				return ia && !ib
+			})
+		}
+		return out
 	}
 	for {
 		p.ws()
@@ -503,7 +550,7 @@ func (p *parser) object(depth int) (*Value, error) {
 		if err != nil {
 			return nil, err
 		}
-		out.Set(k.str, v)
+		add(k.str, v)
 		p.ws()
 		if p.i >= len(p.s) {
 			return nil, ErrSyntax
@@ -514,7 +561,7 @@ func (p *parser) object(depth int) (*Value, error) {
 		}
 		if p.s[p.i] == '}' {
 			p.i++
-			return out, nil
+			return done(), nil
 		}
 		return nil, ErrSyntax
 	}
@@ -743,9 +790,6 @@ func needsEscape(s string) bool {
 func Marshal(v *Value) []byte {
 	return v.appendJSON(make([]byte, 0, 4096))
 }
-
-// AppendJSON appends JSON.stringify(v).
-func (v *Value) AppendJSON(dst []byte) []byte { return v.appendJSON(dst) }
 
 func (v *Value) appendJSON(dst []byte) []byte {
 	switch v.Kind() {

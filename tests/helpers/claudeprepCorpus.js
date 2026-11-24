@@ -265,7 +265,8 @@ function ccBody(rng, model, opts = {}) {
   const body = {
     model: opts.clientModel ?? `combo-${rng.int(1, 9)}`,
     max_tokens: opts.maxTokens ?? 32000,
-    stream: opts.stream ?? true,
+    // `stream: undefined` in opts leaves the field out (the writer skips undefined).
+    stream: "stream" in opts ? opts.stream : true,
   };
   if (opts.thinking !== null) body.thinking = opts.thinking ?? { type: "enabled", budget_tokens: 31999 };
   body.metadata = { user_id: "user_" + rng.id("", 32) + "_account__session_" + rng.id("", 8) };
@@ -317,13 +318,15 @@ const SCENARIOS = [
     for (const t of tools.slice(-4)) t.defer_loading = true;
     return { model, headers: CC_HEADERS, body: ccBody(rng, model, { tools, messages: 50 }) };
   }),
-  scenario("cc-images-tool-errors", (rng) => {
+  scenario("cc-images-tool-errors", (rng, i) => {
     const model = rng.pick(["claude-opus-4-8", "glm-5.2", "claude-3-5-sonnet-20241022"]);
     const body = ccBody(rng, model, { messages: rng.int(50, 80), images: 0.3, errors: 0.4 });
     body.messages[0].content.push({ type: "image", source: { type: "base64", media_type: "image/png", data: imageData(rng) } });
     body.messages[0].content.push({ type: "image", source: { type: "url", url: "https://images.example.test/a.png" } });
     body.messages[0].content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: "JVBERi0" + rng.id("", 40) } });
-    return { model, headers: CC_HEADERS, body };
+    // The synced catalog can turn a modality on (documents for the Claude models, images for GLM).
+    const catalog = i % 2 === 1 ? { modalities: { [model]: { pdf: true, vision: true } } } : null;
+    return { model, headers: CC_HEADERS, body, catalog };
   }),
   scenario("cc-dedupe", (rng) => {
     const model = "claude-opus-4-8";
@@ -365,8 +368,10 @@ const SCENARIOS = [
   }),
   scenario("thinking-matrix", (rng, i) => {
     const base = THINKING_MODELS[i % THINKING_MODELS.length];
-    const model = base + SUFFIXES[Math.floor(i / THINKING_MODELS.length) % SUFFIXES.length];
-    const thinking = INTENTS[i % INTENTS.length];
+    // Suffix and intent drawn on their own, so no model is tied to a subset of
+    // either (the large corpus also runs the full products below).
+    const model = base + (i < THINKING_MODELS.length ? "" : rng.pick(SUFFIXES));
+    const thinking = rng.pick(INTENTS);
     const extra = {};
     if (rng.chance(0.3)) extra.output_config = { effort: rng.pick(["low", "medium", "high", "max", "none", "auto", "xhigh"]) };
     if (rng.chance(0.15)) extra.reasoning_effort = rng.pick(["low", "high", "none"]);
@@ -449,9 +454,19 @@ const SCENARIOS = [
       { stripReasoning: true, blockForeignTools: true },
       { droppedBetas: ["claude-code-20250219", "interleaved-thinking-2025-05-14"], overrides: { headers: "anthropic-beta: interleaved-thinking-2025-05-14,new-flag" } },
       { stripBeta: true, mimic: "claude-code" },
+      { overrides: { headers: "content-type: text/plain\nno colon here\nbad name: x\n: empty\n-x-api-key\n- \nAccept: */*" } },
+      { authHeader: "api-key", mimic: "gemini-cli" },
+      { overrides: { models: "claude-opus-4-8=>a=>b\nclaude-sonnet-4-6=>plain\n__proto__ => x\nnot a rename" } },
+      { overrides: { body: "{not json" } },
+      { overrides: { body: "{\"__proto__\":{\"x\":1},\"constructor\":2,\"metadata\":null,\"nested\":{\"a\":{\"b\":1}}}", stream: "always" }, clientStream: false },
+      { overrides: { body: "﻿{\"extra\":1}" } },
+      { overrides: { drop: "model" }, toolChoice: { type: "any" } },
     ];
-    const psd = variants[i % variants.length];
-    return { model, headers: CC_HEADERS, psd, body: ccBody(rng, model, { messages: SMALL ? 10 : 50, toolCount: SMALL ? 6 : undefined }) };
+    const { clientStream, toolChoice, ...psd } = variants[i % variants.length];
+    const opts = { messages: SMALL ? 10 : 50, toolCount: SMALL ? 6 : undefined };
+    if (clientStream !== undefined) opts.stream = clientStream;
+    if (toolChoice) opts.extra = { tool_choice: toolChoice };
+    return { model, headers: CC_HEADERS, psd, body: ccBody(rng, model, opts) };
   }),
   scenario("numbers-and-keys", (rng) => {
     const model = "claude-opus-4-8";
@@ -467,17 +482,58 @@ const SCENARIOS = [
     body.messages.splice(2, 0, { role: "assistant", content: [{ type: "text", text: "[10router:limit-hold] waiting for the rate limit to clear" }] }, { role: "user", content: "ok" });
     return { model, headers: CC_HEADERS, body };
   }),
-  scenario("oauth-token-key", (rng) => {
+  scenario("oauth-token-key", (rng, i) => {
     const model = "claude-opus-4-8";
     const body = ccBody(rng, model, { messages: 50, system: rng.pick([undefined, "string system", [{ type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." }]]) });
     if (body.system === undefined) delete body.system;
-    return { model, headers: CC_HEADERS, body, apiKey: "sk-ant-oat01-synthetic-not-a-real-token-0000" };
+    const token = "sk-ant-oat01-synthetic-not-a-real-token-0000";
+    // As the key, as an access token beside a plain key (translateRequest reads
+    // the token first, the headers the key), and as the only credential.
+    const creds = [{ apiKey: token }, { apiKey: "sk-synthetic-plain-0000", accessToken: token }, { apiKey: null, accessToken: token }][i % 3];
+    return { model, headers: CC_HEADERS, body, ...creds };
   }),
-  scenario("stream-shapes", (rng) => {
+  scenario("stream-shapes", (rng, i) => {
     const model = "claude-opus-4-8";
-    const stream = rng.pick([true, false, undefined]);
-    const headers = { ...SDK_HEADERS, accept: rng.pick(["application/json", "text/event-stream", "*/*"]) };
-    return { model, headers, body: ccBody(rng, model, { messages: 50, stream }) };
+    const stream = [true, false, undefined][i % 3];
+    const accept = ["application/json", "text/event-stream", "*/*", "application/json, text/event-stream"][Math.floor(i / 3) % 4];
+    const ua = i % 5 === 4 ? "deepseek-tui/0.1" : SDK_HEADERS["user-agent"];
+    const headers = { ...SDK_HEADERS, "user-agent": ua, accept };
+    return { model, headers, body: ccBody(rng, model, { messages: SMALL ? 12 : 50, stream }) };
+  }),
+  scenario("base-urls", (rng, i) => {
+    const model = "claude-sonnet-4-6";
+    const bases = [
+      "https://gateway.example.test/v1/", "https://gateway.example.test/v1/messages", "https://gateway.example.test/v1/chat/completions",
+      "https://gateway.example.test/v1?api-version=2024-10-01", "https://GATEWAY.example.test:443/v1", "https://gateway.example.test:8443/api/v1",
+      "http://gateway.example.test:8080/v1", "https://gateway.example.test/v1//", "https://gateway.example.test/v1?b=2&a=1&b=3",
+    ];
+    const baseUrl = bases[i % bases.length];
+    const query = i % 2 === 0 ? { overrides: { query: rng.pick(["b=9", "x=1&y=a%20b", "mode=fast+slow&b=1"]) } } : {};
+    return { model, headers: CC_HEADERS, psd: { baseUrl, ...query }, body: ccBody(rng, model, { messages: SMALL ? 8 : 50, toolCount: SMALL ? 4 : undefined }) };
+  }),
+  scenario("provider-thinking", (rng, i) => {
+    const model = ["claude-opus-4-8", "claude-sonnet-4-5", "glm-5.2", "gpt-5.4"][i % 4];
+    const mode = ["on", "off", "high", "none", "low", "auto"][Math.floor(i / 4) % 6];
+    const thinking = i % 2 === 0 ? null : { type: "enabled", budget_tokens: 4096 };
+    const extra = i % 3 === 0 ? { reasoning_effort: "medium" } : {};
+    return { model, headers: CC_HEADERS, providerThinking: { mode }, body: ccBody(rng, model, { messages: SMALL ? 8 : 50, toolCount: SMALL ? 4 : undefined, thinking, extra }) };
+  }),
+  scenario("prefill-repair", (rng, i) => {
+    const model = ["claude-opus-5", "claude-opus-5-5", "claude-opus-4-8", "claude-opus-5-thinking"][i % 4];
+    const body = ccBody(rng, model, { messages: SMALL ? 10 : 50, toolCount: SMALL ? 4 : undefined });
+    const last = i % 2 === 0
+      ? { role: "assistant", content: [{ type: "text", text: "Let me look." }, { type: "tool_use", id: "toolu_dangling_1", name: "Read", input: { path: "/a" } }, { type: "tool_use", id: "toolu_dangling_2", name: "Grep", input: {} }] }
+      : { role: "assistant", content: [{ type: "text", text: "Partial answer" }] };
+    body.messages.push(last);
+    return { model, headers: CC_HEADERS, body };
+  }),
+  scenario("odd-tool-calls", (rng) => {
+    const model = "claude-opus-4-8";
+    const body = ccBody(rng, model, { messages: SMALL ? 8 : 50, toolCount: SMALL ? 4 : undefined });
+    // OpenAI-shaped tool_calls inside a Claude body: an array entry Node sets an
+    // id on (and JSON.stringify ignores), ids that need repair.
+    body.messages.splice(2, 0, { role: "assistant", content: "calling", tool_calls: [[], { id: "bad id!", function: { name: "Read", arguments: { path: "/x" } } }, { function: { name: "a b" } }] });
+    return { model, headers: CC_HEADERS, body };
   }),
   scenario("translator-fields", (rng) => {
     const model = "claude-opus-4-8";
@@ -490,6 +546,9 @@ const SCENARIOS = [
     const model = rng.pick(["deepseek-v4-flash", "kimi-k2.7"]);
     const body = ccBody(rng, model, { messages: 50 });
     body.messages[1].reasoning_content = rng.pick(["", "kept"]);
+    // Kimi's rule only touches assistant turns with tool_calls; a single-turn
+    // history keeps its message objects (fixToolUseOrdering rebuilds longer ones).
+    if (rng.chance(0.5)) body.messages = [{ role: "assistant", content: "x", tool_calls: [{ id: "c1", type: "function", function: { name: "Read", arguments: "{}" } }] }];
     return { model, headers: CC_HEADERS, body };
   }),
   scenario("invalid-utf8", (rng) => {
@@ -525,9 +584,32 @@ const SCENARIOS = [
     body.messages[2].content.push(null);
     return { model, headers: CC_HEADERS, body, expectDecline: "a content block that isn't an object" };
   }),
+  scenario("decline-primitive-tool-call", (rng) => {
+    const model = "claude-opus-4-8";
+    const body = ccBody(rng, model, { messages: SMALL ? 8 : 50, toolCount: SMALL ? 4 : undefined });
+    body.messages.splice(2, 0, { role: "assistant", content: "x", tool_calls: ["not an object"] });
+    return { model, headers: CC_HEADERS, body, expectDecline: "a tool call that isn't an object" };
+  }),
+  scenario("decline-prototype-effort", (rng) => {
+    const model = "gemini-3-pro";
+    const body = ccBody(rng, model, { messages: SMALL ? 8 : 50, toolCount: SMALL ? 4 : undefined, thinking: null, extra: { reasoning_effort: "constructor" } });
+    return { model, headers: CC_HEADERS, body, expectDecline: "Object.prototype" };
+  }),
+  scenario("decline-blocked-connection", (rng) => {
+    const model = "claude-opus-4-8";
+    return { model, headers: CC_HEADERS, psd: { blockedReason: "proxy pool unavailable" }, body: ccBody(rng, model, { messages: SMALL ? 8 : 50, toolCount: SMALL ? 4 : undefined }), expectDecline: "blocked" };
+  }),
+  scenario("decline-non-ascii-header", (rng) => {
+    const model = "claude-opus-4-8";
+    return { model, headers: CC_HEADERS, psd: { overrides: { headers: "x-tag: café" } }, body: ccBody(rng, model, { messages: SMALL ? 8 : 50, toolCount: SMALL ? 4 : undefined }), expectDecline: "non-ASCII header" };
+  }),
 ];
 
-const smallCount = { "thinking-matrix": 40, "endpoint-overrides": 15, "tool-choice": 6, "max-tokens": 6, "cc-basic": 3, "empty-blocks": 4, params: 6, "stream-shapes": 3, "cc-dedupe": 4, "cc-images-tool-errors": 3, "broken-ids": 2, "numbers-and-keys": 3, "limit-hold-banner": 3, "oauth-token-key": 3 };
+const smallCount = {
+  "thinking-matrix": 40, "endpoint-overrides": 22, "tool-choice": 6, "max-tokens": 6, "cc-basic": 3, "empty-blocks": 4, params: 6,
+  "stream-shapes": 12, "cc-dedupe": 4, "cc-images-tool-errors": 4, "broken-ids": 2, "numbers-and-keys": 3, "limit-hold-banner": 3,
+  "oauth-token-key": 3, "base-urls": 9, "provider-thinking": 12, "prefill-repair": 4,
+};
 
 function toFixture(name, spec, seed) {
   const style = spec.style || "compact";
@@ -553,7 +635,8 @@ function toFixture(name, spec, seed) {
     inputs: {
       provider: NODE_ID,
       model,
-      apiKey: spec.apiKey || apiKeyFor(name),
+      apiKey: spec.apiKey === null ? null : spec.apiKey || apiKeyFor(name),
+      ...(spec.accessToken ? { accessToken: spec.accessToken } : {}),
       providerSpecificData: psd,
       providerThinking: spec.providerThinking || null,
       keyHasBudget: !!spec.keyHasBudget,
@@ -582,6 +665,19 @@ export function buildCorpus({ large = false } = {}) {
     }
   });
   if (large) {
+    // Every model with every thinking intent, then with every suffix.
+    THINKING_MODELS.forEach((model, m) => {
+      INTENTS.forEach((thinking, t) => {
+        const rng = new Rng(77_000 + m * 100 + t);
+        const body = ccBody(rng, model, { messages: 6, toolCount: 3, thinking, maxTokens: rng.pick([4096, 64000, 200000]) });
+        out.push(toFixture(`thinking-product-${model}-${t}`, { model, headers: CC_HEADERS, body }, 77_000 + m * 100 + t));
+      });
+      SUFFIXES.slice(1).forEach((suffix, s) => {
+        const rng = new Rng(88_000 + m * 100 + s);
+        const body = ccBody(rng, model + suffix, { messages: 6, toolCount: 3, thinking: rng.pick(INTENTS) });
+        out.push(toFixture(`suffix-product-${model}-${s}`, { model: model + suffix, headers: CC_HEADERS, body }, 88_000 + m * 100 + s));
+      });
+    });
     for (let i = 0; i < 12; i++) {
       const seed = 424242 + i;
       const rng = new Rng(seed);

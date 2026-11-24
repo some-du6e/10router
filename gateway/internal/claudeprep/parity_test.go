@@ -25,6 +25,7 @@ type fixture struct {
 		Provider             string          `json:"provider"`
 		Model                string          `json:"model"`
 		APIKey               string          `json:"apiKey"`
+		AccessToken          string          `json:"accessToken"`
 		ProviderSpecificData json.RawMessage `json:"providerSpecificData"`
 		ProviderThinking     *struct {
 			Mode string `json:"mode"`
@@ -47,8 +48,8 @@ type fixture struct {
 }
 
 type fixtureCatalog struct {
-	Limits     map[string]struct{ ContextWindow, MaxOutput float64 } `json:"limits"`
-	Modalities map[string]Modalities                                 `json:"modalities"`
+	Limits     map[string]struct{ MaxOutput float64 } `json:"limits"`
+	Modalities map[string]Modalities                  `json:"modalities"`
 }
 
 type catalogAdapter struct{ c *fixtureCatalog }
@@ -60,7 +61,7 @@ func (a catalogAdapter) Modalities(model string) (Modalities, bool) {
 
 func (a catalogAdapter) Limits(provider, model string) (Limits, bool) {
 	l, ok := a.c.Limits[provider+" "+model]
-	return Limits{ContextWindow: l.ContextWindow, MaxOutput: l.MaxOutput}, ok
+	return Limits{MaxOutput: l.MaxOutput}, ok
 }
 
 func loadFixtures(t *testing.T) []string {
@@ -91,7 +92,7 @@ func (f *fixture) inputs(t *testing.T) Inputs {
 		Model:         f.Inputs.Model,
 		ClientHeaders: f.Request.Headers,
 		KeyHasBudget:  f.Inputs.KeyHasBudget,
-		Connection:    Connection{APIKey: f.Inputs.APIKey, Node: node},
+		Connection:    Connection{APIKey: f.Inputs.APIKey, AccessToken: f.Inputs.AccessToken, Node: node},
 	}
 	if f.Inputs.ProviderThinking != nil {
 		in.ProviderThinking = f.Inputs.ProviderThinking.Mode
@@ -138,8 +139,16 @@ func firstDiff(got, want []byte) string {
 
 func TestParityWithNode(t *testing.T) {
 	files := loadFixtures(t)
-	if len(files) < 100 {
-		t.Fatalf("only %d fixtures", len(files))
+	// CI sets the floor to what it generated, so an empty or misnamed
+	// CLAUDEPREP_FIXTURES can't pass on the committed fixtures alone.
+	floor := 100
+	if s := os.Getenv("CLAUDEPREP_MIN_FIXTURES"); s != "" {
+		if _, err := fmt.Sscan(s, &floor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(files) < floor {
+		t.Fatalf("only %d fixtures, want %d or more", len(files), floor)
 	}
 	var identical, declined, total int
 	var declineReasons = map[string]int{}
@@ -164,8 +173,8 @@ func TestParityWithNode(t *testing.T) {
 				declineReasons[err.Error()]++
 				return
 			case f.ExpectDecline != "":
-				if !IsDecline(err) {
-					t.Fatalf("expected a decline (%s), got %v", f.ExpectDecline, err)
+				if !IsDecline(err) || !strings.Contains(err.Error(), f.ExpectDecline) {
+					t.Fatalf("expected a decline for %q, got %v", f.ExpectDecline, err)
 				}
 				declined++
 				declineReasons[err.Error()]++
@@ -177,12 +186,20 @@ func TestParityWithNode(t *testing.T) {
 				t.Errorf("URL %q, Node %q", req.URL, f.Node.URL)
 			}
 			var got [][2]string
+			accept := false
 			for _, h := range req.Header {
 				v := h.Value
 				if f.Inputs.APIKey != "" {
 					v = strings.ReplaceAll(v, f.Inputs.APIKey, "{{apiKey}}")
 				}
+				if f.Inputs.AccessToken != "" {
+					v = strings.ReplaceAll(v, f.Inputs.AccessToken, "{{accessToken}}")
+				}
+				accept = accept || h.Name == "Accept" && h.Value == "text/event-stream"
 				got = append(got, [2]string{h.Name, v})
+			}
+			if req.Stream != accept {
+				t.Errorf("Stream %v, but the SSE Accept header is %v", req.Stream, accept)
 			}
 			if fmt.Sprint(got) != fmt.Sprint(f.Node.Headers) {
 				t.Errorf("headers\n got %v\nNode %v", got, f.Node.Headers)

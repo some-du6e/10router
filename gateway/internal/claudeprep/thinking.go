@@ -39,7 +39,7 @@ func parseSuffix(model string) (string, *thinkingCfg) {
 		return model, nil
 	}
 	clean := jsTrim(m[1])
-	raw := strings.ToLower(jsTrim(m[2]))
+	raw := levelName(jsTrim(m[2]))
 	switch {
 	case raw == "none" || raw == "off":
 		return clean, &thinkingCfg{mode: "none"}
@@ -90,8 +90,19 @@ func toNumber(v *Value) float64 {
 
 func finite(f float64) bool { return !math.IsNaN(f) && !math.IsInf(f, 0) }
 
+// levelName is a client- or config-given level after toLowerCase. Node looks
+// levels up in plain objects, where "constructor" or "__proto__" finds an
+// Object.prototype member; those go to Node.
+func levelName(s string) string {
+	s = jsLower(s)
+	if isProtoName(s) {
+		decline("a thinking level that names an Object.prototype member")
+	}
+	return s
+}
+
 func effortCfg(e string) *thinkingCfg {
-	e = jsLower(e)
+	e = levelName(e)
 	if e == "none" || e == "off" {
 		return &thinkingCfg{mode: "none"}
 	}
@@ -142,7 +153,7 @@ func extractThinking(body *Value) *thinkingCfg {
 	}
 	if tc.IsObject() || tc.IsArray() {
 		if lvl := tc.Get("thinkingLevel"); lvl.IsString() {
-			return &thinkingCfg{mode: "level", level: jsLower(lvl.str)}
+			return &thinkingCfg{mode: "level", level: levelName(lvl.str)}
 		}
 		tb := toNumber(tc.Get("thinkingBudget"))
 		if finite(tb) {

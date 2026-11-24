@@ -1946,5 +1946,36 @@
     "claude-code": "user-agent: claude-cli/2.1.258 (external, sdk-cli)\nx-app: cli\nanthropic-beta: claude-code-20250219,interleaved-thinking-2025-05-14",
     "codex": "user-agent: codex_cli_rs/0.136.0\noriginator: codex_cli_rs",
     "gemini-cli": "user-agent: GeminiCLI/0.34.0\nx-goog-api-client: google-genai-sdk/1.41.0 gl-node/v22.19.0"
+  },
+  "betaBodyFields": {
+    "context-management-2025-06-27": [
+      "context_management"
+    ],
+    "dangerous-tool-use-2026-09-03": [
+      "safeguards"
+    ]
+  },
+  "firstPartyBetaFields": {
+    "dangerous-tool-use-2026-09-03": [
+      "safeguards"
+    ]
+  },
+  "toolChangeBetas": {
+    "tool_reference": [
+      "mid-conversation-tool-changes-2026-07-01",
+      "inline-tools-2026-09-15"
+    ],
+    "tool_definition": [
+      "inline-tools-2026-09-15"
+    ]
+  },
+  "constants": {
+    "defaultMaxTokens": 64000,
+    "anthropicApiVersion": "2023-06-01",
+    "anthropicApiHost": "api.anthropic.com",
+    "claudeSystemPrompt": "You are Claude Code, Anthropic's official CLI for Claude.",
+    "limitHoldSentinel": "[10router:limit-hold]",
+    "interruptedToolResultText": "Tool execution was interrupted before a result was returned.",
+    "prefillContinuationText": "Continue."
   }
 }

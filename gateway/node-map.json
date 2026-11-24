@@ -33,6 +33,8 @@
     "open-sse/utils/reasoningContentInjector.js",
     "open-sse/utils/modelMarkers.js",
     "src/shared/utils/endpointOverrides.ts",
-    "src/shared/utils/nodeQuirks.ts"
+    "src/shared/utils/nodeQuirks.ts",
+    "src/sse/handlers/chat.ts",
+    "src/sse/utils/requestBody.js"
   ]
 }
