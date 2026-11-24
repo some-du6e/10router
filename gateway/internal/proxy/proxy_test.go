@@ -235,13 +235,14 @@ func TestQueryAndConnectionListedForwardingHeadersKept(t *testing.T) {
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-	fmt.Fprintf(conn, "GET /v1beta/models/x:generateContent?b=2&q=50%%&a=1;c HTTP/1.1\r\nHost: localhost\r\nConnection: x-real-ip, cf-connecting-ip\r\nX-Real-IP: 198.51.100.4\r\nCF-Connecting-IP: 198.51.100.5\r\n\r\n")
+	fmt.Fprintf(conn, "GET /v1beta\\models/x:generate|Content?b=2&q=50%%&a=1;c HTTP/1.1\r\nHost: localhost\r\nConnection: x-real-ip, cf-connecting-ip\r\nX-Real-IP: 198.51.100.4\r\nCF-Connecting-IP: 198.51.100.5\r\n\r\n")
 	if _, err := http.ReadResponse(bufio.NewReader(conn), nil); err != nil {
 		t.Fatal(err)
 	}
 	r := <-seen
-	if r.URL.RawQuery != "b=2&q=50%&a=1;c" {
-		t.Errorf("query %q", r.URL.RawQuery)
+	// The request target byte for byte: no re-escaped path, no re-encoded query.
+	if r.RequestURI != `/v1beta\models/x:generate|Content?b=2&q=50%&a=1;c` {
+		t.Errorf("request target %q", r.RequestURI)
 	}
 	if r.Header.Get("X-Real-Ip") != "198.51.100.4" || r.Header.Get("Cf-Connecting-Ip") != "198.51.100.5" {
 		t.Errorf("forwarding headers a client listed in Connection were dropped: %v", r.Header)
@@ -502,6 +503,21 @@ func TestUnreachableAppIs502(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != 502 || !strings.Contains(string(body), "gateway_upstream_unavailable") {
 		t.Fatalf("status %d body %s", res.StatusCode, body)
+	}
+}
+
+func TestRawPath(t *testing.T) {
+	for uri, want := range map[string]string{
+		"/v1/messages?beta=true": "/v1/messages",
+		`/a\b|c`:                 `/a\b|c`,
+		"/":                      "/",
+		"//evil/x":               "",
+		"http://h/x":             "",
+		"*":                      "",
+	} {
+		if got := rawPath(uri); got != want {
+			t.Errorf("rawPath(%q) = %q, want %q", uri, got, want)
+		}
 	}
 }
 

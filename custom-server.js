@@ -705,7 +705,9 @@ delete process.env.TENROUTER_LAUNCH_NONCE;
 // the launch nonce, so children don't inherit it.
 const GATEWAY_TOKEN_TEXT = String(process.env.GATEWAY_PEER_TOKEN || "");
 delete process.env.GATEWAY_PEER_TOKEN;
-const GATEWAY_ON = GATEWAY_TOKEN_TEXT !== "";
+// Both, so a token pinned in an env file does nothing once GATEWAY_MODE is
+// back to off.
+const GATEWAY_ON = GATEWAY_TOKEN_TEXT !== "" && ["proxy", "native"].includes(String(process.env.GATEWAY_MODE || "").trim().toLowerCase());
 const GATEWAY_TOKEN = GATEWAY_TOKEN_TEXT.length >= 32 ? Buffer.from(GATEWAY_TOKEN_TEXT) : null;
 if (GATEWAY_ON && !GATEWAY_TOKEN) {
   console.warn("[Gateway] GATEWAY_PEER_TOKEN is shorter than 32 characters; every request relayed with peer headers gets the peer \"unknown\"");

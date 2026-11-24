@@ -59,6 +59,9 @@ type Options struct {
 	Listener net.Listener
 	// OnListening is called with the public address once it accepts (tests).
 	OnListening func(addr string)
+	// PassOn are the signals handed to the app server (PassOnSignals);
+	// nil means SIGUSR1 only.
+	PassOn []os.Signal
 }
 
 // maxHeaderBytes caps a client's headers at about Node's --max-http-header-size
@@ -70,19 +73,35 @@ func maxHeaderBytes(nodeOptions string, command []string) int {
 	size := nodeHeaderSize(strings.Fields(nodeOptions), 16<<10)
 	// Node's own flags, between "node" and the script, win over NODE_OPTIONS.
 	if len(command) > 1 {
-		flags := command[1:]
-		for i, a := range flags {
-			if !strings.HasPrefix(a, "-") {
-				flags = flags[:i]
-				break
-			}
-		}
-		size = nodeHeaderSize(flags, size)
+		size = nodeHeaderSize(nodeFlags(command[1:]), size)
 	}
 	if size <= 8<<10 {
 		return 4 << 10
 	}
 	return size - 4<<10
+}
+
+// Node flags that take their value as the next argument, as used to start an
+// app server; the value is not the script.
+var nodeValueFlags = map[string]bool{
+	"--max-http-header-size": true, "-r": true, "--require": true, "--import": true, "--loader": true,
+	"--experimental-loader": true, "--env-file": true, "--title": true, "--inspect-port": true,
+	"--heapsnapshot-signal": true, "--report-signal": true, "--max-old-space-size": true, "-C": true, "--conditions": true,
+}
+
+// nodeFlags is args up to the script: every leading "-" argument, and the
+// value after one of nodeValueFlags.
+func nodeFlags(args []string) []string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") {
+			return args[:i]
+		}
+		if !strings.Contains(a, "=") && nodeValueFlags[strings.ReplaceAll(a, "_", "-")] {
+			i++
+		}
+	}
+	return args
 }
 
 // nodeHeaderSize is the last --max-http-header-size in args, spelled any way
@@ -123,6 +142,8 @@ type Gateway struct {
 	appAddr    string
 	version    string
 	startedAt  time.Time
+
+	pass []os.Signal
 
 	healthMu    sync.Mutex
 	healthAt    time.Time
@@ -236,16 +257,38 @@ func randomToken() string {
 
 func seconds(d time.Duration) int { return int((d + 500*time.Millisecond) / time.Second) }
 
-// passOn hands SIGUSR1 (which opens Node's inspector) to the app server and
-// reports true; the shutdown signals are the gateway's own.
-func passOn(sig os.Signal, child *supervisor.Child) bool {
-	if sig != syscall.SIGUSR1 {
-		return false
+// PassOnSignals are the signals the gateway hands to the app server instead
+// of acting on them: SIGUSR1 (Node's inspector), and SIGUSR2 only when Node
+// was started with a handler for it (--heapsnapshot-signal,
+// --report-on-signal); otherwise its default action would kill Node, which
+// as PID 1 used to ignore it.
+func PassOnSignals(nodeOptions string, command []string) []os.Signal {
+	signals := []os.Signal{syscall.SIGUSR1}
+	args := strings.Fields(nodeOptions)
+	if len(command) > 1 {
+		args = append(args, nodeFlags(command[1:])...)
 	}
-	if child != nil {
-		child.Signal(sig)
+	for _, a := range args {
+		name := strings.ReplaceAll(strings.SplitN(a, "=", 2)[0], "_", "-")
+		if name == "--heapsnapshot-signal" || name == "--report-on-signal" {
+			return append(signals, syscall.SIGUSR2)
+		}
 	}
-	return true
+	return signals
+}
+
+// passOn hands sig to the app server and reports true when it is one of
+// pass; the shutdown signals are the gateway's own.
+func passOn(sig os.Signal, pass []os.Signal, child *supervisor.Child) bool {
+	for _, p := range pass {
+		if sig == p {
+			if child != nil {
+				child.Signal(sig)
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // envValue is name's value in a KEY=value list, or "".
@@ -311,11 +354,15 @@ func Run(o Options) int {
 	}
 
 	g := New(cfg, logger, o.Version)
+	g.pass = o.PassOn
+	if g.pass == nil {
+		g.pass = []os.Signal{syscall.SIGUSR1}
+	}
 
 	// Listen only once the app server accepts, so a client during boot gets
 	// a refused connection, as it does today, instead of a 502.
 	if child != nil {
-		if code, stop := waitForApp(g.appAddr, child, o.Signals, logger, childDeadline); stop {
+		if code, stop := waitForApp(g.appAddr, child, o.Signals, g.pass, logger, childDeadline); stop {
 			return code
 		}
 	}
@@ -365,7 +412,7 @@ func Run(o Options) int {
 			stopChild(child, syscall.SIGTERM, childDeadline, logger)
 			return 1
 		case sig := <-o.Signals:
-			if passOn(sig, child) {
+			if passOn(sig, g.pass, child) {
 				continue
 			}
 			return g.shutdown(sig, srv, child, o.Signals, childDeadline)
@@ -375,7 +422,7 @@ func Run(o Options) int {
 
 // waitForApp blocks until the app server accepts a connection. stop is true
 // when Run should return code instead (the child exited, or a signal came).
-func waitForApp(addr string, child *supervisor.Child, signals <-chan os.Signal, logger *log.Logger, childDeadline time.Duration) (code int, stop bool) {
+func waitForApp(addr string, child *supervisor.Child, signals <-chan os.Signal, pass []os.Signal, logger *log.Logger, childDeadline time.Duration) (code int, stop bool) {
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -389,7 +436,7 @@ func waitForApp(addr string, child *supervisor.Child, signals <-chan os.Signal, 
 			logger.Printf("[Gateway] the app server exited with code %d before it listened", child.ExitCode())
 			return child.ExitCode(), true
 		case sig := <-signals:
-			if passOn(sig, child) {
+			if passOn(sig, pass, child) {
 				continue
 			}
 			logger.Printf("[Gateway] %s before the app server listened: stopping it", sigName(sig))
@@ -484,7 +531,7 @@ func (g *Gateway) shutdown(sig os.Signal, srv *http.Server, child *supervisor.Ch
 		}
 		select {
 		case again := <-signals:
-			if passOn(again, child) {
+			if passOn(again, g.pass, child) {
 				continue
 			}
 			// Node's window opens when it gets the signal, SignalSettle later.

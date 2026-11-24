@@ -20,6 +20,7 @@ let seen;
 beforeAll(async () => {
   delete require.cache[SERVER_PATH];
   process.env.GATEWAY_PEER_TOKEN = TOKEN;
+  process.env.GATEWAY_MODE = "proxy";
   require(SERVER_PATH);
   server = http.createServer((req, res) => {
     seen = { ...req.headers };
@@ -34,6 +35,7 @@ afterAll(async () => {
   http.createServer = originalCreateServer;
   delete require.cache[SERVER_PATH];
   delete process.env.GATEWAY_PEER_TOKEN;
+  delete process.env.GATEWAY_MODE;
   if (savedTrustProxy === undefined) delete process.env.TRUST_PROXY;
   else process.env.TRUST_PROXY = savedTrustProxy;
 });

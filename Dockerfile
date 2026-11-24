@@ -82,7 +82,7 @@ RUN mkdir -p /app/data && chown -R node:node /app && \
   mkdir -p /app/data-home && chown node:node /app/data-home && \
   ln -sf /app/data-home /root/.9router 2>/dev/null || true
 
-# Root-owned, so the node user can't replace it.
+# Copied after the chown above, so the binary itself stays root-owned.
 COPY --from=gateway /out/10router-gateway /app/gateway/10router-gateway
 
 # Fix permissions at runtime (handles mounted volumes), then run the command as

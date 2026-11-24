@@ -79,6 +79,9 @@ const (
 // Accept-Encoding goes through untouched), no response-header timeout (Node
 // sends early SSE headers itself and owns the upstream's 240 s limit), and a
 // pool big enough that concurrent streams don't open a connection each time.
+// Every pooled connection holds its two buffers while idle, so they're sized
+// for a 4 MB body without much syscall overhead, not more: 256 idle
+// connections hold 16 MiB.
 func NewTransport(idleConnTimeout time.Duration) *http.Transport {
 	return &http.Transport{
 		Proxy:                 nil,
@@ -86,12 +89,12 @@ func NewTransport(idleConnTimeout time.Duration) *http.Transport {
 		ForceAttemptHTTP2:     false,
 		DisableCompression:    true,
 		MaxIdleConns:          0,
-		MaxIdleConnsPerHost:   512,
+		MaxIdleConnsPerHost:   256,
 		IdleConnTimeout:       idleConnTimeout,
 		ResponseHeaderTimeout: 0,
 		ExpectContinueTimeout: 0,
-		WriteBufferSize:       64 << 10,
-		ReadBufferSize:        64 << 10,
+		WriteBufferSize:       32 << 10,
+		ReadBufferSize:        32 << 10,
 	}
 }
 
@@ -110,8 +113,13 @@ func New(o Options) *Proxy {
 	p.rp = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(upstream)
-			// The client's query as sent: ReverseProxy re-encodes one with a
-			// ';' or a bad '%' escape, dropping those parameters.
+			// The client's path and query as sent. SetURL re-escapes the path
+			// ("\" becomes %5C, which Node's URL parser would have read as
+			// "/"), and ReverseProxy re-encodes a query with a ';' or a bad
+			// '%' escape, dropping those parameters.
+			if raw := rawPath(pr.In.RequestURI); raw != "" {
+				pr.Out.URL.Opaque = raw
+			}
 			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
 			// The client's Host, not the upstream's: the app's origin checks,
 			// tunnel detection and local-client rule all read it.
@@ -139,6 +147,19 @@ func New(o Options) *Proxy {
 		},
 	}
 	return p
+}
+
+// rawPath is an origin-form request target's path exactly as the client sent
+// it, or "" to let the URL's own encoding stand (absolute-form, "*", and a
+// path starting "//", which as an opaque URL would read as an authority).
+func rawPath(requestURI string) string {
+	if !strings.HasPrefix(requestURI, "/") || strings.HasPrefix(requestURI, "//") {
+		return ""
+	}
+	if i := strings.IndexByte(requestURI, '?'); i != -1 {
+		return requestURI[:i]
+	}
+	return requestURI
 }
 
 // setPeer replaces any peer header the client sent with the gateway's own.

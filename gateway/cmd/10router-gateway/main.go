@@ -55,14 +55,18 @@ func main() {
 
 	// Before the child starts, so a signal in between isn't lost.
 	signals := make(chan os.Signal, 4)
-	// SIGTERM/SIGINT drain; SIGUSR1 (Node's inspector) goes on to Node.
-	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1)
+	pass := gateway.PassOnSignals(os.Getenv("NODE_OPTIONS"), args)
+	// SIGTERM/SIGINT drain; the pass-on ones go to Node.
+	signal.Notify(signals, append([]os.Signal{syscall.SIGTERM, syscall.SIGINT}, pass...)...)
 	// As PID 1, Node ignored these (the kernel drops a default-action signal
-	// to a namespace's init); Go's runtime would exit on them with no drain,
-	// and Node, no longer PID 1, would die of SIGUSR2's default action. A
-	// broken log pipe (SIGPIPE) must not end the gateway either. Node runs in
-	// its own process group, so a terminal's signals reach only the gateway.
-	signal.Ignore(syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGABRT, syscall.SIGUSR2, syscall.SIGPIPE)
+	// to a namespace's init); Go's runtime would exit on them with no drain.
+	// A broken log pipe (SIGPIPE) must not end the gateway either. Node runs
+	// in its own process group, so a terminal's signals reach only the gateway.
+	ignored := []os.Signal{syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGABRT, syscall.SIGPIPE}
+	if len(pass) == 1 {
+		ignored = append(ignored, syscall.SIGUSR2)
+	}
+	signal.Ignore(ignored...)
 	os.Exit(gateway.Run(gateway.Options{
 		Config:  cfg,
 		Command: args,
@@ -70,5 +74,6 @@ func main() {
 		Signals: signals,
 		Logger:  logger,
 		Version: version,
+		PassOn:  pass,
 	}))
 }

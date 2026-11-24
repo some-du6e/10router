@@ -312,17 +312,44 @@ func TestHeaderCapFollowsNode(t *testing.T) {
 	if got := maxHeaderBytes("", []string{"node", "custom-server.js", "--max-http-header-size=65536"}); got != 12<<10 {
 		t.Errorf("script argument taken for a node flag: %d", got)
 	}
+	// A separate value, and a flag after another flag's separate value.
+	if got := maxHeaderBytes("", []string{"node", "--max-http-header-size", "65536", "custom-server.js"}); got != 60<<10 {
+		t.Errorf("separate value: %d", got)
+	}
+	if got := maxHeaderBytes("", []string{"node", "-r", "./preload.js", "--max-http-header-size=32768", "custom-server.js"}); got != 28<<10 {
+		t.Errorf("after -r <value>: %d", got)
+	}
 }
 
-func TestOnlySIGUSR1GoesOnToNode(t *testing.T) {
-	if !passOn(syscall.SIGUSR1, nil) {
-		t.Error("SIGUSR1 is not passed on")
+func TestSignalsPassedOnToNode(t *testing.T) {
+	plain := PassOnSignals("", []string{"node", "custom-server.js"})
+	if len(plain) != 1 || plain[0] != syscall.SIGUSR1 {
+		t.Fatalf("plain Node: %v, want SIGUSR1 only (SIGUSR2's default action would kill it)", plain)
 	}
-	// SIGUSR2's default action would kill Node; the shutdown signals drain.
-	for _, sig := range []os.Signal{syscall.SIGUSR2, syscall.SIGTERM, syscall.SIGINT} {
-		if passOn(sig, nil) {
+	for _, c := range []struct {
+		opts string
+		cmd  []string
+	}{
+		{"--heapsnapshot-signal=SIGUSR2", []string{"node", "custom-server.js"}},
+		{"", []string{"node", "--report-on-signal", "custom-server.js"}},
+		{"--heapsnapshot_signal=SIGUSR2", nil},
+	} {
+		if got := PassOnSignals(c.opts, c.cmd); len(got) != 2 || got[1] != syscall.SIGUSR2 {
+			t.Errorf("PassOnSignals(%q, %v) = %v, want SIGUSR2 too", c.opts, c.cmd, got)
+		}
+	}
+	// A script argument is not a Node flag.
+	if got := PassOnSignals("", []string{"node", "custom-server.js", "--report-on-signal"}); len(got) != 1 {
+		t.Errorf("script argument read as a Node flag: %v", got)
+	}
+	// The shutdown signals are the gateway's own.
+	for _, sig := range []os.Signal{syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR2} {
+		if passOn(sig, plain, nil) {
 			t.Errorf("%v passed on", sig)
 		}
+	}
+	if !passOn(syscall.SIGUSR1, plain, nil) {
+		t.Error("SIGUSR1 not passed on")
 	}
 }
 

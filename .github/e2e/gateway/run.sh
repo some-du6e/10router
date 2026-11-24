@@ -72,6 +72,15 @@ legs() { # legs <leg> [GATEWAY_MODE]
     check "$leg: no gateway health endpoint" "! curl -s $LOCAL/_gateway/health | grep -q '\"mode\"'"
   fi
 
+  # Signals PID 1 used to ignore (Node as PID 1 had no handler for them) must
+  # not end it now: the gateway ignores them, and doesn't hand SIGUSR2 to a
+  # Node that would die of it.
+  for sig in HUP QUIT USR2 PIPE; do docker kill -s "$sig" gw-e2e > /dev/null 2>&1; done
+  sleep 2
+  docker exec gw-e2e ps -o user,pid,ppid,args > "$o.ps-after-signals" 2>&1
+  check "$leg: HUP, QUIT, USR2 and PIPE leave it serving" \
+    "[ \"\$(code_of $LOCAL/v1/models)\" = 200 ] && grep -q next-server '$o.ps-after-signals' && [ \"\$(awk '\$4 ~ /next-server/ {print \$2}' '$o.ps')\" = \"\$(awk '\$4 ~ /next-server/ {print \$2}' '$o.ps-after-signals')\" ]"
+
   # Who the request comes from. Behind the gateway Node's own peer is always
   # loopback, so "Host: localhost" with no forwarding header is what a remote
   # client would send to pass as local if the handoff were broken.
