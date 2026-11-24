@@ -233,7 +233,7 @@ type querier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// bumpConfigGeneration is helpers/configGeneration.js's bump, for the config
+// bumpConfigGeneration is helpers/configGeneration.ts's bump, for the config
 // writes the gateway makes (a node's droppedBetas, a connection turned off).
 const bumpConfigGenerationSQL = `INSERT INTO _meta(key, value) VALUES('configGeneration', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)`
 

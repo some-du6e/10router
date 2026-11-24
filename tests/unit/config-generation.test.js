@@ -1,4 +1,4 @@
-// _meta.configGeneration (src/lib/db/helpers/configGeneration.js): every
+// _meta.configGeneration (src/lib/db/helpers/configGeneration.ts): every
 // config write moves it in its own transaction, so the Go gateway knows when
 // to reload its snapshot (docs/GO_GATEWAY.md, Config sync). The request path's
 // lock and usage writes leave it alone.
@@ -109,7 +109,7 @@ it("every SQL write to a config table is listed, with how it moves the config ge
   const gone = Object.keys(listed).filter((k) => !(k in found));
   expect({ unlisted, gone }, [
     "A write to settings, combos, providerNodes, apiKeys, kv or providerConnections was added, moved or removed.",
-    "Run bumpConfigGenerationSync(db) in its transaction (or writeConfig, src/lib/db/helpers/configGeneration.js),",
+    "Run bumpConfigGenerationSync(db) in its transaction (or writeConfig, src/lib/db/helpers/configGeneration.ts),",
     "or say in WRITE_SITES why it needs none; then update WRITE_SITES and cover it in OPS below.",
   ].join(" ")).toEqual({ unlisted: [], gone: [] });
 });
