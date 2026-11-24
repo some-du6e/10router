@@ -163,7 +163,8 @@ func TestParityWithNode(t *testing.T) {
 		}
 		total++
 		t.Run(f.Name, func(t *testing.T) {
-			req, err := Prepare(f.body(t), f.inputs(t))
+			in := f.inputs(t)
+			req, err := Prepare(f.body(t), in)
 			switch {
 			case f.Node.Error != "":
 				if !IsDecline(err) {
@@ -198,7 +199,10 @@ func TestParityWithNode(t *testing.T) {
 				accept = accept || h.Name == "Accept" && h.Value == "text/event-stream"
 				got = append(got, [2]string{h.Name, v})
 			}
-			if req.Stream != accept {
+			// Stream is the executor's flag, which sets the SSE Accept header
+			// unless the node's own header lines rewrite Accept.
+			lines := in.Connection.Node.Mimic == "custom" || in.Connection.Node.Overrides != nil && in.Connection.Node.Overrides.Headers != ""
+			if !lines && req.Stream != accept {
 				t.Errorf("Stream %v, but the SSE Accept header is %v", req.Stream, accept)
 			}
 			if fmt.Sprint(got) != fmt.Sprint(f.Node.Headers) {
