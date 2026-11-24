@@ -57,15 +57,16 @@ legs() { # legs <leg> [GATEWAY_MODE]
   echo "::group::$leg: start (GATEWAY_MODE=${mode:-unset})"
   start "$leg" "$mode" || { fail=1; echo "::endgroup::"; return; }
   echo "::endgroup::"
-  docker exec gw-e2e ps -o pid,args > "$o.ps" 2>&1
+  # Next renames the node process "next-server (vX)".
+  docker exec gw-e2e ps -o pid,ppid,args > "$o.ps" 2>&1
   show "$leg: processes" "$o.ps"
   if [ -n "$mode" ]; then
     check "$leg: the gateway is PID 1 and runs node as its child" \
-      "awk '\$1==1' '$o.ps' | grep -q 10router-gateway && awk '\$1!=1 && \$2==\"node\" && \$3==\"custom-server.js\"' '$o.ps' | grep -q ."
+      "awk '\$1==1' '$o.ps' | grep -q 10router-gateway && awk '\$1!=1 && \$2==1' '$o.ps' | grep -q next-server"
     check "$leg: health endpoint answers" "curl -sf $LOCAL/_gateway/health | grep -q '\"status\":\"ok\"'"
     check "$leg: Node's loopback port is not reachable from outside" "[ \"\$(code_of http://$HOST_IP:20129/v1/models)\" = 000 ]"
   else
-    check "$leg: node is PID 1, no gateway running" "awk '\$1==1 && \$2==\"node\" && \$3==\"custom-server.js\"' '$o.ps' | grep -q . && ! grep -q 10router-gateway '$o.ps'"
+    check "$leg: node is PID 1, no gateway running" "awk '\$1==1' '$o.ps' | grep -q next-server && ! grep -q 10router-gateway '$o.ps'"
     check "$leg: no gateway health endpoint" "! curl -s $LOCAL/_gateway/health | grep -q '\"mode\"'"
   fi
 

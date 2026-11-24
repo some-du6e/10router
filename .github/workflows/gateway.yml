@@ -75,7 +75,9 @@ jobs:
           GATEWAY_BIN: ${{ runner.temp }}/10router-gateway
           BENCH_BIN: ${{ runner.temp }}/gateway-bench
           OUT_DIR: ${{ github.workspace }}/bench-out
-        run: bash .github/e2e/gateway/bench.sh | tee bench.md
+        run: |
+          set -o pipefail
+          bash .github/e2e/gateway/bench.sh | tee bench.md
       - name: Summary
         if: always()
         run: cat bench.md >> "$GITHUB_STEP_SUMMARY"

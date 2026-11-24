@@ -18,7 +18,8 @@ for _ in $(seq 1 100); do
   sleep 0.2
 done
 curl -sf -o /dev/null http://127.0.0.1:18080/_gateway/health || { cat "$OUT/gateway.log"; exit 1; }
-APP_PID="$(pgrep -f '[g]ateway/bench/upstream.mjs')"
+# The gateway's child; the gateway's own args name the script too.
+APP_PID="$(pgrep -P "$GW_PID" node)"
 
 echo "### Proxy overhead"
 echo

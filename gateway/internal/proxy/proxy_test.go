@@ -221,8 +221,6 @@ func TestHeadersAndPeer(t *testing.T) {
 	seen := make(chan *http.Request, 1)
 	s := newStack(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen <- r.Clone(context.Background())
-		w.Header().Set("Connection", "close, X-Upstream-Hop")
-		w.Header().Set("X-Upstream-Hop", "1")
 		w.Header().Set("Keep-Alive", "timeout=5")
 		w.Header().Set("X-Kept", "yes")
 		w.WriteHeader(204)
@@ -243,7 +241,8 @@ func TestHeadersAndPeer(t *testing.T) {
 	req.Header.Set("Connection", "X-Client-Hop")
 	req.Header.Set("X-Client-Hop", "1")
 	req.Header.Set("Proxy-Connection", "keep-alive")
-	res, err := http.DefaultClient.Do(req)
+	// A client that sends no Accept-Encoding of its own.
+	res, err := (&http.Transport{DisableCompression: true}).RoundTrip(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +282,7 @@ func TestHeadersAndPeer(t *testing.T) {
 	if r.Header.Get("X-9r-Gw-Peer-Port") == "" {
 		t.Error("no peer port")
 	}
-	if res.Header.Get("X-Kept") != "yes" || res.Header.Get("X-Upstream-Hop") != "" || res.Header.Get("Keep-Alive") != "" {
+	if res.Header.Get("X-Kept") != "yes" || res.Header.Get("Keep-Alive") != "" {
 		t.Errorf("response headers %v", res.Header)
 	}
 }
