@@ -1,0 +1,64 @@
+{
+ "name": "edge-probes-001",
+ "seed": 8344,
+ "inputs": {
+  "provider": "openai-compatible-chat-5f0c1d2e-0000-4000-8000-00000000c1a0",
+  "model": "claude-opus-4-8",
+  "apiKey": "sk-synthetic-edgeprobes001-0000",
+  "providerSpecificData": {
+   "apiType": "chat",
+   "baseUrl": "https://gateway.example.test/v1?key=a%20b&flag",
+   "modelRoutes": {
+    "claude-opus-4-8": "anthropic"
+   },
+   "overrides": {
+    "query": "&"
+   }
+  },
+  "providerThinking": null,
+  "keyHasBudget": false,
+  "catalog": null
+ },
+ "request": {
+  "headers": {
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27",
+   "anthropic-version": "2023-06-01",
+   "accept": "application/json",
+   "content-type": "application/json"
+  },
+  "body": "{\"model\":\"combo-5\",\"max_tokens\":32000,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":31999},\"metadata\":{\"user_id\":\"user_3RraJ4wk92DxsWHQyAhl8KdeoujfKNf9_account__session_6nx0JCzC\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"join alpha delta decode to offset join to for encode buffer bravo bravo update\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"a vector\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"number\",\"description\":\"bravo\",\"minimum\":0}},\"required\":[\"task_0\"]}},{\"name\":\"Bash\",\"description\":\"vector vector stream in in offset\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"string\",\"description\":\"token\"},\"bash_1\":{\"type\":\"object\",\"description\":\"the field\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"bash_2\":{\"type\":\"string\",\"description\":\"update\"}},\"required\":[\"bash_0\"]}},{\"name\":\"Glob\",\"description\":\"token filter handler config graph\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"integer\",\"description\":\"alpha\",\"minimum\":0},\"glob_1\":{\"type\":\"boolean\",\"description\":\"encode buffer\"},\"glob_2\":{\"type\":\"integer\",\"description\":\"decode for\",\"minimum\":0}},\"required\":[\"glob_0\"],\"additionalProperties\":false},\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\njoin the delta node a echo update\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"record with\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"yield field token yield\",\"signature\":\"EqV54XGOJXGW1WsVO0auubFD2pafpnHpgD==\"},{\"type\":\"text\",\"text\":\"offset\"},{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":40},\"id\":\"toolu_01vSDyUdrVPwU80iKkHXRgMS\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01vSDyUdrVPwU80iKkHXRgMS\",\"content\":[{\"type\":\"text\",\"text\":\"// TODO: handle the empty case\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"config field offset yield for in echo\",\"signature\":\"EqImLGwNKeMvjOFigDY27zX==\"},{\"type\":\"text\",\"text\":\"decode\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":354},\"id\":\"toolu_017TiNno7yjpMseiuaxnRu4y\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_017TiNno7yjpMseiuaxnRu4y\",\"content\":[{\"type\":\"text\",\"text\":\"const value = await load(path);\"}]}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"yield module delta\"}]}]}"
+ },
+ "node": {
+  "url": "https://gateway.example.test/v1/messages?key=a%20b&flag",
+  "headers": [
+   [
+    "Content-Type",
+    "application/json"
+   ],
+   [
+    "anthropic-version",
+    "2023-06-01"
+   ],
+   [
+    "x-api-key",
+    "{{apiKey}}"
+   ],
+   [
+    "Authorization",
+    "Bearer {{apiKey}}"
+   ],
+   [
+    "Accept",
+    "text/event-stream"
+   ],
+   [
+    "anthropic-beta",
+    "interleaved-thinking-2025-05-14,context-management-2025-06-27"
+   ]
+  ],
+  "body": "{\"model\":\"claude-opus-4-8\",\"max_tokens\":32000,\"stream\":true,\"metadata\":{\"user_id\":\"user_3RraJ4wk92DxsWHQyAhl8KdeoujfKNf9_account__session_6nx0JCzC\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\"},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\"},{\"type\":\"text\",\"text\":\"join alpha delta decode to offset join to for encode buffer bravo bravo update\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"a vector\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"number\",\"description\":\"bravo\",\"minimum\":0}},\"required\":[\"task_0\"]},\"type\":\"custom\"},{\"name\":\"Bash\",\"description\":\"vector vector stream in in offset\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"string\",\"description\":\"token\"},\"bash_1\":{\"type\":\"object\",\"description\":\"the field\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"bash_2\":{\"type\":\"string\",\"description\":\"update\"}},\"required\":[\"bash_0\"]},\"type\":\"custom\"},{\"name\":\"Glob\",\"description\":\"token filter handler config graph\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"integer\",\"description\":\"alpha\",\"minimum\":0},\"glob_1\":{\"type\":\"boolean\",\"description\":\"encode buffer\"},\"glob_2\":{\"type\":\"integer\",\"description\":\"decode for\",\"minimum\":0}},\"required\":[\"glob_0\"],\"additionalProperties\":false},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\njoin the delta node a echo update\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"record with\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"yield field token yield\",\"signature\":\"EqV54XGOJXGW1WsVO0auubFD2pafpnHpgD==\"},{\"type\":\"text\",\"text\":\"offset\"},{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":40},\"id\":\"toolu_01vSDyUdrVPwU80iKkHXRgMS\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01vSDyUdrVPwU80iKkHXRgMS\",\"content\":[{\"type\":\"text\",\"text\":\"// TODO: handle the empty case\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"config field offset yield for in echo\",\"signature\":\"EqImLGwNKeMvjOFigDY27zX==\"},{\"type\":\"text\",\"text\":\"decode\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":354},\"id\":\"toolu_017TiNno7yjpMseiuaxnRu4y\",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_017TiNno7yjpMseiuaxnRu4y\",\"content\":[{\"type\":\"text\",\"text\":\"const value = await load(path);\"}]},{\"type\":\"text\",\"text\":\"yield module delta\"}]}],\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"high\"}}",
+  "sha256": "dbb0d000d0cac5226fc977869c0b787fdcc5389fc5ddea8963052352c81364d0"
+ }
+}

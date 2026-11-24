@@ -1,0 +1,31 @@
+{
+ "name": "decline-session-id-throw-001",
+ "seed": 8582,
+ "inputs": {
+  "provider": "openai-compatible-chat-5f0c1d2e-0000-4000-8000-00000000c1a0",
+  "model": "claude-opus-4-8",
+  "apiKey": "sk-synthetic-declinesessionidthrow001-0000",
+  "providerSpecificData": {
+   "apiType": "chat",
+   "baseUrl": "https://gateway.example.test/v1",
+   "modelRoutes": {
+    "claude-opus-4-8": "anthropic"
+   }
+  },
+  "providerThinking": null,
+  "keyHasBudget": false,
+  "catalog": null
+ },
+ "request": {
+  "headers": {
+   "user-agent": "synthetic-sdk/1.0",
+   "anthropic-version": "2023-06-01",
+   "content-type": "application/json"
+  },
+  "body": "{\"model\":\"combo-7\",\"max_tokens\":32000,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":31999},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"offset on field echo worker node with field update index filter to buffer kernel\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"record index\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"array\",\"description\":\"join\",\"items\":{\"type\":\"string\"}},\"task_1\":{\"type\":\"object\",\"description\":\"filter\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"task_2\":{\"type\":\"integer\",\"description\":\"module\",\"minimum\":0}},\"required\":[\"task_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"Bash\",\"description\":\"worker record\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"boolean\",\"description\":\"token\"},\"bash_1\":{\"type\":\"string\",\"description\":\"echo\"},\"bash_2\":{\"type\":\"boolean\",\"description\":\"kernel\"},\"bash_3\":{\"type\":\"string\",\"description\":\"to\"}},\"required\":[\"bash_0\"],\"additionalProperties\":false}},{\"name\":\"Glob\",\"description\":\"record and to of kernel in module in module\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"boolean\",\"description\":\"module\"},\"glob_1\":{\"type\":\"string\",\"description\":\"delta\"},\"glob_2\":{\"type\":\"boolean\",\"description\":\"decode\"}},\"required\":[\"glob_0\"]},\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\necho of kernel worker and in vector\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"encode the\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"custom_block\",\"output\":{\"toString\":0}}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"cache cache vector graph field field offset\",\"signature\":\"EqKlv1LUkRsCsU8P30KqGZ27MhMFsy8R==\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":275},\"id\":\"toolu_01l4PHAgswdLysxG4egPCpn8\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01l4PHAgswdLysxG4egPCpn8\",\"content\":\"// TODO: handle the empty case\\nfor (const item of list) total += item.size;\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"filter delta echo token\",\"signature\":\"Eqq7EmDKOrw4Bew0VSSCI==\"},{\"type\":\"text\",\"text\":\"kernel record for\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":45},\"id\":\"toolu_01H52sKWIF8xDAlbGLZ2MrU9\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01H52sKWIF8xDAlbGLZ2MrU9\",\"content\":[{\"type\":\"text\",\"text\":\"}\\nfor (const item of list) total += item.size;\\nexport function parse(text) {\"}]}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"stream node queue\"}]}]}"
+ },
+ "expectDecline": "own toString",
+ "node": {
+  "error": "threw: Cannot convert object to primitive value"
+ }
+}

@@ -16,7 +16,7 @@ const L = {
 };
 
 // thinkingFormat → valid selectable levels (source of truth for UI options).
-const FORMAT_LEVELS = {
+export const FORMAT_LEVELS = {
   openai: L.openai,
   "claude-adaptive": L.levelMax,
   "claude-budget": L.budgetX,
@@ -33,8 +33,11 @@ const FORMAT_LEVELS = {
 
 const CODEX_GPT_5_6_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
+// The levels of a reasoning model no format or pattern names.
+export const DEFAULT_LEVELS = L.base;
+
 // Model-name pattern overrides (glob, first match wins) — more precise than format default.
-const PATTERN_THINKING = [
+export const PATTERN_THINKING = [
   { pattern: "*gpt-6.1-sol*", levels: ["low", "medium", "high", "xhigh", "max"] },
   { pattern: "*gpt-6-astra*", levels: ["low", "medium", "high", "xhigh", "max"] },
   { pattern: "*gpt-6-sol*", levels: ["none", "low", "medium", "high", "xhigh", "max"] },
@@ -60,7 +63,7 @@ export function getThinkingLevels(provider, model) {
   const hit = PATTERN_THINKING.find((entry) =>
     (!entry.provider || entry.provider === provider) && matchPattern(entry.pattern, model)
   );
-  let levels = hit?.levels || FORMAT_LEVELS[caps.thinkingFormat] || L.base;
+  let levels = hit?.levels || FORMAT_LEVELS[caps.thinkingFormat] || DEFAULT_LEVELS;
   if (caps.thinkingCanDisable === false) levels = levels.filter((l) => l !== "none");
   return levels;
 }

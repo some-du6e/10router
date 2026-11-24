@@ -1,0 +1,65 @@
+{
+ "name": "decline-override-tool-change-000",
+ "seed": 680,
+ "inputs": {
+  "provider": "openai-compatible-chat-5f0c1d2e-0000-4000-8000-00000000c1a0",
+  "model": "claude-opus-4-8",
+  "apiKey": "sk-synthetic-declineoverridetoolchang-0000",
+  "providerSpecificData": {
+   "apiType": "chat",
+   "baseUrl": "https://gateway.example.test/v1",
+   "modelRoutes": {
+    "claude-opus-4-8": "anthropic"
+   },
+   "overrides": {
+    "body": "{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"},{\"type\":\"tool_removal\",\"tool\":{\"type\":\"tool_reference\",\"name\":\"Bash\"}}]}]}"
+   }
+  },
+  "providerThinking": null,
+  "keyHasBudget": false,
+  "catalog": null
+ },
+ "request": {
+  "headers": {
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27",
+   "anthropic-version": "2023-06-01",
+   "accept": "application/json",
+   "content-type": "application/json"
+  },
+  "body": "{\"model\":\"combo-3\",\"max_tokens\":32000,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":31999},\"metadata\":{\"user_id\":\"user_YVpgbQk7RYANp6xbdJf65Yt7ff5cpfch_account__session_uH1pAzIh\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"vector on kernel a stream handler the to index the filter handler decode is\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"record queue index of alpha for on\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"integer\",\"description\":\"cache buffer\",\"minimum\":0},\"task_1\":{\"type\":\"boolean\",\"description\":\"bravo kernel\"},\"task_2\":{\"type\":\"array\",\"description\":\"zone encode\",\"items\":{\"type\":\"string\"}},\"task_3\":{\"type\":\"integer\",\"description\":\"record for\",\"minimum\":0},\"task_4\":{\"type\":\"number\",\"description\":\"encode layer\",\"minimum\":0}},\"required\":[\"task_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"Bash\",\"description\":\"bravo layer kernel yield vector decode graph to\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"array\",\"description\":\"a alpha\",\"items\":{\"type\":\"string\"}},\"bash_1\":{\"type\":\"boolean\",\"description\":\"join\"},\"bash_2\":{\"type\":\"integer\",\"description\":\"queue\",\"minimum\":0},\"bash_3\":{\"type\":\"boolean\",\"description\":\"kernel\"}},\"required\":[\"bash_0\"]}},{\"name\":\"Glob\",\"description\":\"graph update is\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"number\",\"description\":\"encode\",\"minimum\":0}},\"required\":[\"glob_0\"],\"additionalProperties\":false},\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nbuffer graph bravo filter delta worker of\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"is parser\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"queue handler to worker\",\"signature\":\"EqWMOBuStHeEjBvVbR7L2tSBjjmu==\"},{\"type\":\"text\",\"text\":\"handler decode encode record\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":340},\"id\":\"toolu_013cBY7EphWG6TjHii9H21p1\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":55},\"id\":\"toolu_012qnwJQ945lJ5q17CdHNQUO\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_013cBY7EphWG6TjHii9H21p1\",\"content\":\"}\"},{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_012qnwJQ945lJ5q17CdHNQUO\",\"content\":[{\"type\":\"text\",\"text\":\"let count = 0;\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"echo zone yield and index alpha\",\"signature\":\"EqdVjHC2xAQHqgtN1j4Q1HS2g==\"},{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":10},\"id\":\"toolu_01tj9lfig2WHtbHTPGoNfosy\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":324},\"id\":\"toolu_01P1Dyy4M0PSsBVcP5U758eE\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01tj9lfig2WHtbHTPGoNfosy\",\"content\":[{\"type\":\"text\",\"text\":\"// TODO: handle the empty case\\nexport function parse(text) {\\n  return items.filter(Boolean);\"}]},{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01P1Dyy4M0PSsBVcP5U758eE\",\"content\":\"  return items.filter(Boolean);\\n// TODO: handle the empty case\\n}\\n// TODO: handle the empty case\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"module join echo\"}]}]}"
+ },
+ "expectDecline": "tool change from a body override",
+ "node": {
+  "url": "https://gateway.example.test/v1/messages",
+  "headers": [
+   [
+    "Content-Type",
+    "application/json"
+   ],
+   [
+    "anthropic-version",
+    "2023-06-01"
+   ],
+   [
+    "x-api-key",
+    "{{apiKey}}"
+   ],
+   [
+    "Authorization",
+    "Bearer {{apiKey}}"
+   ],
+   [
+    "Accept",
+    "text/event-stream"
+   ],
+   [
+    "anthropic-beta",
+    "interleaved-thinking-2025-05-14,context-management-2025-06-27"
+   ]
+  ],
+  "body": "{\"model\":\"claude-opus-4-8\",\"max_tokens\":32000,\"stream\":true,\"metadata\":{\"user_id\":\"user_YVpgbQk7RYANp6xbdJf65Yt7ff5cpfch_account__session_uH1pAzIh\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\"},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\"},{\"type\":\"text\",\"text\":\"vector on kernel a stream handler the to index the filter handler decode is\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"record queue index of alpha for on\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"integer\",\"description\":\"cache buffer\",\"minimum\":0},\"task_1\":{\"type\":\"boolean\",\"description\":\"bravo kernel\"},\"task_2\":{\"type\":\"array\",\"description\":\"zone encode\",\"items\":{\"type\":\"string\"}},\"task_3\":{\"type\":\"integer\",\"description\":\"record for\",\"minimum\":0},\"task_4\":{\"type\":\"number\",\"description\":\"encode layer\",\"minimum\":0}},\"required\":[\"task_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"type\":\"custom\"},{\"name\":\"Bash\",\"description\":\"bravo layer kernel yield vector decode graph to\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"array\",\"description\":\"a alpha\",\"items\":{\"type\":\"string\"}},\"bash_1\":{\"type\":\"boolean\",\"description\":\"join\"},\"bash_2\":{\"type\":\"integer\",\"description\":\"queue\",\"minimum\":0},\"bash_3\":{\"type\":\"boolean\",\"description\":\"kernel\"}},\"required\":[\"bash_0\"]},\"type\":\"custom\"},{\"name\":\"Glob\",\"description\":\"graph update is\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"number\",\"description\":\"encode\",\"minimum\":0}},\"required\":[\"glob_0\"],\"additionalProperties\":false},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"high\"}}",
+  "sha256": "73efb0802e7bb078f8f82b7dea1f6114d33a57744659fa3a744be53d2a6e944b"
+ }
+}

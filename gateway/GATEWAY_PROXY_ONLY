@@ -1,0 +1,7 @@
+# Go packages whose native route must stay proxied to Node, one per line
+# (names from gateway/node-map.json). A PR that changes Node behavior a port
+# mirrors either updates the port in gateway/ or lists the package here, and
+# scripts/gateway-drift-check.mjs accepts that. Once native routes exist
+# (phase 2c) the gateway embeds this list and keeps a listed package's route
+# proxied until the port catches up (docs/GO_GATEWAY.md, Risks). Lines
+# starting with # are comments.

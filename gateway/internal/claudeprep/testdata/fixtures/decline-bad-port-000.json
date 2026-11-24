@@ -1,0 +1,62 @@
+{
+ "name": "decline-bad-port-000",
+ "seed": 697,
+ "inputs": {
+  "provider": "openai-compatible-chat-5f0c1d2e-0000-4000-8000-00000000c1a0",
+  "model": "claude-opus-4-8",
+  "apiKey": "sk-synthetic-declinebadport000-0000",
+  "providerSpecificData": {
+   "apiType": "chat",
+   "baseUrl": "http://gateway.example.test:6000/v1",
+   "modelRoutes": {
+    "claude-opus-4-8": "anthropic"
+   }
+  },
+  "providerThinking": null,
+  "keyHasBudget": false,
+  "catalog": null
+ },
+ "request": {
+  "headers": {
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27",
+   "anthropic-version": "2023-06-01",
+   "accept": "application/json",
+   "content-type": "application/json"
+  },
+  "body": "{\"model\":\"combo-5\",\"max_tokens\":32000,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":31999},\"metadata\":{\"user_id\":\"user_geJjKfvnz9AtdKYLqmQQVqApN2IIKlhU_account__session_s3j37rvT\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"kernel stream vector kernel record graph queue of encode graph is filter the on\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"the in worker decode bravo cache record on module\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"string\",\"description\":\"of\"}},\"required\":[\"task_0\"]}},{\"name\":\"Bash\",\"description\":\"for graph field\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"number\",\"description\":\"token of\",\"minimum\":0},\"bash_1\":{\"type\":\"array\",\"description\":\"the\",\"items\":{\"type\":\"string\"}},\"bash_2\":{\"type\":\"string\",\"description\":\"on vector\"},\"bash_3\":{\"type\":\"array\",\"description\":\"the echo\",\"items\":{\"type\":\"string\"}}},\"required\":[\"bash_0\"],\"additionalProperties\":false}},{\"name\":\"Glob\",\"description\":\"token alpha\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"object\",\"description\":\"graph\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"glob_1\":{\"type\":\"object\",\"description\":\"token\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"glob_2\":{\"type\":\"number\",\"description\":\"graph\",\"minimum\":0}},\"required\":[\"glob_0\"]},\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nqueue stream record token alpha join join\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"kernel a\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"echo\",\"signature\":\"EqiMCnLhIFIuWtvmwaQgcJwPGGdAD3Db==\"},{\"type\":\"text\",\"text\":\"vector module and\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":374},\"id\":\"toolu_01Q1gqKR1zd5nlLmHVKNqIp0\"},{\"type\":\"text\",\"text\":\"is\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01Q1gqKR1zd5nlLmHVKNqIp0\",\"content\":[{\"type\":\"text\",\"text\":\"import { join } from \\\"node:path\\\";\\nfor (const item of list) total += item.size;\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"index\",\"signature\":\"EqGD0YAnAQLSCpMKL2JB9XZFxudOMnTeKKca==\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":119},\"id\":\"toolu_01mBM4OGGwVJvLToBERO63wb\"},{\"type\":\"text\",\"text\":\"the\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01mBM4OGGwVJvLToBERO63wb\",\"content\":[{\"type\":\"text\",\"text\":\"import { join } from \\\"node:path\\\";\"}]}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"graph cache\"}]}]}"
+ },
+ "expectDecline": "WHATWG parser",
+ "node": {
+  "url": "http://gateway.example.test:6000/v1/messages",
+  "headers": [
+   [
+    "Content-Type",
+    "application/json"
+   ],
+   [
+    "anthropic-version",
+    "2023-06-01"
+   ],
+   [
+    "x-api-key",
+    "{{apiKey}}"
+   ],
+   [
+    "anthropic-beta",
+    "interleaved-thinking-2025-05-14,context-management-2025-06-27"
+   ],
+   [
+    "Authorization",
+    "Bearer {{apiKey}}"
+   ],
+   [
+    "Accept",
+    "text/event-stream"
+   ]
+  ],
+  "body": "{\"model\":\"claude-opus-4-8\",\"max_tokens\":32000,\"stream\":true,\"metadata\":{\"user_id\":\"user_geJjKfvnz9AtdKYLqmQQVqApN2IIKlhU_account__session_s3j37rvT\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\"},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\"},{\"type\":\"text\",\"text\":\"kernel stream vector kernel record graph queue of encode graph is filter the on\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"the in worker decode bravo cache record on module\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"string\",\"description\":\"of\"}},\"required\":[\"task_0\"]},\"type\":\"custom\"},{\"name\":\"Bash\",\"description\":\"for graph field\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"number\",\"description\":\"token of\",\"minimum\":0},\"bash_1\":{\"type\":\"array\",\"description\":\"the\",\"items\":{\"type\":\"string\"}},\"bash_2\":{\"type\":\"string\",\"description\":\"on vector\"},\"bash_3\":{\"type\":\"array\",\"description\":\"the echo\",\"items\":{\"type\":\"string\"}}},\"required\":[\"bash_0\"],\"additionalProperties\":false},\"type\":\"custom\"},{\"name\":\"Glob\",\"description\":\"token alpha\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"object\",\"description\":\"graph\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"glob_1\":{\"type\":\"object\",\"description\":\"token\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"glob_2\":{\"type\":\"number\",\"description\":\"graph\",\"minimum\":0}},\"required\":[\"glob_0\"]},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nqueue stream record token alpha join join\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"kernel a\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"echo\",\"signature\":\"EqiMCnLhIFIuWtvmwaQgcJwPGGdAD3Db==\"},{\"type\":\"text\",\"text\":\"vector module and\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":374},\"id\":\"toolu_01Q1gqKR1zd5nlLmHVKNqIp0\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01Q1gqKR1zd5nlLmHVKNqIp0\",\"content\":[{\"type\":\"text\",\"text\":\"import { join } from \\\"node:path\\\";\\nfor (const item of list) total += item.size;\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"index\",\"signature\":\"EqGD0YAnAQLSCpMKL2JB9XZFxudOMnTeKKca==\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":119},\"id\":\"toolu_01mBM4OGGwVJvLToBERO63wb\",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01mBM4OGGwVJvLToBERO63wb\",\"content\":[{\"type\":\"text\",\"text\":\"import { join } from \\\"node:path\\\";\"}]},{\"type\":\"text\",\"text\":\"graph cache\"}]}],\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"high\"}}",
+  "sha256": "cac4b164c3153ba37b858014c80c775b461640757c79897cd854a83c3964ccf6"
+ }
+}

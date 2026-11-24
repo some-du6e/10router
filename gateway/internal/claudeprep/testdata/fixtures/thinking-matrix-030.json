@@ -1,0 +1,54 @@
+{
+ "name": "thinking-matrix-030",
+ "seed": 237723,
+ "inputs": {
+  "provider": "openai-compatible-chat-5f0c1d2e-0000-4000-8000-00000000c1a0",
+  "model": "claude-sonnet-5-5(auto)",
+  "apiKey": "sk-synthetic-thinkingmatrix030-0000",
+  "providerSpecificData": {
+   "apiType": "chat",
+   "baseUrl": "https://gateway.example.test/v1",
+   "modelRoutes": {
+    "claude-sonnet-5-5": "anthropic"
+   }
+  },
+  "providerThinking": null,
+  "keyHasBudget": false,
+  "catalog": null
+ },
+ "request": {
+  "headers": {
+   "user-agent": "synthetic-sdk/1.0",
+   "anthropic-version": "2023-06-01",
+   "content-type": "application/json"
+  },
+  "body": "{\"model\":\"combo-7\",\"max_tokens\":32000,\"stream\":true,\"thinking\":{\"type\":\"adaptive\",\"display\":\"summarized\"},\"metadata\":{\"user_id\":\"user_U4jtacQKUeO2BqFcs2IjNpiwhqz7Tnq0_account__session_PAmYwnZB\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"update stream on alpha delta a zone and record update the on record stream\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"join alpha to queue config update\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"object\",\"description\":\"alpha\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"task_1\":{\"type\":\"boolean\",\"description\":\"on\"},\"task_2\":{\"type\":\"string\",\"description\":\"in\"},\"task_3\":{\"type\":\"number\",\"description\":\"yield yield\",\"minimum\":0},\"task_4\":{\"type\":\"object\",\"description\":\"on\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"task_5\":{\"type\":\"object\",\"description\":\"to field\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"task_0\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"Bash\",\"description\":\"on node index parser is for\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"object\",\"description\":\"filter\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"bash_1\":{\"type\":\"integer\",\"description\":\"yield\",\"minimum\":0},\"bash_2\":{\"type\":\"boolean\",\"description\":\"decode\"},\"bash_3\":{\"type\":\"array\",\"description\":\"of\",\"items\":{\"type\":\"string\"}},\"bash_4\":{\"type\":\"integer\",\"description\":\"and\",\"minimum\":0}},\"required\":[\"bash_0\"]}},{\"name\":\"Glob\",\"description\":\"queue layer a filter worker to and layer\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"string\",\"description\":\"the vector\"},\"glob_1\":{\"type\":\"number\",\"description\":\"layer\",\"minimum\":0},\"glob_2\":{\"type\":\"number\",\"description\":\"vector\",\"minimum\":0},\"glob_3\":{\"type\":\"integer\",\"description\":\"of a\",\"minimum\":0},\"glob_4\":{\"type\":\"array\",\"description\":\"yield layer\",\"items\":{\"type\":\"string\"}}},\"required\":[\"glob_0\"],\"additionalProperties\":false}},{\"name\":\"Grep\",\"description\":\"queue kernel buffer is token update stream a update a\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"number\",\"description\":\"join worker\",\"minimum\":0},\"grep_1\":{\"type\":\"boolean\",\"description\":\"update\"},\"grep_2\":{\"type\":\"integer\",\"description\":\"to cache\",\"minimum\":0},\"grep_3\":{\"type\":\"object\",\"description\":\"kernel\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"grep_4\":{\"type\":\"array\",\"description\":\"bravo\",\"items\":{\"type\":\"string\"}}},\"required\":[\"grep_0\"]},\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nnode field alpha zone in to echo\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"layer layer\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"is decode graph bravo\"},{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":248},\"id\":\"toolu_01ZWSAxJl2OaqB9U6WtyAOAE\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01ZWSAxJl2OaqB9U6WtyAOAE\",\"content\":\"export function parse(text) {\\nconst value = await load(path);\\nimport { join } from \\\"node:path\\\";\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"layer kernel parser with cache\",\"signature\":\"EqSEVGnlAp6zmHS==\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":116},\"id\":\"toolu_01KuA7ZyzoT34wQ8qudsscj8\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01KuA7ZyzoT34wQ8qudsscj8\",\"content\":[{\"type\":\"text\",\"text\":\"if (!result) return null;\"}]},{\"type\":\"text\",\"text\":\"zone\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"yield on\"}]}]}"
+ },
+ "node": {
+  "url": "https://gateway.example.test/v1/messages",
+  "headers": [
+   [
+    "Content-Type",
+    "application/json"
+   ],
+   [
+    "anthropic-version",
+    "2023-06-01"
+   ],
+   [
+    "x-api-key",
+    "{{apiKey}}"
+   ],
+   [
+    "Authorization",
+    "Bearer {{apiKey}}"
+   ],
+   [
+    "Accept",
+    "text/event-stream"
+   ]
+  ],
+  "body": "{\"model\":\"claude-sonnet-5-5\",\"max_tokens\":32000,\"stream\":true,\"metadata\":{\"user_id\":\"user_U4jtacQKUeO2BqFcs2IjNpiwhqz7Tnq0_account__session_PAmYwnZB\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\"},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\"},{\"type\":\"text\",\"text\":\"update stream on alpha delta a zone and record update the on record stream\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"join alpha to queue config update\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"object\",\"description\":\"alpha\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"task_1\":{\"type\":\"boolean\",\"description\":\"on\"},\"task_2\":{\"type\":\"string\",\"description\":\"in\"},\"task_3\":{\"type\":\"number\",\"description\":\"yield yield\",\"minimum\":0},\"task_4\":{\"type\":\"object\",\"description\":\"on\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"task_5\":{\"type\":\"object\",\"description\":\"to field\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"task_0\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"type\":\"custom\"},{\"name\":\"Bash\",\"description\":\"on node index parser is for\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"object\",\"description\":\"filter\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"bash_1\":{\"type\":\"integer\",\"description\":\"yield\",\"minimum\":0},\"bash_2\":{\"type\":\"boolean\",\"description\":\"decode\"},\"bash_3\":{\"type\":\"array\",\"description\":\"of\",\"items\":{\"type\":\"string\"}},\"bash_4\":{\"type\":\"integer\",\"description\":\"and\",\"minimum\":0}},\"required\":[\"bash_0\"]},\"type\":\"custom\"},{\"name\":\"Glob\",\"description\":\"queue layer a filter worker to and layer\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"string\",\"description\":\"the vector\"},\"glob_1\":{\"type\":\"number\",\"description\":\"layer\",\"minimum\":0},\"glob_2\":{\"type\":\"number\",\"description\":\"vector\",\"minimum\":0},\"glob_3\":{\"type\":\"integer\",\"description\":\"of a\",\"minimum\":0},\"glob_4\":{\"type\":\"array\",\"description\":\"yield layer\",\"items\":{\"type\":\"string\"}}},\"required\":[\"glob_0\"],\"additionalProperties\":false},\"type\":\"custom\"},{\"name\":\"Grep\",\"description\":\"queue kernel buffer is token update stream a update a\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"number\",\"description\":\"join worker\",\"minimum\":0},\"grep_1\":{\"type\":\"boolean\",\"description\":\"update\"},\"grep_2\":{\"type\":\"integer\",\"description\":\"to cache\",\"minimum\":0},\"grep_3\":{\"type\":\"object\",\"description\":\"kernel\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"grep_4\":{\"type\":\"array\",\"description\":\"bravo\",\"items\":{\"type\":\"string\"}}},\"required\":[\"grep_0\"]},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nnode field alpha zone in to echo\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"layer layer\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"is decode graph bravo\"},{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":248},\"id\":\"toolu_01ZWSAxJl2OaqB9U6WtyAOAE\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01ZWSAxJl2OaqB9U6WtyAOAE\",\"content\":\"export function parse(text) {\\nconst value = await load(path);\\nimport { join } from \\\"node:path\\\";\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"layer kernel parser with cache\",\"signature\":\"EqSEVGnlAp6zmHS==\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":116},\"id\":\"toolu_01KuA7ZyzoT34wQ8qudsscj8\",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01KuA7ZyzoT34wQ8qudsscj8\",\"content\":[{\"type\":\"text\",\"text\":\"if (!result) return null;\"}]},{\"type\":\"text\",\"text\":\"zone\"},{\"type\":\"text\",\"text\":\"yield on\"}]}],\"output_config\":{\"effort\":\"auto\"},\"thinking\":{\"type\":\"adaptive\",\"display\":\"summarized\"}}",
+  "sha256": "eccb5d716e79077630eff93ac98bca760d79fc388a3600e776f2f07eda2c7e1e"
+ }
+}

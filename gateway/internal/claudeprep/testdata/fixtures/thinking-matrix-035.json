@@ -1,0 +1,63 @@
+{
+ "name": "thinking-matrix-035",
+ "seed": 277318,
+ "inputs": {
+  "provider": "openai-compatible-chat-5f0c1d2e-0000-4000-8000-00000000c1a0",
+  "model": "claude-haiku-4-5(ultra)",
+  "apiKey": "sk-synthetic-thinkingmatrix035-0000",
+  "providerSpecificData": {
+   "apiType": "chat",
+   "baseUrl": "https://gateway.example.test/v1",
+   "modelRoutes": {
+    "claude-haiku-4-5": "anthropic"
+   }
+  },
+  "providerThinking": {
+   "mode": "off"
+  },
+  "keyHasBudget": false,
+  "catalog": null
+ },
+ "request": {
+  "headers": {
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27",
+   "anthropic-version": "2023-06-01",
+   "accept": "application/json",
+   "content-type": "application/json"
+  },
+  "body": "{\"model\":\"combo-5\",\"max_tokens\":200000,\"stream\":true,\"thinking\":{\"type\":\"adaptive\"},\"metadata\":{\"user_id\":\"user_a6LblGN3UfrDMSspiy7xnbJPqcDUZ52x_account__session_VrAJlEGs\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"graph the alpha graph a buffer worker of the stream field update module parser\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"module encode encode token join yield stream\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"boolean\",\"description\":\"and\"},\"task_1\":{\"type\":\"string\",\"description\":\"of graph\"}},\"required\":[\"task_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"Bash\",\"description\":\"vector stream update bravo\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"array\",\"description\":\"offset\",\"items\":{\"type\":\"string\"}},\"bash_1\":{\"type\":\"number\",\"description\":\"node\",\"minimum\":0}},\"required\":[\"bash_0\"],\"additionalProperties\":false}},{\"name\":\"Glob\",\"description\":\"kernel offset queue on graph of offset module\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"object\",\"description\":\"graph\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"glob_1\":{\"type\":\"object\",\"description\":\"parser\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"glob_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"Grep\",\"description\":\"layer\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"boolean\",\"description\":\"to yield\"},\"grep_1\":{\"type\":\"integer\",\"description\":\"cache\",\"minimum\":0},\"grep_2\":{\"type\":\"object\",\"description\":\"offset\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"grep_0\"]},\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nfilter cache stream join module and for\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"worker handler\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"field vector decode the config buffer offset and decode\",\"signature\":\"EqhEFFdHinuD9I2hYo==\"},{\"type\":\"text\",\"text\":\"yield offset a layer\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":17},\"id\":\"toolu_01YWijQRbhhRq2JTPBo6sgrU\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01YWijQRbhhRq2JTPBo6sgrU\",\"content\":\"import { join } from \\\"node:path\\\";\\nconst value = await load(path);\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"record stream with yield on node join index module worker\",\"signature\":\"Eqyt0aHJatKqZpDga4ifnOP2==\"},{\"type\":\"text\",\"text\":\"vector update\"},{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":105},\"id\":\"toolu_01mUpYCqFt01spIO3vijRmRs\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01mUpYCqFt01spIO3vijRmRs\",\"content\":\"let count = 0;\\nthrow new Error(\\\"unexpected end\\\");\\n// TODO: handle the empty case\"},{\"type\":\"text\",\"text\":\"a\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"is record zone config update delta queue index yield\",\"signature\":\"EqSyq7Z5EZBz1C9jFoHrDcI==\"},{\"type\":\"text\",\"text\":\"filter of\"},{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_3.ts\",\"limit\":362},\"id\":\"toolu_01pXwDITCyKEuD84CkLpkz0w\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01pXwDITCyKEuD84CkLpkz0w\",\"content\":[{\"type\":\"text\",\"text\":\"for (const item of list) total += item.size;\\nlet count = 0;\\nlet count = 0;\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"decode worker\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_4.ts\",\"limit\":364},\"id\":\"toolu_01hACSwYmUgDuOo6w8kdYOEF\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01hACSwYmUgDuOo6w8kdYOEF\",\"content\":\"let count = 0;\\nfor (const item of list) total += item.size;\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"parser to\"}]}],\"output_config\":{\"effort\":\"xhigh\"},\"reasoning_effort\":\"none\"}"
+ },
+ "node": {
+  "url": "https://gateway.example.test/v1/messages",
+  "headers": [
+   [
+    "Content-Type",
+    "application/json"
+   ],
+   [
+    "anthropic-version",
+    "2023-06-01"
+   ],
+   [
+    "x-api-key",
+    "{{apiKey}}"
+   ],
+   [
+    "anthropic-beta",
+    "interleaved-thinking-2025-05-14,context-management-2025-06-27"
+   ],
+   [
+    "Authorization",
+    "Bearer {{apiKey}}"
+   ],
+   [
+    "Accept",
+    "text/event-stream"
+   ]
+  ],
+  "body": "{\"model\":\"claude-haiku-4-5\",\"max_tokens\":64000,\"stream\":true,\"metadata\":{\"user_id\":\"user_a6LblGN3UfrDMSspiy7xnbJPqcDUZ52x_account__session_VrAJlEGs\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\"},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\"},{\"type\":\"text\",\"text\":\"graph the alpha graph a buffer worker of the stream field update module parser\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"module encode encode token join yield stream\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"boolean\",\"description\":\"and\"},\"task_1\":{\"type\":\"string\",\"description\":\"of graph\"}},\"required\":[\"task_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"type\":\"custom\"},{\"name\":\"Bash\",\"description\":\"vector stream update bravo\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"array\",\"description\":\"offset\",\"items\":{\"type\":\"string\"}},\"bash_1\":{\"type\":\"number\",\"description\":\"node\",\"minimum\":0}},\"required\":[\"bash_0\"],\"additionalProperties\":false},\"type\":\"custom\"},{\"name\":\"Glob\",\"description\":\"kernel offset queue on graph of offset module\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"object\",\"description\":\"graph\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"glob_1\":{\"type\":\"object\",\"description\":\"parser\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"glob_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"type\":\"custom\"},{\"name\":\"Grep\",\"description\":\"layer\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"boolean\",\"description\":\"to yield\"},\"grep_1\":{\"type\":\"integer\",\"description\":\"cache\",\"minimum\":0},\"grep_2\":{\"type\":\"object\",\"description\":\"offset\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"grep_0\"]},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nfilter cache stream join module and for\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"worker handler\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"field vector decode the config buffer offset and decode\",\"signature\":\"EqhEFFdHinuD9I2hYo==\"},{\"type\":\"text\",\"text\":\"yield offset a layer\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":17},\"id\":\"toolu_01YWijQRbhhRq2JTPBo6sgrU\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01YWijQRbhhRq2JTPBo6sgrU\",\"content\":\"import { join } from \\\"node:path\\\";\\nconst value = await load(path);\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"record stream with yield on node join index module worker\",\"signature\":\"Eqyt0aHJatKqZpDga4ifnOP2==\"},{\"type\":\"text\",\"text\":\"vector update\"},{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":105},\"id\":\"toolu_01mUpYCqFt01spIO3vijRmRs\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01mUpYCqFt01spIO3vijRmRs\",\"content\":\"let count = 0;\\nthrow new Error(\\\"unexpected end\\\");\\n// TODO: handle the empty case\"},{\"type\":\"text\",\"text\":\"a\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"is record zone config update delta queue index yield\",\"signature\":\"EqSyq7Z5EZBz1C9jFoHrDcI==\"},{\"type\":\"text\",\"text\":\"filter of\"},{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_3.ts\",\"limit\":362},\"id\":\"toolu_01pXwDITCyKEuD84CkLpkz0w\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01pXwDITCyKEuD84CkLpkz0w\",\"content\":[{\"type\":\"text\",\"text\":\"for (const item of list) total += item.size;\\nlet count = 0;\\nlet count = 0;\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"decode worker\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_4.ts\",\"limit\":364},\"id\":\"toolu_01hACSwYmUgDuOo6w8kdYOEF\",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01hACSwYmUgDuOo6w8kdYOEF\",\"content\":\"let count = 0;\\nfor (const item of list) total += item.size;\"},{\"type\":\"text\",\"text\":\"parser to\"}]}],\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":8192}}",
+  "sha256": "b6da4e17dd2192688d1fbd7a520a39ab91276f46715101e89467784c938a10ea"
+ }
+}

@@ -1,0 +1,61 @@
+{
+ "name": "thinking-matrix-038",
+ "seed": 301075,
+ "inputs": {
+  "provider": "openai-compatible-chat-5f0c1d2e-0000-4000-8000-00000000c1a0",
+  "model": "claude-3-5-sonnet-20241022(minimal)",
+  "apiKey": "sk-synthetic-thinkingmatrix038-0000",
+  "providerSpecificData": {
+   "apiType": "chat",
+   "baseUrl": "https://gateway.example.test/v1",
+   "modelRoutes": {
+    "claude-3-5-sonnet-20241022": "anthropic"
+   }
+  },
+  "providerThinking": null,
+  "keyHasBudget": false,
+  "catalog": null
+ },
+ "request": {
+  "headers": {
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27",
+   "anthropic-version": "2023-06-01",
+   "accept": "application/json",
+   "content-type": "application/json"
+  },
+  "body": "{\"model\":\"combo-4\",\"max_tokens\":128000,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":2048},\"metadata\":{\"user_id\":\"user_xnUENiE4JeM3zC9j1HD9wYGjRfAf7Uro_account__session_WlITb50p\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"kernel vector config decode encode is the graph zone is delta module graph filter\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"delta worker zone config graph buffer with\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"integer\",\"description\":\"on kernel\",\"minimum\":0},\"task_1\":{\"type\":\"object\",\"description\":\"with echo\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"task_0\"]}},{\"name\":\"Bash\",\"description\":\"worker index kernel is delta worker a\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"object\",\"description\":\"bravo\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"bash_1\":{\"type\":\"array\",\"description\":\"update module\",\"items\":{\"type\":\"string\"}},\"bash_2\":{\"type\":\"number\",\"description\":\"the parser\",\"minimum\":0},\"bash_3\":{\"type\":\"string\",\"description\":\"graph\"}},\"required\":[\"bash_0\"],\"additionalProperties\":false}},{\"name\":\"Glob\",\"description\":\"stream\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"boolean\",\"description\":\"encode buffer\"},\"glob_1\":{\"type\":\"array\",\"description\":\"to\",\"items\":{\"type\":\"string\"}},\"glob_2\":{\"type\":\"number\",\"description\":\"echo bravo\",\"minimum\":0},\"glob_3\":{\"type\":\"boolean\",\"description\":\"config\"},\"glob_4\":{\"type\":\"array\",\"description\":\"decode and\",\"items\":{\"type\":\"string\"}}},\"required\":[\"glob_0\"]}},{\"name\":\"Grep\",\"description\":\"cache decode index token\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"object\",\"description\":\"for\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"grep_1\":{\"type\":\"boolean\",\"description\":\"graph\"},\"grep_2\":{\"type\":\"object\",\"description\":\"a\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"grep_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"Read\",\"description\":\"the for field of encode in\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"read_0\":{\"type\":\"string\",\"description\":\"yield\"},\"read_1\":{\"type\":\"integer\",\"description\":\"record\",\"minimum\":0},\"read_2\":{\"type\":\"boolean\",\"description\":\"delta\"},\"read_3\":{\"type\":\"array\",\"description\":\"node\",\"items\":{\"type\":\"string\"}}},\"required\":[\"read_0\"]},\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nnode bravo on zone node graph yield\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"record layer\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"zone\"},{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":48},\"id\":\"toolu_01mr7iMNklCZricdOOyyt17h\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01mr7iMNklCZricdOOyyt17h\",\"content\":\"}\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"cache to\",\"signature\":\"EqJ4XigwlCetLjpoPr5hCVu0lLlD2DU4yKZB==\"},{\"type\":\"text\",\"text\":\"with\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":17},\"id\":\"toolu_01OLLwYFHiH6HwWJayEBZhTD\"},{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":279},\"id\":\"toolu_01q1ujSIIOAMjhpKArYG02Gq\"},{\"type\":\"text\",\"text\":\"bravo\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01OLLwYFHiH6HwWJayEBZhTD\",\"content\":[{\"type\":\"text\",\"text\":\"throw new Error(\\\"unexpected end\\\");\\nimport { join } from \\\"node:path\\\";\\nexport function parse(text) {\"}]},{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01q1ujSIIOAMjhpKArYG02Gq\",\"content\":\"export function parse(text) {\\nimport { join } from \\\"node:path\\\";\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_3.ts\",\"limit\":193},\"id\":\"toolu_016Zq2LLW46zBg3Q6t3zNf7s\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_016Zq2LLW46zBg3Q6t3zNf7s\",\"content\":[{\"type\":\"text\",\"text\":\"for (const item of list) total += item.size;\\nlet count = 0;\\nlet count = 0;\"}],\"is_error\":true}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"and bravo vector\"}]}],\"reasoning_effort\":\"low\"}"
+ },
+ "node": {
+  "url": "https://gateway.example.test/v1/messages",
+  "headers": [
+   [
+    "Content-Type",
+    "application/json"
+   ],
+   [
+    "anthropic-version",
+    "2023-06-01"
+   ],
+   [
+    "x-api-key",
+    "{{apiKey}}"
+   ],
+   [
+    "anthropic-beta",
+    "interleaved-thinking-2025-05-14,context-management-2025-06-27"
+   ],
+   [
+    "Authorization",
+    "Bearer {{apiKey}}"
+   ],
+   [
+    "Accept",
+    "text/event-stream"
+   ]
+  ],
+  "body": "{\"model\":\"claude-3-5-sonnet-20241022\",\"max_tokens\":64000,\"stream\":true,\"metadata\":{\"user_id\":\"user_xnUENiE4JeM3zC9j1HD9wYGjRfAf7Uro_account__session_WlITb50p\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\"},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\"},{\"type\":\"text\",\"text\":\"kernel vector config decode encode is the graph zone is delta module graph filter\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"delta worker zone config graph buffer with\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"integer\",\"description\":\"on kernel\",\"minimum\":0},\"task_1\":{\"type\":\"object\",\"description\":\"with echo\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"task_0\"]},\"type\":\"custom\"},{\"name\":\"Bash\",\"description\":\"worker index kernel is delta worker a\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"object\",\"description\":\"bravo\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"bash_1\":{\"type\":\"array\",\"description\":\"update module\",\"items\":{\"type\":\"string\"}},\"bash_2\":{\"type\":\"number\",\"description\":\"the parser\",\"minimum\":0},\"bash_3\":{\"type\":\"string\",\"description\":\"graph\"}},\"required\":[\"bash_0\"],\"additionalProperties\":false},\"type\":\"custom\"},{\"name\":\"Glob\",\"description\":\"stream\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"boolean\",\"description\":\"encode buffer\"},\"glob_1\":{\"type\":\"array\",\"description\":\"to\",\"items\":{\"type\":\"string\"}},\"glob_2\":{\"type\":\"number\",\"description\":\"echo bravo\",\"minimum\":0},\"glob_3\":{\"type\":\"boolean\",\"description\":\"config\"},\"glob_4\":{\"type\":\"array\",\"description\":\"decode and\",\"items\":{\"type\":\"string\"}}},\"required\":[\"glob_0\"]},\"type\":\"custom\"},{\"name\":\"Grep\",\"description\":\"cache decode index token\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"object\",\"description\":\"for\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"grep_1\":{\"type\":\"boolean\",\"description\":\"graph\"},\"grep_2\":{\"type\":\"object\",\"description\":\"a\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"grep_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"type\":\"custom\"},{\"name\":\"Read\",\"description\":\"the for field of encode in\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"read_0\":{\"type\":\"string\",\"description\":\"yield\"},\"read_1\":{\"type\":\"integer\",\"description\":\"record\",\"minimum\":0},\"read_2\":{\"type\":\"boolean\",\"description\":\"delta\"},\"read_3\":{\"type\":\"array\",\"description\":\"node\",\"items\":{\"type\":\"string\"}}},\"required\":[\"read_0\"]},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nnode bravo on zone node graph yield\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"record layer\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"zone\"},{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":48},\"id\":\"toolu_01mr7iMNklCZricdOOyyt17h\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01mr7iMNklCZricdOOyyt17h\",\"content\":\"}\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"cache to\",\"signature\":\"EqJ4XigwlCetLjpoPr5hCVu0lLlD2DU4yKZB==\"},{\"type\":\"text\",\"text\":\"with\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":17},\"id\":\"toolu_01OLLwYFHiH6HwWJayEBZhTD\"},{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":279},\"id\":\"toolu_01q1ujSIIOAMjhpKArYG02Gq\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01OLLwYFHiH6HwWJayEBZhTD\",\"content\":[{\"type\":\"text\",\"text\":\"throw new Error(\\\"unexpected end\\\");\\nimport { join } from \\\"node:path\\\";\\nexport function parse(text) {\"}]},{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01q1ujSIIOAMjhpKArYG02Gq\",\"content\":\"export function parse(text) {\\nimport { join } from \\\"node:path\\\";\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_3.ts\",\"limit\":193},\"id\":\"toolu_016Zq2LLW46zBg3Q6t3zNf7s\",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_016Zq2LLW46zBg3Q6t3zNf7s\",\"content\":[{\"type\":\"text\",\"text\":\"for (const item of list) total += item.size;\\nlet count = 0;\\nlet count = 0;\"}],\"is_error\":true},{\"type\":\"text\",\"text\":\"and bravo vector\"}]}],\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":512}}",
+  "sha256": "ef767b5c989954987d8ed5d291e89ce89e0ae4ac031561171889cbc431e0c27d"
+ }
+}

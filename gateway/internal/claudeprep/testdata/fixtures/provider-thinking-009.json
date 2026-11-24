@@ -1,0 +1,63 @@
+{
+ "name": "provider-thinking-009",
+ "seed": 71645,
+ "inputs": {
+  "provider": "openai-compatible-chat-5f0c1d2e-0000-4000-8000-00000000c1a0",
+  "model": "claude-sonnet-4-5",
+  "apiKey": "sk-synthetic-providerthinking009-0000",
+  "providerSpecificData": {
+   "apiType": "chat",
+   "baseUrl": "https://gateway.example.test/v1",
+   "modelRoutes": {
+    "claude-sonnet-4-5": "anthropic"
+   }
+  },
+  "providerThinking": {
+   "mode": "high"
+  },
+  "keyHasBudget": false,
+  "catalog": null
+ },
+ "request": {
+  "headers": {
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27",
+   "anthropic-version": "2023-06-01",
+   "accept": "application/json",
+   "content-type": "application/json"
+  },
+  "body": "{\"model\":\"combo-2\",\"max_tokens\":32000,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":4096},\"metadata\":{\"user_id\":\"user_THc7hZ7BAaSIRGlcpXOmFs1QtaM0o0m5_account__session_2eelStJk\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"cache zone echo offset echo alpha token update module on delta layer index stream\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"bravo alpha field worker layer module graph record record\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"array\",\"description\":\"delta\",\"items\":{\"type\":\"string\"}},\"task_1\":{\"type\":\"object\",\"description\":\"buffer\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"task_2\":{\"type\":\"number\",\"description\":\"field\",\"minimum\":0},\"task_3\":{\"type\":\"object\",\"description\":\"with cache\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"task_0\"]}},{\"name\":\"Bash\",\"description\":\"node with\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"string\",\"description\":\"worker\"},\"bash_1\":{\"type\":\"string\",\"description\":\"filter bravo\"},\"bash_2\":{\"type\":\"boolean\",\"description\":\"stream graph\"},\"bash_3\":{\"type\":\"object\",\"description\":\"and\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"bash_0\"]}},{\"name\":\"Glob\",\"description\":\"on layer module\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"boolean\",\"description\":\"module is\"},\"glob_1\":{\"type\":\"array\",\"description\":\"on\",\"items\":{\"type\":\"string\"}},\"glob_2\":{\"type\":\"string\",\"description\":\"buffer\"},\"glob_3\":{\"type\":\"array\",\"description\":\"zone\",\"items\":{\"type\":\"string\"}},\"glob_4\":{\"type\":\"array\",\"description\":\"kernel decode\",\"items\":{\"type\":\"string\"}},\"glob_5\":{\"type\":\"integer\",\"description\":\"on\",\"minimum\":0}},\"required\":[\"glob_0\"],\"additionalProperties\":false}},{\"name\":\"Grep\",\"description\":\"config module record encode for decode to with index\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"array\",\"description\":\"layer\",\"items\":{\"type\":\"string\"}}},\"required\":[\"grep_0\"],\"additionalProperties\":false},\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nhandler bravo worker worker graph record delta\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"module in\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"with zone\",\"signature\":\"EqSegZZEsIGJZk3gxQyT5irrHyxvpGwwPPE==\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":224},\"id\":\"toolu_01EAGWp2qf9SCe8Vt8IW4g1W\"},{\"type\":\"text\",\"text\":\"config\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"a node stream\"},{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":60},\"id\":\"toolu_01KiCmulgvJxo1UHranjepuq\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":17},\"id\":\"toolu_01W94aO1xu4b8XTXDZVtoKWO\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01KiCmulgvJxo1UHranjepuq\",\"content\":\"if (!result) return null;\\nif (!result) return null;\"},{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01W94aO1xu4b8XTXDZVtoKWO\",\"content\":[{\"type\":\"text\",\"text\":\"export function parse(text) {\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"queue of layer cache config\",\"signature\":\"Eqs0sclaxBjD==\"},{\"type\":\"text\",\"text\":\"token a handler worker\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_3.ts\",\"limit\":61},\"id\":\"toolu_015YJCtY02h7FFaG6rlEyXNF\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_015YJCtY02h7FFaG6rlEyXNF\",\"content\":[{\"type\":\"text\",\"text\":\"  return items.filter(Boolean);\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"redacted_thinking\",\"data\":\"RD6iarAKzT5GvBLVAhYdXg4QKNjgAdwGkFJ7MSfFnmrXVBMm1nl4QguPTv10wG\"},{\"type\":\"text\",\"text\":\"worker buffer bravo in\"},{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"path\":\"/work/src/module_4.ts\",\"limit\":335},\"id\":\"toolu_01VUqMGdUAndoZilsd9B0c9O\"},{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_4.ts\",\"limit\":138},\"id\":\"toolu_01xEUj5Vwq7xNjRnb5rCXKHs\"},{\"type\":\"text\",\"text\":\"zone\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01VUqMGdUAndoZilsd9B0c9O\",\"content\":\"}\"},{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01xEUj5Vwq7xNjRnb5rCXKHs\",\"content\":\"}\\nfor (const item of list) total += item.size;\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"node encode worker\"}]}],\"reasoning_effort\":\"medium\"}"
+ },
+ "node": {
+  "url": "https://gateway.example.test/v1/messages",
+  "headers": [
+   [
+    "Content-Type",
+    "application/json"
+   ],
+   [
+    "anthropic-version",
+    "2023-06-01"
+   ],
+   [
+    "x-api-key",
+    "{{apiKey}}"
+   ],
+   [
+    "anthropic-beta",
+    "interleaved-thinking-2025-05-14,context-management-2025-06-27"
+   ],
+   [
+    "Authorization",
+    "Bearer {{apiKey}}"
+   ],
+   [
+    "Accept",
+    "text/event-stream"
+   ]
+  ],
+  "body": "{\"model\":\"claude-sonnet-4-5\",\"max_tokens\":32000,\"stream\":true,\"metadata\":{\"user_id\":\"user_THc7hZ7BAaSIRGlcpXOmFs1QtaM0o0m5_account__session_2eelStJk\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\"},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\"},{\"type\":\"text\",\"text\":\"cache zone echo offset echo alpha token update module on delta layer index stream\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"bravo alpha field worker layer module graph record record\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"array\",\"description\":\"delta\",\"items\":{\"type\":\"string\"}},\"task_1\":{\"type\":\"object\",\"description\":\"buffer\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"task_2\":{\"type\":\"number\",\"description\":\"field\",\"minimum\":0},\"task_3\":{\"type\":\"object\",\"description\":\"with cache\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"task_0\"]},\"type\":\"custom\"},{\"name\":\"Bash\",\"description\":\"node with\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"string\",\"description\":\"worker\"},\"bash_1\":{\"type\":\"string\",\"description\":\"filter bravo\"},\"bash_2\":{\"type\":\"boolean\",\"description\":\"stream graph\"},\"bash_3\":{\"type\":\"object\",\"description\":\"and\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"bash_0\"]},\"type\":\"custom\"},{\"name\":\"Glob\",\"description\":\"on layer module\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"boolean\",\"description\":\"module is\"},\"glob_1\":{\"type\":\"array\",\"description\":\"on\",\"items\":{\"type\":\"string\"}},\"glob_2\":{\"type\":\"string\",\"description\":\"buffer\"},\"glob_3\":{\"type\":\"array\",\"description\":\"zone\",\"items\":{\"type\":\"string\"}},\"glob_4\":{\"type\":\"array\",\"description\":\"kernel decode\",\"items\":{\"type\":\"string\"}},\"glob_5\":{\"type\":\"integer\",\"description\":\"on\",\"minimum\":0}},\"required\":[\"glob_0\"],\"additionalProperties\":false},\"type\":\"custom\"},{\"name\":\"Grep\",\"description\":\"config module record encode for decode to with index\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"array\",\"description\":\"layer\",\"items\":{\"type\":\"string\"}}},\"required\":[\"grep_0\"],\"additionalProperties\":false},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nhandler bravo worker worker graph record delta\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"module in\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"with zone\",\"signature\":\"EqSegZZEsIGJZk3gxQyT5irrHyxvpGwwPPE==\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":224},\"id\":\"toolu_01EAGWp2qf9SCe8Vt8IW4g1W\"},{\"type\":\"text\",\"text\":\"a node stream\"},{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":60},\"id\":\"toolu_01KiCmulgvJxo1UHranjepuq\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":17},\"id\":\"toolu_01W94aO1xu4b8XTXDZVtoKWO\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01KiCmulgvJxo1UHranjepuq\",\"content\":\"if (!result) return null;\\nif (!result) return null;\"},{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01W94aO1xu4b8XTXDZVtoKWO\",\"content\":[{\"type\":\"text\",\"text\":\"export function parse(text) {\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"queue of layer cache config\",\"signature\":\"Eqs0sclaxBjD==\"},{\"type\":\"text\",\"text\":\"token a handler worker\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_3.ts\",\"limit\":61},\"id\":\"toolu_015YJCtY02h7FFaG6rlEyXNF\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_015YJCtY02h7FFaG6rlEyXNF\",\"content\":[{\"type\":\"text\",\"text\":\"  return items.filter(Boolean);\"}]}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"redacted_thinking\",\"data\":\"RD6iarAKzT5GvBLVAhYdXg4QKNjgAdwGkFJ7MSfFnmrXVBMm1nl4QguPTv10wG\"},{\"type\":\"text\",\"text\":\"worker buffer bravo in\"},{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"path\":\"/work/src/module_4.ts\",\"limit\":335},\"id\":\"toolu_01VUqMGdUAndoZilsd9B0c9O\"},{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_4.ts\",\"limit\":138},\"id\":\"toolu_01xEUj5Vwq7xNjRnb5rCXKHs\",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01VUqMGdUAndoZilsd9B0c9O\",\"content\":\"}\"},{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01xEUj5Vwq7xNjRnb5rCXKHs\",\"content\":\"}\\nfor (const item of list) total += item.size;\"},{\"type\":\"text\",\"text\":\"node encode worker\"}]}],\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":8192}}",
+  "sha256": "3caaaf1f9d22f49d38d25f7f90b3ab9c2a86038bf135d2433ff563b31a95b291"
+ }
+}

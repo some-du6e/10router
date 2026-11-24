@@ -1,0 +1,61 @@
+{
+ "name": "odd-tool-calls-000",
+ "seed": 408,
+ "inputs": {
+  "provider": "openai-compatible-chat-5f0c1d2e-0000-4000-8000-00000000c1a0",
+  "model": "claude-opus-4-8",
+  "apiKey": "sk-synthetic-oddtoolcalls000-0000",
+  "providerSpecificData": {
+   "apiType": "chat",
+   "baseUrl": "https://gateway.example.test/v1",
+   "modelRoutes": {
+    "claude-opus-4-8": "anthropic"
+   }
+  },
+  "providerThinking": null,
+  "keyHasBudget": false,
+  "catalog": null
+ },
+ "request": {
+  "headers": {
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27",
+   "anthropic-version": "2023-06-01",
+   "accept": "application/json",
+   "content-type": "application/json"
+  },
+  "body": "{\"model\":\"combo-1\",\"max_tokens\":32000,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":31999},\"metadata\":{\"user_id\":\"user_GkjCAnQXeHEuPsEsAMxX21sXgj9JdwYF_account__session_SOpfhvnj\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"yield module parser decode with parser and buffer join token cache echo bravo update\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"cache bravo update module record the\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"boolean\",\"description\":\"buffer a\"},\"task_1\":{\"type\":\"boolean\",\"description\":\"echo\"},\"task_2\":{\"type\":\"boolean\",\"description\":\"stream zone\"},\"task_3\":{\"type\":\"number\",\"description\":\"bravo\",\"minimum\":0},\"task_4\":{\"type\":\"object\",\"description\":\"kernel worker\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"task_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"Bash\",\"description\":\"the record offset layer\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"array\",\"description\":\"alpha field\",\"items\":{\"type\":\"string\"}},\"bash_1\":{\"type\":\"boolean\",\"description\":\"and echo\"},\"bash_2\":{\"type\":\"array\",\"description\":\"encode buffer\",\"items\":{\"type\":\"string\"}},\"bash_3\":{\"type\":\"array\",\"description\":\"for\",\"items\":{\"type\":\"string\"}}},\"required\":[\"bash_0\"]}},{\"name\":\"Glob\",\"description\":\"for\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"integer\",\"description\":\"echo\",\"minimum\":0},\"glob_1\":{\"type\":\"string\",\"description\":\"yield update\"},\"glob_2\":{\"type\":\"boolean\",\"description\":\"parser\"}},\"required\":[\"glob_0\"],\"additionalProperties\":false}},{\"name\":\"Grep\",\"description\":\"config update module the node handler\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"boolean\",\"description\":\"is\"},\"grep_1\":{\"type\":\"boolean\",\"description\":\"update join\"},\"grep_2\":{\"type\":\"array\",\"description\":\"join\",\"items\":{\"type\":\"string\"}},\"grep_3\":{\"type\":\"object\",\"description\":\"vector\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"grep_4\":{\"type\":\"integer\",\"description\":\"with\",\"minimum\":0}},\"required\":[\"grep_0\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nworker graph buffer to kernel of encode\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"to decode\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":68},\"id\":\"toolu_01snqci8WEr9Fo5Ue1ZR8LUs\"}]},{\"role\":\"assistant\",\"content\":\"calling\",\"tool_calls\":[[],{\"id\":\"bad id!\",\"function\":{\"name\":\"Read\",\"arguments\":{\"path\":\"/x\"}}},{\"function\":{\"name\":\"a b\"}}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"update\"},{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":391},\"id\":\"toolu_01kOXokoBF0vpCRKj3d34cRE\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01kOXokoBF0vpCRKj3d34cRE\",\"content\":\"export function parse(text) {\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"config record config\",\"signature\":\"EqMx8IChIASGKPDcdQ1f9BghoHPUAQEdv4bWp==\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_3.ts\",\"limit\":307},\"id\":\"toolu_01rY6ar0w8MTz6kzBDRZDrXg\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01rY6ar0w8MTz6kzBDRZDrXg\",\"content\":\"for (const item of list) total += item.size;\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"worker vector buffer in echo to with to\",\"signature\":\"Eq6DinnZZobZkgEHJM4p26aUO0TfS==\"},{\"type\":\"text\",\"text\":\"field echo\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_4.ts\",\"limit\":38},\"id\":\"toolu_01p4RxFPwlAMDNQbRsskma71\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01p4RxFPwlAMDNQbRsskma71\",\"content\":\"throw new Error(\\\"unexpected end\\\");\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"and field\"}]}]}"
+ },
+ "node": {
+  "url": "https://gateway.example.test/v1/messages",
+  "headers": [
+   [
+    "Content-Type",
+    "application/json"
+   ],
+   [
+    "anthropic-version",
+    "2023-06-01"
+   ],
+   [
+    "x-api-key",
+    "{{apiKey}}"
+   ],
+   [
+    "anthropic-beta",
+    "interleaved-thinking-2025-05-14,context-management-2025-06-27"
+   ],
+   [
+    "Authorization",
+    "Bearer {{apiKey}}"
+   ],
+   [
+    "Accept",
+    "text/event-stream"
+   ]
+  ],
+  "body": "{\"model\":\"claude-opus-4-8\",\"max_tokens\":32000,\"stream\":true,\"metadata\":{\"user_id\":\"user_GkjCAnQXeHEuPsEsAMxX21sXgj9JdwYF_account__session_SOpfhvnj\"},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\"},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\"},{\"type\":\"text\",\"text\":\"yield module parser decode with parser and buffer join token cache echo bravo update\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"cache bravo update module record the\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"boolean\",\"description\":\"buffer a\"},\"task_1\":{\"type\":\"boolean\",\"description\":\"echo\"},\"task_2\":{\"type\":\"boolean\",\"description\":\"stream zone\"},\"task_3\":{\"type\":\"number\",\"description\":\"bravo\",\"minimum\":0},\"task_4\":{\"type\":\"object\",\"description\":\"kernel worker\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"task_0\"],\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"type\":\"custom\"},{\"name\":\"Bash\",\"description\":\"the record offset layer\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"array\",\"description\":\"alpha field\",\"items\":{\"type\":\"string\"}},\"bash_1\":{\"type\":\"boolean\",\"description\":\"and echo\"},\"bash_2\":{\"type\":\"array\",\"description\":\"encode buffer\",\"items\":{\"type\":\"string\"}},\"bash_3\":{\"type\":\"array\",\"description\":\"for\",\"items\":{\"type\":\"string\"}}},\"required\":[\"bash_0\"]},\"type\":\"custom\"},{\"name\":\"Glob\",\"description\":\"for\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"integer\",\"description\":\"echo\",\"minimum\":0},\"glob_1\":{\"type\":\"string\",\"description\":\"yield update\"},\"glob_2\":{\"type\":\"boolean\",\"description\":\"parser\"}},\"required\":[\"glob_0\"],\"additionalProperties\":false},\"type\":\"custom\"},{\"name\":\"Grep\",\"description\":\"config update module the node handler\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"grep_0\":{\"type\":\"boolean\",\"description\":\"is\"},\"grep_1\":{\"type\":\"boolean\",\"description\":\"update join\"},\"grep_2\":{\"type\":\"array\",\"description\":\"join\",\"items\":{\"type\":\"string\"}},\"grep_3\":{\"type\":\"object\",\"description\":\"vector\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"grep_4\":{\"type\":\"integer\",\"description\":\"with\",\"minimum\":0}},\"required\":[\"grep_0\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nworker graph buffer to kernel of encode\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"to decode\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":68},\"id\":\"toolu_01snqci8WEr9Fo5Ue1ZR8LUs\"},{\"type\":\"text\",\"text\":\"calling\"},{\"type\":\"text\",\"text\":\"update\"},{\"type\":\"tool_use\",\"name\":\"Grep\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":391},\"id\":\"toolu_01kOXokoBF0vpCRKj3d34cRE\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01kOXokoBF0vpCRKj3d34cRE\",\"content\":\"export function parse(text) {\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"config record config\",\"signature\":\"EqMx8IChIASGKPDcdQ1f9BghoHPUAQEdv4bWp==\"},{\"type\":\"tool_use\",\"name\":\"Glob\",\"input\":{\"path\":\"/work/src/module_3.ts\",\"limit\":307},\"id\":\"toolu_01rY6ar0w8MTz6kzBDRZDrXg\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01rY6ar0w8MTz6kzBDRZDrXg\",\"content\":\"for (const item of list) total += item.size;\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"worker vector buffer in echo to with to\",\"signature\":\"Eq6DinnZZobZkgEHJM4p26aUO0TfS==\"},{\"type\":\"text\",\"text\":\"field echo\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_4.ts\",\"limit\":38},\"id\":\"toolu_01p4RxFPwlAMDNQbRsskma71\",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01p4RxFPwlAMDNQbRsskma71\",\"content\":\"throw new Error(\\\"unexpected end\\\");\"},{\"type\":\"text\",\"text\":\"and field\"}]}],\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"high\"}}",
+  "sha256": "d455523b71970a499fdc1581dc2c89d66d1bcc5da8f47d30444a407ca3429681"
+ }
+}
