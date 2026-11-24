@@ -16,6 +16,7 @@
 // in, however big, so one huge prompt is never starved. Limits are in
 // MEMORY_ADMISSION (open-sse/config/runtimeConfig.js).
 import { AsyncLocalStorage } from "node:async_hooks";
+import { PerformanceObserver, constants as perfConstants } from "node:perf_hooks";
 import v8 from "node:v8";
 import { readCgroupMemoryLimit } from "@/shared/utils/cgroupMemory.js";
 import { HTTP_STATUS, MEMORY_ADMISSION } from "open-sse/config/runtimeConfig.js";
@@ -27,6 +28,42 @@ import * as log from "../utils/logger.js";
 const MB = 1024 * 1024;
 const TAG = "MEMORY";
 const mb = (bytes) => `${Math.round(bytes / MB)}MB`;
+
+// The heap in use right after the latest full collection, and when it ran.
+let lastFullCollection = null;
+const fullCollectionListeners = new Set();
+let gcObserver = null;
+
+function watchFullCollections() {
+  if (gcObserver !== null) return;
+  try {
+    gcObserver = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        const kind = entry.detail?.kind ?? entry.kind;
+        if (kind !== perfConstants.NODE_PERFORMANCE_GC_MAJOR) continue;
+        lastFullCollection = { bytes: v8.getHeapStatistics().used_heap_size, at: Date.now() };
+        for (const listener of fullCollectionListeners) listener();
+      }
+    });
+    gcObserver.observe({ entryTypes: ["gc"] });
+  } catch {
+    gcObserver = false; // a runtime without gc entries: the gate reads used_heap_size
+  }
+}
+
+/** What the last full collection left in the heap, or null when none ran in `maxAgeMs`. */
+export function heapAfterLastFullCollection(maxAgeMs = MEMORY_ADMISSION.liveHeapMaxAgeMs) {
+  watchFullCollections();
+  if (!lastFullCollection || Date.now() - lastFullCollection.at > maxAgeMs) return null;
+  return lastFullCollection.bytes;
+}
+
+/** Calls `listener` after each full collection; returns the unsubscribe. */
+export function onFullCollection(listener) {
+  watchFullCollections();
+  fullCollectionListeners.add(listener);
+  return () => fullCollectionListeners.delete(listener);
+}
 
 // Shared with request details, which size their buffers to the same limit.
 export { readCgroupMemoryLimit };
@@ -66,6 +103,9 @@ export function resolveHighWater({ highWaterMb = MEMORY_ADMISSION.highWaterMb, f
  * @param {number} [options.recheckMs]
  * @param {() => number} [options.rss]
  * @param {() => { used_heap_size: number, heap_size_limit: number }} [options.heapStats]
+ * @param {() => number | null} [options.heapAfterGc] - heap in use after the last full collection, null: unknown
+ * @param {number} [options.heapHardStopPct] - 0: no backstop on used_heap_size
+ * @param {((listener: () => void) => unknown) | null} [options.subscribeFullCollections]
  * @param {any} [options.logger]
  */
 export function createMemoryGate({
@@ -81,9 +121,13 @@ export function createMemoryGate({
   recheckMs = MEMORY_ADMISSION.recheckMs,
   rss = () => process.memoryUsage.rss(),
   heapStats = () => v8.getHeapStatistics(),
+  heapAfterGc = () => heapAfterLastFullCollection(),
+  heapHardStopPct = MEMORY_ADMISSION.heapHardStopPct,
+  subscribeFullCollections = null,
   logger = log,
 }) {
   const heapFraction = heapHighWaterPct > 0 ? heapHighWaterPct / 100 : 0;
+  const heapHardFraction = heapFraction > 0 && heapHardStopPct > 0 ? heapHardStopPct / 100 : 0;
   const enabled = budgetBytes > 0 || highWaterBytes > 0 || heapFraction > 0;
   const lengthOf = (bodyLength) => Math.max(0, Number(bodyLength) || 0);
   let heldBytes = 0;
@@ -117,9 +161,20 @@ export function createMemoryGate({
     if (highWaterBytes > 0 && rss() + coming * pendingRssCopies > highWaterBytes) return "memory";
     if (heapFraction > 0) {
       const { used_heap_size: used, heap_size_limit: limit } = heapStats();
-      if (limit > 0 && used + coming * pendingHeapCopies > limit * heapFraction) return "heap";
+      if (limit > 0) {
+        const extra = coming * pendingHeapCopies;
+        if (heapInUse(used) + extra > limit * heapFraction) return "heap";
+        if (heapHardFraction > 0 && used + extra > limit * heapHardFraction) return "heap";
+      }
     }
     return null;
+  }
+
+  // What survived the last full collection, while it's recent; until then
+  // the heap used, garbage included.
+  function heapInUse(used) {
+    const live = heapAfterGc();
+    return live == null ? used : Math.min(used, live);
   }
 
   // The bodies not yet replying (and the refused one) are weighed in, so the
@@ -132,7 +187,9 @@ export function createMemoryGate({
     if (highWaterBytes > 0) parts.push(`rss ${mb(rss())} + ${mb(coming * pendingRssCopies)} coming (high water ${mb(highWaterBytes)})`);
     if (heapFraction > 0) {
       const { used_heap_size: used, heap_size_limit: limit } = heapStats();
-      parts.push(`heap ${mb(used)} + ${mb(coming * pendingHeapCopies)} coming (high water ${mb(limit * heapFraction)} of ${mb(limit)})`);
+      const live = heapAfterGc();
+      const inUse = live == null ? `heap ${mb(used)}` : `heap ${mb(heapInUse(used))} live (${mb(used)} used)`;
+      parts.push(`${inUse} + ${mb(coming * pendingHeapCopies)} coming (high water ${mb(limit * heapFraction)} of ${mb(limit)})`);
     }
     parts.push(`${queue.length} waiting`);
     return parts.join(", ");
@@ -333,6 +390,9 @@ export function createMemoryGate({
     });
   }
 
+  // A full collection is when the heap in use comes down: let waiters in then.
+  if (heapFraction > 0) subscribeFullCollections?.(pump);
+
   return {
     enabled,
     acquire,
@@ -365,7 +425,11 @@ export function heapFitWarning({ heapLimit = v8.getHeapStatistics().heap_size_li
 /** The process's gate, built from MEMORY_ADMISSION on first use. */
 export function memoryGate() {
   if (!shared) {
-    shared = createMemoryGate({ budgetBytes: MEMORY_ADMISSION.budgetBytes, highWaterBytes: resolveHighWater() });
+    shared = createMemoryGate({
+      budgetBytes: MEMORY_ADMISSION.budgetBytes,
+      highWaterBytes: resolveHighWater(),
+      subscribeFullCollections: onFullCollection,
+    });
     const warning = heapFitWarning();
     if (warning) log.warn(TAG, warning);
   }
