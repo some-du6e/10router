@@ -33,7 +33,9 @@ is read.
   others into the room. When it wakes it waits for room to count again,
   ahead of new requests and behind earlier wakers. It isn't turned away (it
   was admitted): it goes on at the latest once nothing else is about to
-  allocate, so requests waking together go one at a time. Its next attempt
+  allocate, so requests waking together go one at a time. New requests
+  don't pass it: one whose wait runs out while a waker waits is refused,
+  so the requests already building drain toward it. Its next attempt
   counts. A
   streamed limit hold's reply has started, so it isn't counted at all: its
   re-attempts, when the limit clears, are the one thing the gate doesn't see.
@@ -70,7 +72,7 @@ The server logs one line when it starts refusing, with the reason (`budget`,
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `INFLIGHT_BODY_BUDGET_MB` | `900` | Budget for the body copies of admitted requests. `0` turns it off. |
-| `INFLIGHT_QUEUE_WAIT_MS` | `15000` | Longest a request waits for room. `0` refuses at once. |
+| `INFLIGHT_QUEUE_WAIT_MS` | `15000` | Longest a new request waits for room. `0` refuses at once. A request waking from a sleep has no deadline (see above). |
 | `INFLIGHT_RETRY_AFTER_S` | `10` | `Retry-After` on a refusal. |
 | `MEMORY_HIGH_WATER_MB` | 80% of the cgroup limit | Resident memory above which new requests wait. Read from `/sys/fs/cgroup/memory.max` (v2) or `memory.limit_in_bytes` (v1); off when there is no limit. `0` turns it off. |
 | `MEMORY_HEAP_HIGH_WATER_PCT` | `85` | Percent of the V8 heap limit that the heap in use plus 3 × the bodies not yet replying (the new request's too) may reach. `0` turns it off. |

@@ -365,8 +365,10 @@ describe("heap backstop", () => {
     const lone = (await g.acquire({ bodyLength: 10 * MB })).ticket;
     heap.used = 900 * MB;
     // A failed sleep is passed on.
-    await expect(lone.idleWhile(Promise.reject(new Error("aborted")))).rejects.toThrow("aborted");
-    expect(g.stats()).toMatchObject({ resumeWaits: 0, pendingBytes: 10 * MB });
+    const failed = lone.idleWhile(Promise.reject(new Error("aborted"))).then(() => "resolved", (e) => e.message);
+    await tick();
+    expect(g.stats()).toMatchObject({ waiting: 0, resumeWaits: 0, pendingBytes: 10 * MB });
+    expect(await failed).toBe("aborted");
     lone.release();
     heap.used = 100 * MB;
     const tickets = [];
@@ -411,6 +413,7 @@ describe("heap backstop", () => {
     expect(g.stats().waiting).toBe(1);
     expect(await a).toBe("a");
     abort.abort();
+    expect(g.stats().waiting).toBe(0);
     expect(await b).toBe("b");
     expect(g.stats()).toMatchObject({ waiting: 0, pendingBytes: 12 * MB });
     for (const o of others) o.ticket.release();
@@ -420,8 +423,43 @@ describe("heap backstop", () => {
     const g = gate({ budgetBytes: 100 * MB });
     await g.acquire({ bodyLength: 60 * MB });
     const { ticket } = await g.acquire({ bodyLength: 30 * MB });
-    await ticket.idleWhile(Promise.resolve());
-    expect(g.stats()).toMatchObject({ resumeWaits: 0, pendingBytes: 90 * MB, heldBytes: 90 * MB });
+    const awake = ticket.idleWhile(Promise.resolve());
+    await tick();
+    expect(g.stats()).toMatchObject({ waiting: 0, resumeWaits: 0, pendingBytes: 90 * MB, heldBytes: 90 * MB });
+    await awake;
+  });
+
+  it("a waker that fits still waits behind an earlier one, and a new request doesn't pass them", async () => {
+    const heap = { used: 100 * MB };
+    const g = heapGate(heap, { maxWaitMs: 30 });
+    const building = await g.acquire({ bodyLength: 10 * MB });
+    const big = (await g.acquire({ bodyLength: 50 * MB })).ticket;
+    const small = (await g.acquire({ bodyLength: 1 * MB })).ticket;
+    const gone = (await g.acquire({ bodyLength: 1 * MB })).ticket;
+    heap.used = 795 * MB;
+    const order = [];
+    // 795 + (10 + 1 + 1) + 50 > 850: the big one waits.
+    const bigAwake = big.idleWhile(Promise.resolve()).then(() => order.push("big"));
+    await tick();
+    // 795 + 11 + 1 would fit, but it came after.
+    const smallAwake = small.idleWhile(Promise.resolve()).then(() => order.push("small"));
+    await tick();
+    expect(g.stats().waiting).toBe(2);
+    // A client already gone goes on at once (and finds out).
+    const abort = new AbortController();
+    abort.abort();
+    await gone.idleWhile(Promise.resolve(), abort.signal);
+    expect(g.stats().waiting).toBe(2);
+    // A new one whose wait runs out is refused, though it fits (795 + 11 + 1 ≤ 850).
+    expect(await g.acquire({ bodyLength: 1 * MB })).toEqual({ refused: "queue", retryAfterSec: 7 });
+    expect(order).toEqual([]);
+    // The others drain: the big one goes, then the small one (795 + 50 + 1 ≤ 850).
+    building.ticket.replied();
+    gone.release();
+    await bigAwake;
+    await smallAwake;
+    expect(order).toEqual(["big", "small"]);
+    expect(g.stats()).toMatchObject({ waiting: 0, pendingBytes: 51 * MB });
   });
 
   it("checks nothing when MEMORY_HEAP_HIGH_WATER_PCT is 0", async () => {

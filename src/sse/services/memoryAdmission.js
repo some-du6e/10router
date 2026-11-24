@@ -321,8 +321,10 @@ export function createMemoryGate({
         if (at === 0) pump();
       }
       timer = setTimeout(() => {
-        // Out of turn but it fits now: let it in rather than turn it away.
-        const why = blocker(length);
+        // Out of turn but it fits now: let it in rather than turn it away,
+        // unless a request woken from a sleep waits ahead of it for that room
+        // (one that has no deadline, and gets in once the others drain).
+        const why = blocker(length) || (queue.some((w) => w.resuming) ? "queue" : null);
         settle(why ? refuse(why, length) : { ticket: grant(length, sized) });
       }, maxWaitMs);
       signal?.addEventListener?.("abort", onAbort, { once: true });
@@ -385,9 +387,10 @@ const current = new AsyncLocalStorage();
 /**
  * The request running this code sleeps until `waiting` settles (a warm-key
  * wait, a limit hold's sleep), so memory admission stops counting it as about
- * to allocate. When it wakes it waits, ahead of new requests and for at most
- * the queue's wait, until there is room again to count it (or `signal`
- * aborts). Resolves or rejects as `waiting` does.
+ * to allocate. When it wakes it waits, ahead of new requests and behind
+ * earlier wakers, until there is room to count it again, or at the latest
+ * until nothing else is about to allocate (or `signal` aborts). Resolves or
+ * rejects as `waiting` does.
  * @template T
  * @param {Promise<T>} waiting
  * @param {AbortSignal | null} [signal]
