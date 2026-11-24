@@ -1,0 +1,134 @@
+name: Gateway DB
+
+# The Go gateway's access to Node's SQLite file (docs/GO_GATEWAY.md, "SQLite
+# sharing" and "Config sync"), against the Node in this branch:
+#   node      configGeneration bumps on every config write path, the manifest and
+#             test schema held to schema.js, IMMEDIATE transactions across processes
+#   parity    the gateway's schema check on a database this Node migrated, and the
+#             Go readers and writers byte for byte against Node's repos
+#   stress    Node (better-sqlite3, node:sqlite) and the gateway hammering one file:
+#             Node's event-loop lag p99 under 50 ms, no SQLITE_BUSY on either side
+#   bench     the hot-path queries, modernc.org/sqlite against Node's drivers
+on:
+  pull_request:
+    paths:
+      - "gateway/go.mod"
+      - "gateway/go.sum"
+      - "gateway/internal/db/**"
+      - "gateway/cmd/gateway-dbtool/**"
+      - "src/lib/db/**"
+      - "src/lib/dataDir.js"
+      - "src/lib/hostCredentials.js"
+      # Node code the Go port mirrors (see the comments in gateway/internal/db)
+      - "src/sse/handlers/chat.ts"
+      - "src/sse/services/auth.js"
+      - "src/shared/utils/nodeQuirks.ts"
+      - "src/shared/utils/apiKeyLimits.js"
+      - "src/shared/utils/connectionStatus.js"
+      - "package.json"
+      - "tests/package.json"
+      - "tests/vitest.*.js"
+      - "tests/helpers/nodeDb.js"
+      - "tests/unit/config-generation.test.js"
+      - "tests/unit/gateway-db-*.test.js"
+      - "tests/unit/db-shared-file.test.js"
+      - "tests/bench/gateway-db-benchmark.test.js"
+      - ".github/workflows/gateway-db.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Both native drivers must load: a missing one fails instead of skipping.
+  REQUIRE_NATIVE_SQLITE: "1"
+
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          npm rebuild better-sqlite3
+          cd tests && bun install --ignore-scripts
+      - name: Unit tests
+        working-directory: tests
+        run: >
+          ./node_modules/.bin/vitest run
+          unit/config-generation.test.js
+          unit/gateway-db-manifest.test.js
+          unit/db-shared-file.test.js
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint
+          src/lib/db
+          tests/helpers/nodeDb.js
+          tests/unit/config-generation.test.js
+          tests/unit/gateway-db-*.test.js
+          tests/unit/db-shared-file.test.js
+          tests/bench/gateway-db-benchmark.test.js
+
+  # The three that run the Go tool against this Node: one setup, three commands.
+  with-gateway:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: parity
+            # A zone whose offset isn't whole hours, so usageDaily's local dates differ from UTC's.
+            tz: Pacific/Chatham
+            run: ./node_modules/.bin/vitest run unit/gateway-db-parity.test.js
+          - name: stress
+            tz: UTC
+            run: ./node_modules/.bin/vitest run --config ./vitest.stress.config.js unit/gateway-db-stress.test.js
+          - name: bench
+            tz: UTC
+            run: ./node_modules/.bin/vitest run --config ./vitest.benchmark.config.js bench/gateway-db-benchmark.test.js
+    env:
+      TZ: ${{ matrix.tz }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: gateway/go.mod
+          cache: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          npm rebuild better-sqlite3
+          cd tests && bun install --ignore-scripts
+      - name: Build gateway-dbtool
+        working-directory: gateway
+        run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/gateway-dbtool" ./cmd/gateway-dbtool
+      - name: Run
+        working-directory: tests
+        env:
+          GATEWAY_DBTOOL: ${{ runner.temp }}/gateway-dbtool
+          GATEWAY_DB_STRESS_MS: "30000"
+          GATEWAY_DB_STRESS_BASELINE_MS: "10000"
+        run: |
+          set -o pipefail
+          ${{ matrix.run }} 2>&1 | tee "$RUNNER_TEMP/${{ matrix.name }}.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gateway-db-${{ matrix.name }}
+          path: ${{ runner.temp }}/${{ matrix.name }}.log

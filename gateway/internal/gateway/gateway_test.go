@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/some-du6e/10router/gateway/internal/config"
+	"github.com/some-du6e/10router/gateway/internal/db/dbtest"
 )
 
 // lockedBuffer collects log lines from several goroutines.
@@ -504,6 +505,91 @@ func TestHealth(t *testing.T) {
 	down.ServeHTTP(w, r)
 	if w.Code != 503 || !strings.Contains(w.Body.String(), `"app_down"`) {
 		t.Fatalf("app down: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestNativeHealthReportsTheSchemaGuard(t *testing.T) {
+	app := httptest.NewServer(http.NotFoundHandler())
+	defer app.Close()
+	health := func(g *Gateway) map[string]any {
+		r := httptest.NewRequest("GET", HealthPath, nil)
+		r.RemoteAddr = "127.0.0.1:5000"
+		r.Host = "localhost:20128"
+		w := httptest.NewRecorder()
+		g.ServeHTTP(w, r)
+		var body map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &body)
+		if w.Code != 200 {
+			t.Fatalf("native routes off must not fail the check: %d %v", w.Code, body)
+		}
+		return body
+	}
+	for _, c := range []struct {
+		name, driver, native, reason string
+		noFile                       bool
+	}{
+		{name: "ready", driver: "better-sqlite3", native: "ready"},
+		{name: "sql.js", driver: "sql.js", native: "off", reason: "sql.js"},
+		{name: "no database", noFile: true, native: "off", reason: "cannot open the database"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			if !c.noFile {
+				dbtest.New(t, dbtest.Options{Driver: c.driver, Path: dataDir + "/db/data.sqlite"})
+			}
+			cfg := baseConfig(portOf(t, app.URL))
+			cfg.Mode = config.ModeNative
+			logs := &lockedBuffer{}
+			g := New(cfg, log.New(logs, "", 0), "test")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			g.openNative(ctx, []string{"DATA_DIR=" + dataDir})
+			defer g.closeNative()
+			body := health(g)
+			if body["native"] != c.native || !strings.Contains(fmt.Sprint(body["nativeReason"]), c.reason) {
+				t.Fatalf("health %v", body)
+			}
+			if lines := strings.Count(logs.String(), "[Gateway] native"); lines != 1 {
+				t.Fatalf("want one native log line, got:\n%s", logs.String())
+			}
+			// The reason can carry SQLite's error text: a remote client sees only the state.
+			r := httptest.NewRequest("GET", HealthPath, nil)
+			r.RemoteAddr = "203.0.113.7:5000"
+			w := httptest.NewRecorder()
+			g.ServeHTTP(w, r)
+			var remote map[string]any
+			_ = json.Unmarshal(w.Body.Bytes(), &remote)
+			if remote["native"] != c.native || remote["nativeReason"] != nil {
+				t.Fatalf("remote health %v", remote)
+			}
+		})
+	}
+	// Node creates the file on its first use of it, which can come after it
+	// listens: the gateway keeps trying.
+	t.Run("file made later", func(t *testing.T) {
+		dataDir := t.TempDir()
+		cfg := baseConfig(portOf(t, app.URL))
+		cfg.Mode = config.ModeNative
+		g := New(cfg, log.New(io.Discard, "", 0), "test")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		g.openNative(ctx, []string{"DATA_DIR=" + dataDir})
+		defer g.closeNative()
+		if body := health(g); body["native"] != "off" {
+			t.Fatalf("before: %v", body)
+		}
+		dbtest.New(t, dbtest.Options{Path: dataDir + "/db/data.sqlite"})
+		deadline := time.Now().Add(5 * time.Second)
+		for health(g)["native"] != "ready" {
+			if time.Now().After(deadline) {
+				t.Fatalf("still %v", health(g))
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	})
+	// Proxy mode reports nothing about it.
+	if body := health(New(baseConfig(portOf(t, app.URL)), log.New(io.Discard, "", 0), "test")); body["native"] != nil {
+		t.Fatalf("proxy health %v", body)
 	}
 }
 

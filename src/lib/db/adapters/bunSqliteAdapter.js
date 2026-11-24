@@ -47,9 +47,9 @@ export async function createBunSqliteAdapter(filePath) {
     },
     exec(sql) { return db.exec(sql); },
     transaction(fn) {
-      // bun:sqlite has db.transaction() API (similar to better-sqlite3)
-      const tx = db.transaction(fn);
-      return tx();
+      // bun:sqlite has db.transaction() API (similar to better-sqlite3).
+      // IMMEDIATE for the reason in betterSqliteAdapter.js.
+      return db.transaction(fn).immediate();
     },
     checkpoint() { try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch {} },
     close() {

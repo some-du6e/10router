@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { bumpConfigGenerationSync, connectionConfigChanged, writeConfig } from "../helpers/configGeneration.js";
 import { DEMOTE_PREFIX } from "../../../shared/utils/connectionStatus.js";
 
 const OPTIONAL_FIELDS = [
@@ -181,7 +182,7 @@ export async function createProviderConnection(data) {
   const now = new Date().toISOString();
   let result;
 
-  db.transaction(() => {
+  writeConfig(db, () => {
     // apikey connections are deduped by name and need only the current max
     // priority, so query for those directly instead of loading the whole pool
     // (O(pool) per key — the other half of the import cost in #4311). The oauth
@@ -367,6 +368,10 @@ export async function updateProviderConnection(id, data, { autoDisable = null, d
     upsert(db, merged);
     releaseOwnerIfKeyReplaced(db, existing, data);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
+    // Dashboard edits move the config generation; the request path's lock,
+    // error and rotation writes don't. A priority write renumbers the other
+    // connections too, so it counts even when this row's priority stays.
+    if (data.priority !== undefined || connectionConfigChanged(existing, merged)) bumpConfigGenerationSync(db);
     result = merged;
     // Token refreshes and rate-limit stamps write here constantly; only a
     // change to what the connection serves counts.
@@ -401,6 +406,7 @@ export async function deleteProviderConnectionIf(id, guard) {
     if (!row || !guard(db, row)) return;
     db.run(`DELETE FROM providerConnections WHERE id = ?`, [id]);
     reorderInTx(db, row.provider);
+    bumpConfigGenerationSync(db);
     ok = true;
   });
   if (ok) bumpConnectionsVersion();
@@ -410,14 +416,14 @@ export async function deleteProviderConnectionIf(id, guard) {
 export async function deleteProviderConnectionsByProvider(providerId) {
   const db = await getAdapter();
   const before = db.get(`SELECT COUNT(*) AS n FROM providerConnections WHERE provider = ?`, [providerId]);
-  db.run(`DELETE FROM providerConnections WHERE provider = ?`, [providerId]);
+  writeConfig(db, () => db.run(`DELETE FROM providerConnections WHERE provider = ?`, [providerId]));
   bumpConnectionsVersion();
   return before?.n || 0;
 }
 
 export async function reorderProviderConnections(providerId) {
   const db = await getAdapter();
-  db.transaction(() => reorderInTx(db, providerId));
+  writeConfig(db, () => reorderInTx(db, providerId));
 }
 
 export async function cleanupProviderConnections() {
@@ -447,6 +453,7 @@ export async function cleanupProviderConnections() {
       }
       if (dirty) upsert(db, conn);
     }
+    if (cleaned > 0) bumpConfigGenerationSync(db);
   });
   return cleaned;
 }

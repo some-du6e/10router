@@ -1,0 +1,43 @@
+name: Config generation
+
+# Every write to a config table bumps _meta.configGeneration, so the Go
+# gateway reloads its config (docs/GO_GATEWAY.md, Config sync). The guard
+# scans all of src/ and open-sse/ for such writes, so it runs on a change to
+# either; it needs no Go and takes about a minute.
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "open-sse/**"
+      - "tests/unit/config-generation.test.js"
+      - "tests/helpers/nodeDb.js"
+      - ".github/workflows/config-generation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      REQUIRE_NATIVE_SQLITE: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          npm rebuild better-sqlite3
+          cd tests && bun install --ignore-scripts
+      - name: Config generation guard
+        working-directory: tests
+        run: ./node_modules/.bin/vitest run unit/config-generation.test.js

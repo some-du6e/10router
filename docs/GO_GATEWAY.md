@@ -4,7 +4,7 @@ A Go process in front of the Node app server. It takes over the hot inference pa
 
 Why Go: all of Node's request handling (body parsing, rewriting, SSE relay) runs on one JS thread. On a busy install that one thread is what saturates first, however many cores the box has. The hot path parses 1 to 4 MB JSON bodies, rewrites them and relays SSE. Go can spread that over every core and allocate far less per request.
 
-The code is in `gateway/`, a Go module with no dependencies outside the standard library in phase 1.
+The code is in `gateway/`, a Go module. Phase 1 used only the standard library. Phase 2b adds the one planned dependency, `modernc.org/sqlite`, for `internal/db`.
 
 ## Process layout
 
@@ -37,7 +37,7 @@ client ──► :20128  10router-gateway  (PID 1, Go)
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `GATEWAY_MODE` | `off` | `off`: Node alone on `PORT`. `proxy`: the gateway relays everything. `native`: proxy plus the routes the gateway serves itself. This build has none, so it acts like `proxy` and logs that. |
+| `GATEWAY_MODE` | `off` | `off`: Node alone on `PORT`. `proxy`: the gateway relays everything. `native`: proxy plus the routes the gateway serves itself. This build has none, so it relays everything as `proxy` does and logs that. It also opens the database once Node listens, runs the schema guard and keeps the config snapshot current (see "Phase 2b"), which only the health endpoint and the log show. |
 | `GATEWAY_APP_PORT` | `20129` | Node's loopback port. If it equals `PORT`, `PORT+1` is used. |
 | `KEEP_ALIVE_TIMEOUT` | `5000` | The public idle keep-alive timeout, read the way Next's standalone `server.js` reads it: `parseInt`, and anything not positive leaves the default. |
 | `SHUTDOWN_DRAIN_TIMEOUT_MS` | `180000` | Parsed exactly like `server-drain.js` does. Both processes read it. |
@@ -117,19 +117,23 @@ Docker's `stop_grace_period` must still exceed the drain timeout. The compose fi
 
 `GET /_gateway/health` never reaches Node. It answers `200 {"status":"ok","mode":"proxy","app":"up"}`. It answers `503` with `"draining"` during a drain and `"app_down"` when Node's port refuses a connection. That probe is cached for 1 s. A client on this machine, by the client-IP rule, also gets `inflight`, `uptimeSeconds`, `version` and `goroutines`.
 
+In `native` mode the body also has `"native": "ready"` or `"native": "off"`, and with `off`, for a client on this machine, a `nativeReason` such as `schema version 7 is newer than this gateway knows (6)` or `the app server runs on sql.js, ...`. Native routes being off never fails the check: everything is proxied then.
+
 ## SQLite sharing (phase 2)
 
 Phase 1 doesn't open the database. From phase 2 both processes share `DATA_DIR/db/data.sqlite`. Usage tables live in that same file, because `usageRepo` uses the same adapter.
 
 **Driver.** `modernc.org/sqlite`, pure Go, because the image is Alpine and the gateway is built with `CGO_ENABLED=0`. It is the only planned dependency. It is slower than C SQLite on heavy queries, but the hot path runs a handful of indexed lookups and short writes.
 
-**Pragmas.** These match `src/lib/db/schema.js`: `journal_mode=WAL` (Node sets it, and it persists in the file), `busy_timeout=5000`, `synchronous=NORMAL`, `foreign_keys=ON`. The gateway keeps one writer connection and a small reader pool.
+**Pragmas.** These match `src/lib/db/schema.js`: `journal_mode=WAL` (Node sets it, and it persists in the file), `busy_timeout=5000`, `synchronous=NORMAL`, `foreign_keys=ON`. The gateway keeps one writer connection and a small reader pool. It also sets `wal_autocheckpoint=0`, since SQLite would otherwise checkpoint on the committing connection, and opens the file read-write without create (`mode=rw`), so it never makes a database Node hasn't.
+
+**Node's transactions are `BEGIN IMMEDIATE`.** A deferred transaction that reads before it writes (`updateSettings`, `updateProviderConnection` and every other read-merge-write repo) can't wait for another process's write lock. SQLite skips the busy handler when a reader upgrades, so it fails at once with `SQLITE_BUSY`. The better-sqlite3, bun:sqlite and node:sqlite adapters therefore begin their outermost transaction `IMMEDIATE`, and nested calls stay savepoints. With one process this changes nothing. `tests/unit/db-shared-file.test.js` holds the lock from a second process and fails with deferred transactions. The pre-migration backup (`backupDbLite`) is the one exception and keeps a deferred `BEGIN`: it only reads `main` while it copies into an attached file, and an IMMEDIATE one would write-lock `main` for the whole copy.
 
 **Rules for sharing the file:**
 - Every write is a short `BEGIN IMMEDIATE` transaction that reads the row fresh and changes only the fields the gateway owns. Node's `better-sqlite3` waits on a lock synchronously, on its main thread, for up to 5 s. A gateway transaction held long therefore freezes the whole Node event loop.
-- The gateway batches usage writes, many rows per transaction every 100 ms or so, to take the write lock less often.
-- No read transaction stays open. Node runs `wal_checkpoint(TRUNCATE)` every 60 s, and a long-lived reader stops the checkpoint and lets the WAL grow. Only Node checkpoints.
-- If Node runs on `sql.js` (in memory, rewriting the whole file), the file can't be shared. Node will record its driver in `_meta.dbDriver`, and the gateway stays in proxy mode unless it is `better-sqlite3`, `bun:sqlite` or `node:sqlite`.
+- The gateway leaves Node windows to take the lock. SQLite has no queue for its write lock: a waiter polls, sleeping 1 to 100 ms between tries, and the lock goes to whoever asks while it is free. A gateway that began its next write as soon as the last committed would win every time. The first stress run showed that: Node's writes waited out the full 5 s and failed, with event-loop lag at p99 over 5 s, while every gateway write landed. So all the gateway's writes go through one goroutine (`writer.go`). It puts every write queued at that moment into one transaction, each in its own savepoint so a failure undoes only itself. It stops taking more after holding the lock 10 ms (`MaxWriteHold`), and leaves the lock free at least 25 ms (`WriteGap`) before it begins again. Usage rows are also batched every 100 ms.
+- No read transaction stays open. Node runs `wal_checkpoint(TRUNCATE)` every 60 s, and a long-lived reader stops the checkpoint and lets the WAL grow. The gateway's connections never checkpoint (`wal_autocheckpoint=0`). The one exception is the gateway's last close after Node has exited, when SQLite checkpoints on its own.
+- If Node runs on `sql.js` (in memory, rewriting the whole file), the file can't be shared. Node records its driver in `_meta.dbDriver` each time it opens the database, after its migrations (`recordDriver` in `driver.js`; sql.js writes it to disk with its next save). The gateway stays in proxy mode unless it is `better-sqlite3`, `bun:sqlite` or `node:sqlite`, and re-checks when that row changes. The schema guard also refuses a file that isn't in WAL mode.
 
 **What the gateway reads and writes:**
 
@@ -140,7 +144,7 @@ Phase 1 doesn't open the database. From phase 2 both processes share `DATA_DIR/d
 | `apiKeys` | key lookup, policy (budget, allowlist, expiry) | `spentUsd`, `requestCount`, `lastUsedAt` (in the usage transaction) |
 | `combos` | by name | never |
 | `providerNodes` | `openai-compatible` nodes (prefix, baseUrl, apiType, modelRoutes, droppedBetas, overrides) | `droppedBetas` (merge) |
-| `providerConnections` | active connections with `data` | in `data` only: `modelLock_*`, `modelLimit_*`, `modelNoHeaders_*`, `providerReset_*`, `backoffLevel`, `lastError*`, `errorCode`, `testStatus`, `authDemote_*` (compare-and-swap, as Node does), `lastUsedAt`, `consecutiveUseCount`, `droppedBetas`, `isActive` (auto-disable) |
+| `providerConnections` | active connections with `data` | in `data` only: `modelLock_*`, `modelLimit_*`, `modelNoHeaders_*`, `providerReset_*`, `backoffLevel`, `lastError`, `lastErrorAt`, `errorCode`, `testStatus`, the `authFail*` streak fields, `authDemote_*` (compare-and-swap, as Node does) and `authDemoteOkAt`, `lastUsedAt`, `consecutiveUseCount`, `providerSpecificData.droppedBetas` (merge); and auto-disable: the `isActive` column with `autoDisabledAt` and `autoDisabledReason` |
 | `proxyPools` | by id | never |
 | `kv` | scopes `modelAliases`, `pricing`, `customModels` | never |
 | `usageHistory` | never | insert |
@@ -149,16 +153,52 @@ Phase 1 doesn't open the database. From phase 2 both processes share `DATA_DIR/d
 
 Everything else is Node's alone: management keys, audit, notification channels, migrations, OAuth tokens and their refresh.
 
-**Schema ownership.** Node's migrations own the schema. The gateway never creates or alters a table. Node migrates before it listens, and the gateway reads the database only after Node listens. The gateway is built with a manifest: the highest migration number it knows (`_meta.schemaVersion`, which counts migration files, 6 today) and the columns it uses in each table. `SCHEMA_VERSION` in `schema.js` (stored as `_meta.backupSchemaVersion`) also moves on purely additive table changes, so the column check, not that counter, is what catches those. At startup and whenever the schema could have changed, the gateway checks `_meta.schemaVersion` and `PRAGMA table_info`. A newer version or a missing column switches native routes off. Everything is proxied, the health endpoint says why, and one line is logged. Extra tables and columns are fine, because `syncSchemaFromTables` only adds. A migration that changes a column the gateway reads must bump the manifest in the same PR, and CI runs the gateway's schema check against a database migrated by that PR's Node.
+**Schema ownership.** Node's migrations own the schema. The gateway never creates or alters a table. Node opens its database, and on a fresh install creates and migrates it, on its first use of it, which can come after it listens. So the gateway opens the file once Node listens, keeps trying every second until it exists, and the schema guard tells an unmigrated file apart. The gateway is built with a manifest: the highest migration number it knows (`_meta.schemaVersion`, which counts migration files, 6 today) and the columns it uses in each table. `SCHEMA_VERSION` in `schema.js` (stored as `_meta.backupSchemaVersion`) also moves on purely additive table changes, so the column check, not that counter, is what catches those. At startup, and whenever `PRAGMA schema_version`, `_meta.schemaVersion` or `_meta.dbDriver` changes, the gateway checks `_meta.schemaVersion` and `PRAGMA table_info`. A newer version or a missing column switches native routes off. Everything is proxied, the health endpoint says why, and one line is logged. Extra tables and columns are fine, because `syncSchemaFromTables` only adds. A migration that changes a column the gateway reads must bump the manifest in the same PR, and CI runs the gateway's schema check against a database migrated by that PR's Node.
 
 ## Config sync (phase 2)
 
 Node caches settings for 5 s with an in-process generation counter. It reads connections, combos, nodes, API keys and aliases from the database on every request. A second process can't see an in-process counter, so:
 
-- Node bumps `_meta.configGeneration` in the same transaction as every write to `settings`, `combos`, `providerNodes`, `apiKeys`, `kv` aliases and pricing. It also bumps it on dashboard edits of `providerConnections`, but not on the lock and usage writes the hot path makes.
+- Node bumps `_meta.configGeneration` in the same transaction as every write to `settings`, `combos`, `providerNodes`, `apiKeys`, and the `kv` scopes `modelAliases`, `pricing` and `customModels`. It also bumps it on dashboard edits of `providerConnections`, but not on the lock and usage writes the hot path makes. The bump is `bumpConfigGenerationSync` (or `writeConfig`) in `src/lib/db/helpers/configGeneration.ts`. A connection write bumps when `connectionConfigChanged` finds a change outside the runtime fields (locks, errors, auth evidence and demotions, rotation, the top-level token fields, auto-ping stamps). A key turned off, which changes the `isActive` column, counts. So does a token refresh that also rewrites `providerSpecificData`; that costs the gateway one reload. The gateway bumps the same way for its own config writes: a node's `droppedBetas`, a connection's `providerSpecificData.droppedBetas`, and an auto-disable.
+- `tests/unit/config-generation.test.js` lists every SQL statement in `src/` and `open-sse/` that writes one of those tables, by file and function, with whether it bumps or why it needn't (usage spend, migrations, kv scopes the gateway doesn't read). A new write fails it until it is listed. Each listed site that bumps is then run on sql.js, node:sqlite and better-sqlite3 through an adapter that checks every config write has a bump in its own transaction, and the lock, usage and token-refresh writes are checked to leave the generation alone.
 - The gateway polls `PRAGMA data_version` every 250 ms. That pragma changes when another connection commits, and costs no I/O. When it changes, the gateway reads `configGeneration` and reloads its snapshot if that changed too. The usage writes on every request change `data_version` but not the generation, so they cost one indexed read.
 - On top of that, a 5 s TTL caps how stale a snapshot can get, the same bound Node's own settings cache has today.
 - Per-request state stays per request: locks and demotions are read fresh from `providerConnections` at pick time, as Node reads them.
+
+## Phase 2b: the database layer
+
+Status: built and tested, serving nothing. `gateway/internal/db` is the driver, the pragmas, the schema guard, the watcher and the typed readers and writers for the table above. In `native` mode the gateway opens the database once Node listens, checks it and keeps the snapshot current, and health and the log report the result. Nothing calls the writers yet; phase 2c's native route will. Production runs with `GATEWAY_MODE` off, so none of this runs there.
+
+**Schema guard.** `manifest.json` (embedded) holds the highest migration the gateway knows, the drivers it shares a file with, and the columns it reads in each table. `DB.Check` refuses, with a reason, a file whose `_meta.dbDriver` is sql.js, missing or unknown, one not in WAL mode, a `_meta.schemaVersion` above the manifest's, or a table without a column the manifest lists. Extra tables and columns pass. The watcher re-runs the check whenever `PRAGMA schema_version`, `_meta.schemaVersion` or `_meta.dbDriver` changes, and every 5 s while it refuses. It logs one line per change of answer. `tests/unit/gateway-db-manifest.test.js` holds the manifest to `schema.js` and the migration list, and holds the Go tests' schema (`testdata/schema.sql`) to the statements migrations run. A new migration therefore fails CI until the manifest says the gateway can read it.
+
+**JSON.** Rows the gateway rewrites go through `internal/db/jsjson`, which parses and prints JSON as `JSON.parse` and `JSON.stringify` do. Object keys keep their order, with array-index keys first, as V8 orders them. Numbers are printed as `Number#toString` prints them, and strings are escaped as JavaScript escapes them, a lone surrogate (an error message cut in the middle of an emoji) included. A row the gateway writes is the text Node would have written, unknown fields included.
+
+**Writers.** Each reads its row fresh inside the writer's `BEGIN IMMEDIATE` transaction and changes only what it owns. Callers wait for their own write. A write is reported failed only if it didn't land: when SQLite rolls a whole transaction back (an I/O error, a full disk), every write in it fails and the rest wait for the next. A write whose context ends before it starts is skipped, and when the lock doesn't come within the busy timeout, every write queued then fails at once rather than each waiting 5 s. A usage row that can never be written (a value the JSON writer refuses) is dropped and counted rather than holding the rows behind it. The price of the pacing is latency, not throughput: a write that arrives just after a commit waits out the gap, so one waits up to about 35 ms (25 ms gap, 10 ms hold), and under load many share each transaction. Phase 2c's lock writes should not sit on a request's critical path.
+
+- `UpdateConnection(ctx, id, ConnectionUpdate)` is `updateProviderConnection` for the hot path's options: `Set` (owned fields only; anything else is `ErrNotOwned`), `AutoDisable` (only while another connection of the provider is on), `Demote` (compare-and-swap on the `JSON.stringify` of the record, plus `probeNow`), `LiftDemote`, `NoteServed` and `APIKeyUsed` (a key pasted in since drops the streak, the turn-off and the demotion). It writes `data`, `isActive` and `updatedAt` and returns the merged row.
+- `MergeDroppedBetas(ctx, connectionID, nodeID, betas, ownBaseURL)` is `saveDroppedBetas`: the union rule of `sanitizeNodeQuirks`, on the connection's `providerSpecificData` and the node.
+- `WriteUsage(ctx, entries)` writes many requests in one transaction: their `usageHistory` rows, each day's `usageDaily` aggregate read and written once, `_meta.totalRequestsLifetime` and each key's spend. The result is what `saveRequestUsage` gives for them one at a time, float rounding included. `NewUsageWriter` batches `Add`ed rows every 100 ms. Local dates use the process's zone, as Node's `Date` does; the binary carries its own zone data.
+- `SaveRequestDetails(ctx, rows, maxRecords)` is the request-detail flush: upsert, full copies on the newest 25 rows only, trim to `maxRecords`. It takes payloads already capped.
+
+**Readers.** `ListConnections(ctx, provider, active)` sorts as `getProviderConnections` does, `ConnectionByID`, `APIKeyByKey` (fresh, for spend), `NodeByID`, `ProxyPoolByID`, `APIKeys` and `Nodes`. Each type's `NodeObject()` is the object Node's repo returns for the row.
+
+**The snapshot API for 2c.**
+
+```go
+path, err := db.DataFile(os.Getenv)                     // DATA_DIR/db/data.sqlite, as Node resolves it
+d, err := db.Open(path, db.Options{})
+err = d.Watch(ctx, db.WatchOptions{OnStatus: logIt})   // first check and load, then every 250 ms
+st := d.Status()                                        // Ready, Reason, SchemaVersion, Driver
+s := d.Snapshot()                                       // nil unless Ready
+s.Settings.Bool("requireApiKey")                        // getSettings(), defaults merged, retired keys dropped
+s.Combos["name"]; s.Nodes["openai-compatible-chat-…"]   // by name, by id
+s.APIKeys["sk-…"]                                       // policy; spend via d.APIKeyByKey
+s.Alias("sonnet"); s.Pricing; s.CustomModels
+```
+
+A snapshot is immutable; `Watch` swaps in a new one when `configGeneration` moves, and at least every 5 s. Phase 2c should hold one snapshot per request.
+
+**For 2c, on Node's side.** Node's in-process caches keyed on `connectionsVersion()` and `combosVersion()` (auto-combo, the Codex catalog) don't see the gateway's writes. Once the gateway turns keys off, those caches should also watch `_meta.configGeneration`.
 
 ## State that lives in Node's memory
 
@@ -209,18 +249,18 @@ The log line reads `FMT: claude→claude`, but this is not a pass-through. That 
 | `internal/upstream` | Runtime transport (base URL suffix, `x-api-key` plus `Authorization`, `anthropic-version`, `anthropic-beta` merge and filtering, learned `droppedBetas` and the two beta retries); per-status retries; the 240 s headers budget; per-connection proxy pools and env proxies; body bytes reused across keys | `open-sse/executors/base.js`, `open-sse/executors/default.js`, `open-sse/utils/proxyFetch.js`, `open-sse/utils/headersTimeout.js`, `src/lib/network/connectionProxy.js` |
 | `internal/stream` | Early SSE headers after `STREAM_EARLY_HEADERS_MS` with keepalives; the error event after early headers; pass-through relay with the short-id fix and the trailing `data: [DONE]`; usage from `message_start` and `message_delta`; stall abort; disconnect handling with the 500 ms grace; abort billing floor | `open-sse/utils/earlyHeaders.js`, `open-sse/utils/stream.js`, `open-sse/utils/streamHandler.js`, `open-sse/utils/usageTracking.js`, `open-sse/handlers/chatCore/streamingHandler.js` |
 | `internal/usage` | Cost from user pricing overrides, then the built-in tables; the usage transaction (`usageHistory`, `usageDaily`, `_meta`, `apiKeys` spend); request-detail rows (5 KB or 128 KB previews, gzip full copies, newest 25, batching) | `src/lib/db/repos/usageRepo.js`, `src/lib/db/repos/pricingRepo.js`, `open-sse/providers/pricing.js`, `open-sse/handlers/chatCore/requestDetail.js`, `src/lib/requestDetailsDb.js`, `src/lib/db/repos/requestDetailsRepo.js` |
-| `internal/db` | Driver, pragmas, schema manifest and guard, `data_version` and generation watcher, the batched writer | `src/lib/db/driver.js`, `src/lib/db/schema.js`, `src/lib/db/migrate.js` |
+| `internal/db` (built in 2b, see "Phase 2b") | Driver, pragmas, schema manifest and guard, `data_version` and generation watcher, the batched writer | `src/lib/db/driver.js`, `src/lib/db/schema.js`, `src/lib/db/migrate.js` |
 
 Phase 2 leaves out the `fusion` and `round-robin` combo strategies, other client formats, Codex session affinity, side-search hooks and every other provider. A request that needs any of them goes to Node.
 
 ### Risks
 
 - **Byte-exact request preparation.** A one-byte difference in the upstream body can silently halve prompt-cache hits and double cost. The transform tests run over a large corpus and the shadow compare runs before any canary. The Go JSON handling must keep key order and number text from the client, so it edits a raw-preserving representation and never round-trips through `map[string]any`.
-- **SQLite lock contention freezing Node.** Covered by the short-transaction, batched-writer and no-open-reader rules above. A CI stress job will hammer both processes and assert Node's event-loop lag stays under 50 ms.
+- **SQLite lock contention freezing Node.** Covered by the short-transaction, paced-writer and no-open-reader rules above. The `Gateway DB` workflow's stress job hammers both processes and fails if Node's event-loop lag reaches 50 ms at p99 (see "Verifying phase 2b").
 - **Split memory state.** If a provider is half native and half proxied, for example during a rollout or when a request falls back to Node, the two processes keep separate affinity and evidence maps. Cache affinity then gets worse for those requests, and dead-key evidence builds more slowly. Locks are unaffected because they live in the database. Rollouts flip a provider whole.
 - **Drift as Node changes.** Every PR that touches a file in the map above must update the Go port or mark the route proxy-only. A CI job will fail a PR that changes a mapped file without touching `gateway/` or a `GATEWAY_PROXY_ONLY` list.
 - **Two memory budgets under one container limit.** Admission budgets for both processes have to add up under the cgroup's `memory.max`, with Go's counted at its real single-copy weight.
-- **Driver performance.** `modernc.org/sqlite` is pure Go. The hot-path queries need benchmarking against `better-sqlite3` in CI before the canary.
+- **Driver performance.** `modernc.org/sqlite` is pure Go. The `Gateway DB` workflow's bench job times the hot-path queries on it against better-sqlite3 and node:sqlite.
 
 ## Later phases
 
@@ -231,7 +271,7 @@ Phase 2 leaves out the `fusion` and `round-robin` combo strategies, other client
 
 ## Rolling back
 
-Set `GATEWAY_MODE=off`, or unset it, and redeploy. Node takes port 20128 again with nothing of the gateway running. No data changes: phase 1 never opens the database. In phase 2 everything the gateway writes uses Node's own tables and formats.
+Set `GATEWAY_MODE=off`, or unset it, and redeploy. Node takes port 20128 again with nothing of the gateway running. No data changes: phase 1 never opens the database, and phase 2b's `native` mode only reads it (apart from SQLite's own checkpoint when the gateway closes it after Node has exited). In phase 2 everything the gateway writes uses Node's own tables and formats. The two rows Node adds to `_meta` (`dbDriver`, `configGeneration`) mean nothing to a Node without them.
 
 ## Verifying phase 1
 
@@ -249,3 +289,12 @@ The `Go gateway` workflow (`.github/workflows/gateway.yml`) runs:
   - Codex WebSocket turns, local and remote;
   - dashboard status codes;
   - a graceful stop in the middle of a stream.
+
+## Verifying phase 2b
+
+`go test -race` in the `Go gateway` workflow covers `internal/db`: the guard's answers, the watcher (a usage write doesn't reload, a generation bump does, the TTL does, a schema change turns native off), every writer's exact output, a write waiting out another connection's lock, the writer's pacing (another connection gets the lock within 500 ms while 16 goroutines write), and the pragmas. The `Gateway DB` workflow (`.github/workflows/gateway-db.yml`) runs the rest against this branch's Node:
+
+- `node`: the config generation guard on sql.js, node:sqlite and better-sqlite3 (bun:sqlite isn't in CI), the manifest and test schema guard, and IMMEDIATE transactions across two processes. The guard also runs alone, in the `Config generation` workflow, on any change under `src/` or `open-sse/`.
+- `parity` (TZ `Pacific/Chatham`): the guard on databases better-sqlite3 and node:sqlite migrated (and its refusals of sql.js, a newer schema, a dropped column); the Go readers against Node's repos; and the same writes through Node on one file and the gateway on its copy, compared row by row and read back through Node's repos.
+- `stress`: Node on better-sqlite3, then on node:sqlite, runs its request loop alone for 10 s and then for 30 s beside `gateway-dbtool stress`, with a TRUNCATE checkpoint every 5 s. The gateway writes 500 usage rows/s in 100 ms batches, 100 connection writes/s and 50 request-detail rows/s, with 4 readers. The job fails on a Node event-loop lag p99 of 50 ms or more, on any SQLITE_BUSY or other error on either side, or on a lost row. The tables are in the job summary.
+- `bench`: connection listing, key lookup and usage writes on better-sqlite3, node:sqlite and modernc.org/sqlite, in the job summary.

@@ -10,6 +10,7 @@ import { getMetaSync, setMetaSync } from "./helpers/metaStore.js";
 import { backupOnce, backupFile, backupDbLite, pruneOldBackups } from "./backup.js";
 import { getAppVersion } from "./version.js";
 import { stringifyJson } from "./helpers/jsonCol.js";
+import { bumpConfigGenerationSync } from "./helpers/configGeneration.js";
 
 // Marker file: prevents re-importing legacy JSON when user wipes data.sqlite.
 const MIGRATED_MARKER = path.join(DB_DIR, ".migrated-from-json");
@@ -365,6 +366,7 @@ export async function runMigrationOnce(adapter) {
         setMetaSync(adapter, "backupSchemaVersion", SCHEMA_VERSION);
         setMetaSync(adapter, "migratedAt", new Date().toISOString());
         setMetaSync(adapter, "legacyImportPending", "0");
+        bumpConfigGenerationSync(adapter);
       });
     } catch (err) {
       const file = err instanceof LegacyFileUnreadable ? err.file

@@ -31,6 +31,8 @@ export async function createNodeSqliteAdapter(filePath) {
   db.exec(PRAGMA_SQL);
 
   const stmtCache = new Map();
+  // Open transaction() calls: only the outermost begins and commits.
+  let depth = 0;
   function prepare(sql) {
     let stmt = stmtCache.get(sql);
     if (!stmt) {
@@ -67,7 +69,27 @@ export async function createNodeSqliteAdapter(filePath) {
     },
     exec(sql) { return db.exec(sql); },
     transaction(fn) {
-      // node:sqlite has no transaction wrapper. Use SAVEPOINT for nested support.
+      // node:sqlite has no transaction wrapper. The outermost call is BEGIN
+      // IMMEDIATE, for the reason in betterSqliteAdapter.js; nested calls are
+      // savepoints.
+      if (depth === 0 && db.isTransaction !== true) {
+        db.exec("BEGIN IMMEDIATE");
+        depth++;
+        try {
+          const r = fn();
+          db.exec("COMMIT");
+          return r;
+        } catch (e) {
+          if (db.isTransaction !== false) try { db.exec("ROLLBACK"); } catch {}
+          throw e;
+        } finally {
+          depth--;
+        }
+      }
+      // Inside our transaction, but SQLite already rolled it back (an error
+      // such as SQLITE_FULL that the caller caught): a savepoint now would
+      // start, and commit, a transaction of its own.
+      if (depth > 0 && db.isTransaction === false) throw new Error("[DB] the transaction was rolled back");
       const sp = `sp_${Math.random().toString(36).slice(2)}`;
       db.exec(`SAVEPOINT ${sp}`);
       try {

@@ -6,6 +6,7 @@ import crypto from "node:crypto";
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { bumpConfigGenerationSync, writeConfig } from "../helpers/configGeneration.js";
 import { rowToKey, numberOrNull, toAllowedModelsColumn, updateApiKeyInTx } from "./apiKeysRepo.js";
 import { deleteProviderConnectionIf } from "./connectionsRepo.js";
 import { generateApiKeyWithMachine } from "@/shared/utils/apiKey.js";
@@ -138,6 +139,7 @@ export async function createOwnedApiKey({ name, machineId, limits, ownerId }) {
       [id, key, name, machineId, new Date().toISOString(), numberOrNull(limits.budgetUsd), toAllowedModelsColumn(limits.allowedModels),
         expiresAt, ownerId, expiresAt ? ownerId : null]
     );
+    bumpConfigGenerationSync(db);
     created = rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
   });
   return created;
@@ -215,6 +217,7 @@ export async function updateApiKeyAs(id, update, actor) {
     }
     updateApiKeyInTx(db, id, update);
     const { disabledBy, expiresAtSetBy } = nextKeyActors(before, update, actor);
+    // In the same transaction as updateApiKeyInTx's config generation bump.
     db.run(`UPDATE apiKeys SET disabledBy = ?, expiresAtSetBy = ? WHERE id = ?`, [disabledBy, expiresAtSetBy, id]);
     out = { key: rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id])) };
   });
@@ -250,6 +253,7 @@ export async function deleteRowAsManagementKey(kind, rowId, managementKeyId, { m
       [rowId, managementKeyId, manageExisting ? 1 : 0]
     );
     deleted = (res?.changes ?? 0) > 0;
+    if (deleted) bumpConfigGenerationSync(db);
   });
   return deleted ? { deleted } : { deleted, status: inactive ? 401 : 404 };
 }
@@ -274,6 +278,7 @@ export async function claimRowForManagementKey(kind, rowId, managementKeyId) {
   db.transaction(() => {
     if (!managementKeyActiveInTx(db, managementKeyId)) return;
     db.run(`UPDATE ${ownedTable(kind)} SET ownerManagementKeyId = ? WHERE id = ?`, [managementKeyId, rowId]);
+    bumpConfigGenerationSync(db);
     claimed = true;
   });
   return claimed;
@@ -282,7 +287,7 @@ export async function claimRowForManagementKey(kind, rowId, managementKeyId) {
 /** Record an owner without checking the management key (tests set up rows with it). */
 export async function setRowOwner(kind, rowId, managementKeyId) {
   const db = await getAdapter();
-  db.run(`UPDATE ${ownedTable(kind)} SET ownerManagementKeyId = ? WHERE id = ?`, [managementKeyId, rowId]);
+  writeConfig(db, () => db.run(`UPDATE ${ownedTable(kind)} SET ownerManagementKeyId = ? WHERE id = ?`, [managementKeyId, rowId]));
 }
 
 /** Map of row id → owning management key id, for rows a management key created. */

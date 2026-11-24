@@ -7,6 +7,7 @@ import { rowToKey, toLimitHoldColumn, numberOrNull, toAllowedModelsColumn, resee
 import { getAdapter } from "./driver.js";
 import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
 import { setMetaSync } from "./helpers/metaStore.js";
+import { bumpConfigGenerationSync } from "./helpers/configGeneration.js";
 import { SESSION_EPOCH_META_KEY, newSessionEpoch } from "./helpers/sessionEpoch.js";
 
 // Settings
@@ -237,6 +238,7 @@ export async function importDb(payload) {
     for (const [provider, models] of Object.entries(payload.pricing || {})) {
       db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('pricing', ?, ?)`, [provider, stringifyJson(models || {})]);
     }
+    bumpConfigGenerationSync(db);
   });
 
   // The restore writes the pricing kv scope directly, so the merged pricing

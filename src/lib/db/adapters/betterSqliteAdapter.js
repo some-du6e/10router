@@ -42,7 +42,12 @@ export function createBetterSqliteAdapter(filePath) {
     get(sql, params = []) { return prepare(sql).get(...params); },
     all(sql, params = []) { return prepare(sql).all(...params); },
     exec(sql) { return db.exec(sql); },
-    transaction(fn) { return db.transaction(fn)(); },
+    // BEGIN IMMEDIATE: a transaction takes the write lock up front, waiting
+    // busy_timeout for it. A deferred one that reads first can't wait when it
+    // then writes (SQLite skips the busy handler for a reader upgrading), so
+    // with another process writing the same file it fails with SQLITE_BUSY.
+    // Nested calls are savepoints either way.
+    transaction(fn) { return db.transaction(fn).immediate(); },
     checkpoint() { try { db.pragma("wal_checkpoint(TRUNCATE)"); } catch {} },
     close() {
       unregisterShutdown();

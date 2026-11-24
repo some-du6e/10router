@@ -1,6 +1,7 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { makeKv } from "../helpers/kvStore.js";
+import { bumpConfigGenerationSync, writeConfig } from "../helpers/configGeneration.js";
 
 const pricingKv = makeKv("pricing");
 const CACHE_TTL_MS = 5000;
@@ -93,6 +94,7 @@ export async function updatePricing(pricingData) {
         [provider, stringifyJson(merged)]
       );
     }
+    bumpConfigGenerationSync(db);
   });
   invalidate();
   return await getUserPricing();
@@ -101,7 +103,7 @@ export async function updatePricing(pricingData) {
 export async function resetPricing(provider, model) {
   if (!provider) return await getUserPricing();
   const db = await getAdapter();
-  db.transaction(() => {
+  writeConfig(db, () => {
     if (!model) {
       db.run(`DELETE FROM kv WHERE scope = 'pricing' AND key = ?`, [provider]);
       return;
