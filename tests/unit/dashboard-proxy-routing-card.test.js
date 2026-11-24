@@ -99,7 +99,7 @@ describe("Proxy routing card provider panel", () => {
     const props = { proxyPools: [...pools, us], poolsLoaded: true, onPoolsChanged: vi.fn() };
     card.render(props);
     await vi.waitFor(() => expect(selects(card.render(props))).toHaveLength(1));
-    elements(card.render(props), (el) => el.type === "button" && textContent(el).startsWith("Global"))[0].props.onClick();
+    elements(card.render(props), (el) => el.type === "button" && textContent(el).includes("All providers and accounts"))[0].props.onClick();
     const text = textContent(card.render(props));
     expect(text).toMatch(/Set by their provider.*Inheriting/);
     expect(text).not.toContain("Use Global");
