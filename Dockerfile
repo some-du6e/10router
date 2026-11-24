@@ -22,21 +22,11 @@ WORKDIR /app
 
 FROM base AS builder
 
-RUN apk --no-cache upgrade && apk --no-cache add python3 make g++ linux-headers
-
-COPY package.json ./
-RUN --mount=type=cache,target=/root/.npm \
-  npm install
-
-COPY . ./
-ENV NEXT_TELEMETRY_DISABLED=1
-
-# Build args go after the installs: every RUN after an ARG sees it, so one that
-# changes per commit (SOURCE_COMMIT) would rerun them on every build.
-# tests/unit/dockerfile-build-args.test.js holds this.
-
-# Git commit, as a build arg. `.git` is stripped from the build context by
-# `.dockerignore`, so `git rev-parse` in next.config.mjs falls back to this.
+# Git commit injected by CI as the `SOURCE_COMMIT` build arg
+# (.github/workflows/deploy-image.yml). `.git` is stripped from the build
+# context by `.dockerignore`, so `git rev-parse` in next.config.mjs falls back
+# to this. Declared here (before `RUN npm run build`) so Docker surfaces it to
+# the build step as an env var.
 ARG SOURCE_COMMIT
 
 # Optional Google Analytics 4 measurement ID. Next inlines NEXT_PUBLIC_* at build
@@ -50,6 +40,14 @@ ENV NEXT_PUBLIC_GA_ID=$NEXT_PUBLIC_GA_ID
 # when passed, so an unset value stays unset instead of being baked in as "".
 ARG NEXT_PUBLIC_CLOUD_URL
 
+RUN apk --no-cache upgrade && apk --no-cache add python3 make g++ linux-headers
+
+COPY package.json ./
+RUN --mount=type=cache,target=/root/.npm \
+  npm install
+
+COPY . ./
+ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 FROM ${NODE_IMAGE} AS runner

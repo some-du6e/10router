@@ -6,8 +6,10 @@ name: Deploy image
 # the gateway E2E and an anonymous pull. See DOCKER.md, "Master builds".
 #
 # A master run builds master as it is when the run starts, so re-running an old
-# run or starting one by hand deploys the newest commit. Runs go one at a time:
-# a commit that lands mid-run waits, and of several waiting only the newest runs.
+# run or starting one by hand deploys the newest commit (a re-run stops instead
+# if master has changed this file since). Runs go one at a time: a commit that
+# lands mid-run waits, and of several waiting only the newest runs. Tags are
+# written once. No layer cache: any job on master could write one.
 on:
   push:
     branches: [master]
@@ -54,6 +56,15 @@ jobs:
           commit="$(git rev-parse HEAD)"
           echo "COMMIT=$commit" >> "$GITHUB_ENV"
           echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}:$commit" >> "$GITHUB_ENV"
+      # A re-run keeps the workflow file it started with, so it must not build
+      # a master whose copy of this file differs.
+      - name: This run's workflow is master's
+        if: env.PUBLISH == 'true'
+        run: |
+          [ "$GITHUB_WORKFLOW_SHA" = "$COMMIT" ] && exit 0
+          git fetch -q --depth=1 origin "$GITHUB_WORKFLOW_SHA"
+          git diff --quiet FETCH_HEAD HEAD -- .github/workflows/deploy-image.yml \
+            || { echo "::error::master changed this workflow after this run started; start a new run on master"; exit 1; }
       - uses: docker/setup-buildx-action@v3
       - name: Build the image
         uses: docker/build-push-action@v6
@@ -66,8 +77,6 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ env.COMMIT }}
-          cache-from: type=gha,scope=deploy-image
-          cache-to: ${{ env.PUBLISH == 'true' && 'type=gha,mode=max,scope=deploy-image,ignore-error=true' || '' }}
           provenance: false
           sbom: false
       - name: E2E (GATEWAY_MODE unset, then proxy)
@@ -97,8 +106,12 @@ jobs:
       - name: Push the image
         if: env.PUBLISH == 'true'
         run: |
-          docker push "$IMAGE"
-          echo "Pushed \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+          if docker buildx imagetools inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "$IMAGE is already pushed, and tags are written once"
+          else
+            docker push "$IMAGE"
+            echo "Pushed \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
       # The server builds Dockerfile.deploy with `docker build --pull` and no
       # registry login, so the package has to be public.
       - name: The server can pull it

@@ -209,7 +209,7 @@ Published multi-platform images (`linux/amd64` + `linux/arm64`):
 - Docker Hub: [`some-du6e/10router`](https://hub.docker.com/r/some-du6e/10router)
 - GHCR: [`ghcr.io/some-du6e/10router`](https://github.com/some-du6e/10router/pkgs/container/10router)
 
-GHCR also holds `linux/amd64` builds of master, each tagged with the full sha of the commit it was built from (see [DOCKER.md](DOCKER.md#master-builds)). Merges that land close together share one build, so not every commit has a tag. Releases are the version tags and `:latest`.
+GHCR also holds `linux/amd64` builds of master, each tagged with the full sha of the commit it was built from (see [DOCKER.md](DOCKER.md#master-builds)). Only merges that change the image start a build, and merges that land close together share one, so not every commit has a tag. Releases are the version tags and `:latest`.
 
 ```bash
 docker run -d \
