@@ -35,16 +35,17 @@ const (
 // It never goes through map[string]any, so nothing reorders keys or rounds
 // numbers in a way Node doesn't.
 type Value struct {
-	kind Kind
-	b    bool
-	f    float64
-	// str: a string's content, or a number's own text when it is already
-	// Number#toString's ("" otherwise). One field for both keeps a Value at
-	// 64 bytes: a 4 MB body of tiny values is millions of them.
-	str   string
+	kind  Kind
+	b     bool
 	plain bool // str needs no escaping inside quotes
-	arr   []*Value
-	obj   *object
+	f     float64
+	// str: a string's content, or a number's own text when it is already
+	// Number#toString's ("" otherwise). One field for both, and the flags
+	// packed first, keep a Value at 64 bytes: a 4 MB body of tiny values is
+	// millions of them.
+	str string
+	arr []*Value
+	obj *object
 }
 
 type member struct {
@@ -726,15 +727,21 @@ func (p *parser) string() (*Value, error) {
 	p.i++
 	start := p.i
 	s := p.s
+	plain := true
 	for p.i < len(s) {
 		c := s[p.i]
 		if c == '"' {
-			v := &Value{kind: KindString, str: s[start:p.i], plain: true}
+			v := &Value{kind: KindString, str: s[start:p.i], plain: plain}
 			p.i++
 			return v, nil
 		}
 		if c == '\\' {
 			break
+		}
+		if c == 0xED {
+			// Possibly a lone surrogate (parseText's WTF-8 input): let
+			// needsEscape's rule decide, as appendQuoted would.
+			plain = false
 		}
 		if c < 0x20 {
 			return nil, ErrSyntax

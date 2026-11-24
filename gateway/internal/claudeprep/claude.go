@@ -17,6 +17,7 @@ func (p *prep) translate(body *Value) *Value {
 	ensureToolCallIDs(body)
 	fixMissingToolResponses(body)
 	intent := extractThinking(body)
+	declineSessionIDThrows(body)
 	applyThinking("claude", p.in.Model, body, p.in.Provider, intent, p.models)
 	ensureToolCallIDs(body)
 	key := p.in.Connection.AccessToken
@@ -27,6 +28,31 @@ func (p *prep) translate(body *Value) *Value {
 		body.Set("system", withClaudeCodePrompt(body.Get("system")))
 	}
 	return p.prepareClaudeRequest(body)
+}
+
+// declineSessionIDThrows: translateRequest's captureSessionId (no try/catch
+// around it) changes nothing in the body, but throws converting an object
+// with its own toString to a string: String(request.sessionId), and the
+// assistant text/output it concatenates when no client session id is found.
+// Both are checked whether or not Node would reach them (a decline is safe).
+func declineSessionIDThrows(body *Value) {
+	if sid := optional(body.Get("request")).Get("sessionId"); !sid.IsNullish() && !sid.Is("") {
+		joinString(sid)
+	}
+	for _, m := range body.Get("messages").Items() {
+		if !optional(m).Get("role").Is("assistant") {
+			continue
+		}
+		for _, c := range m.Get("content").Items() {
+			v := optional(c).Get("text")
+			if !v.Truthy() {
+				v = optional(c).Get("output")
+			}
+			if v.Truthy() {
+				joinString(v)
+			}
+		}
+	}
 }
 
 // ---- History helpers (provider.js, toolCall.js) -----------------------------------

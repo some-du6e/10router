@@ -636,6 +636,16 @@ const SCENARIOS = [
     const body = ccBody(rng, model, { messages: SMALL ? 6 : 50, toolCount: SMALL ? 3 : undefined, thinking: null, extra: { reasoning_effort: " constructor" } });
     return { model, headers: CC_HEADERS, body, expectDecline: "Object.prototype" };
   }),
+  scenario("decline-session-id-throw", (rng, i) => {
+    // No client session id (SDK headers, no metadata), so translateRequest's
+    // captureSessionId converts these to strings and Node throws.
+    const model = "claude-opus-4-8";
+    const body = ccBody(rng, model, { messages: SMALL ? 6 : 50, toolCount: SMALL ? 3 : undefined });
+    delete body.metadata;
+    if (i % 2 === 0) body.request = { sessionId: { toString: 0 } };
+    else body.messages.splice(1, 0, { role: "assistant", content: [{ type: "custom_block", output: { toString: 0 } }] });
+    return { model, headers: SDK_HEADERS, body, expectDecline: "own toString" };
+  }),
   scenario("decline-bad-port", (rng) => {
     const model = "claude-opus-4-8";
     return { model, headers: CC_HEADERS, psd: { baseUrl: "http://gateway.example.test:6000/v1" }, body: ccBody(rng, model, { messages: SMALL ? 6 : 50, toolCount: SMALL ? 3 : undefined }), expectDecline: "WHATWG parser" };
@@ -653,7 +663,7 @@ const SCENARIOS = [
 const smallCount = {
   "thinking-matrix": 40, "endpoint-overrides": 22, "tool-choice": 6, "max-tokens": 6, "cc-basic": 3, "empty-blocks": 4, params: 6,
   "stream-shapes": 12, "cc-dedupe": 4, "cc-images-tool-errors": 4, "broken-ids": 2, "numbers-and-keys": 3, "limit-hold-banner": 3,
-  "oauth-token-key": 3, "base-urls": 9, "provider-thinking": 12, "prefill-repair": 4, "odd-tool-calls": 2, "edge-probes": 7,
+  "oauth-token-key": 3, "base-urls": 9, "provider-thinking": 12, "prefill-repair": 4, "odd-tool-calls": 2, "edge-probes": 7, "decline-session-id-throw": 2,
 };
 
 function toFixture(name, spec, seed) {

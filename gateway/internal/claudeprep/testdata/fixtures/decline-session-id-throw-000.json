@@ -1,0 +1,31 @@
+{
+ "name": "decline-session-id-throw-000",
+ "seed": 663,
+ "inputs": {
+  "provider": "openai-compatible-chat-5f0c1d2e-0000-4000-8000-00000000c1a0",
+  "model": "claude-opus-4-8",
+  "apiKey": "sk-synthetic-declinesessionidthrow000-0000",
+  "providerSpecificData": {
+   "apiType": "chat",
+   "baseUrl": "https://gateway.example.test/v1",
+   "modelRoutes": {
+    "claude-opus-4-8": "anthropic"
+   }
+  },
+  "providerThinking": null,
+  "keyHasBudget": false,
+  "catalog": null
+ },
+ "request": {
+  "headers": {
+   "user-agent": "synthetic-sdk/1.0",
+   "anthropic-version": "2023-06-01",
+   "content-type": "application/json"
+  },
+  "body": "{\"model\":\"combo-4\",\"max_tokens\":32000,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":31999},\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"You are a coding assistant working in a synthetic test repository.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"worker of delta handler yield queue zone layer is with alpha with kernel index\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"tools\":[{\"name\":\"Task\",\"description\":\"update config yield parser handler\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"task_0\":{\"type\":\"array\",\"description\":\"bravo\",\"items\":{\"type\":\"string\"}},\"task_1\":{\"type\":\"string\",\"description\":\"for filter\"}},\"required\":[\"task_0\"],\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"}},{\"name\":\"Bash\",\"description\":\"bravo queue with handler with module\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"bash_0\":{\"type\":\"object\",\"description\":\"buffer\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}}},\"required\":[\"bash_0\"],\"additionalProperties\":false}},{\"name\":\"Glob\",\"description\":\"is parser on echo field record\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"glob_0\":{\"type\":\"object\",\"description\":\"parser\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"fast\",\"full\"]}}},\"glob_1\":{\"type\":\"number\",\"description\":\"field\",\"minimum\":0}},\"required\":[\"glob_0\"]},\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nfilter module worker stream parser join filter\\n</system-reminder>\"},{\"type\":\"text\",\"text\":\"alpha vector\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"config queue offset\",\"signature\":\"EqQEqDW1okYh3RemiJMmjsoCdA30Th==\"},{\"type\":\"text\",\"text\":\"the a\"},{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":390},\"id\":\"toolu_01Ml34VWCw4bXEWvaQKR7DwD\"},{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"path\":\"/work/src/module_1.ts\",\"limit\":385},\"id\":\"toolu_01eki4deQ943GjO5VAPlR84C\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01Ml34VWCw4bXEWvaQKR7DwD\",\"content\":[{\"type\":\"text\",\"text\":\"if (!result) return null;\"}]},{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01eki4deQ943GjO5VAPlR84C\",\"content\":\"export function parse(text) {\\nthrow new Error(\\\"unexpected end\\\");\",\"is_error\":true}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"delta parser\",\"signature\":\"EqPWT7RKwP8um8UngqcS8zoCg1==\"},{\"type\":\"text\",\"text\":\"module in encode zone\"},{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"path\":\"/work/src/module_2.ts\",\"limit\":332},\"id\":\"toolu_01FstDnpl90CrkHmLdSe7PlA\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01FstDnpl90CrkHmLdSe7PlA\",\"content\":[{\"type\":\"text\",\"text\":\"// TODO: handle the empty case\\nconst value = await load(path);\\nexport function parse(text) {\"}]}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"echo encode layer\"}]}],\"request\":{\"sessionId\":{\"toString\":0}}}"
+ },
+ "expectDecline": "own toString",
+ "node": {
+  "error": "threw: Cannot convert object to primitive value"
+ }
+}

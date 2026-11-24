@@ -1,4 +1,4 @@
-// Drift check for the Go gateway's ports (docs/GO_GATEWAY.md, "Drift").
+// Drift check for the Go gateway's ports (docs/GO_GATEWAY.md, Risks, "Drift as Node changes").
 // Reads changed paths (one per line) on stdin. For each Go package in
 // gateway/node-map.json whose Node files changed, the PR must also change
 // that package (gateway/internal/<pkg>/: the port, or its re-recorded

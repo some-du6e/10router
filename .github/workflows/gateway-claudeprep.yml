@@ -83,14 +83,14 @@ jobs:
         env:
           CLAUDEPREP_FIXTURES: ${{ runner.temp }}/claudeprep-fixtures
           CLAUDEPREP_REPORT: ${{ runner.temp }}/claudeprep-report.txt
-        run: go test -count=1 -v ./internal/claudeprep 2>&1 | tee "$RUNNER_TEMP/claudeprep-go.txt" | grep -v -E '^\s+--- PASS|^=== RUN' ; exit "${PIPESTATUS[0]}"
+        run: go test -count=1 -v ./internal/claudeprep 2>&1 | tee "$RUNNER_TEMP/claudeprep-go.txt" | grep -a -v -E '^\s+--- PASS|^=== RUN' ; exit "${PIPESTATUS[0]}"
       - name: Summary
         if: always()
         run: |
           {
             echo '```'
             cat "$RUNNER_TEMP/claudeprep-report.txt" 2>/dev/null || echo "no report"
-            grep -E -- '--- FAIL' "$RUNNER_TEMP/claudeprep-go.txt" 2>/dev/null | head -50
+            grep -a -E -- '--- FAIL' "$RUNNER_TEMP/claudeprep-go.txt" 2>/dev/null | head -50
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4

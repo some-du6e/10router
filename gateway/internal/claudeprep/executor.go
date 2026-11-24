@@ -189,8 +189,7 @@ func (p *prep) buildHeaders(stream bool) *Value {
 	if key == "" {
 		key = in.Connection.AccessToken
 	}
-	requireASCIIHeader(in.Connection.APIKey)
-	requireASCIIHeader(in.Connection.AccessToken)
+	requireASCIIHeader(key) // the one credential that goes out (apiKey || accessToken)
 	h.Set("x-api-key", String(key))
 	if beta := in.ClientHeaders["anthropic-beta"]; beta != "" {
 		requireASCIIHeader(beta)
