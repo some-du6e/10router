@@ -57,9 +57,11 @@ type Options struct {
 	Listener net.Listener
 	// OnListening is called with the public address once it accepts (tests).
 	OnListening func(addr string)
-	// Transport to the app server (tests).
-	Transport http.RoundTripper
 }
+
+// MaxHeaderBytes is Node's default --max-http-header-size: a client's
+// headers may take no more memory here than they could in Node.
+const MaxHeaderBytes = 16 << 10
 
 // Gateway is the public-facing handler.
 type Gateway struct {
@@ -79,14 +81,11 @@ type Gateway struct {
 }
 
 // New builds the handler for cfg.
-func New(cfg config.Config, logger *log.Logger, version string, transport http.RoundTripper) *Gateway {
+func New(cfg config.Config, logger *log.Logger, version string) *Gateway {
 	appAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.AppPort))
 	listenIPv6 := false
 	if a, err := netip.ParseAddr(cfg.ListenHost); err == nil && a.Is6() && !a.Is4In6() {
 		listenIPv6 = true
-	}
-	if transport == nil {
-		transport = proxy.NewTransport(config.AppIdleConnTimeout)
 	}
 	return &Gateway{
 		cfg:        cfg,
@@ -102,14 +101,21 @@ func New(cfg config.Config, logger *log.Logger, version string, transport http.R
 			PeerToken:      cfg.PeerToken,
 			RequestTimeout: cfg.RequestTimeout,
 			ListenIPv6:     listenIPv6,
-			Transport:      transport,
+			Transport:      proxy.NewTransport(config.AppIdleConnTimeout),
 			Logger:         logger,
 		}),
 	}
 }
 
-// Tracker exposes the drain tracker (tests).
-func (g *Gateway) Tracker() *drain.Tracker { return g.tracker }
+// listenNetwork is "tcp4" for an IPv4 address such as the default 0.0.0.0:
+// Go's "tcp" on 0.0.0.0 opens a dual-stack socket, where Node listened on
+// IPv4 only.
+func listenNetwork(host string) string {
+	if a, err := netip.ParseAddr(host); err == nil && a.Is4() {
+		return "tcp4"
+	}
+	return "tcp"
+}
 
 // ServeHTTP serves the health endpoint and relays everything else.
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -203,19 +209,25 @@ func Run(o Options) int {
 	if len(o.Command) > 0 && cfg.PeerToken == "" {
 		cfg.PeerToken = randomToken()
 	}
+	// Without a token Node would take every request for its loopback peer,
+	// so every remote client sending Host: localhost would be local.
+	if len(cfg.PeerToken) < config.MinPeerTokenLength {
+		logger.Printf("[Gateway] GATEWAY_PEER_TOKEN must be at least %d characters (it proves the client's address to the app server); not starting", config.MinPeerTokenLength)
+		return 2
+	}
 	if cfg.Mode == config.ModeNative {
 		logger.Printf("[Gateway] GATEWAY_MODE=native: this build serves no route natively yet; every request goes to the app server")
 	}
+	// How long the app server may take to stop: its drain, then its listeners.
+	childDeadline := cfg.DrainTimeout + ListenerWait + time.Second
 
 	var child *supervisor.Child
 	if len(o.Command) > 0 {
 		env := supervisor.Env(o.Env, map[string]string{
-			"PORT":                strconv.Itoa(cfg.AppPort),
-			"HOSTNAME":            "127.0.0.1",
-			"KEEP_ALIVE_TIMEOUT":  strconv.FormatInt(config.AppKeepAliveTimeout.Milliseconds(), 10),
-			"GATEWAY_PEER_TOKEN":  cfg.PeerToken,
-			"GATEWAY_APP_PORT":    strconv.Itoa(cfg.AppPort),
-			"GATEWAY_PUBLIC_PORT": strconv.Itoa(cfg.ListenPort),
+			"PORT":               strconv.Itoa(cfg.AppPort),
+			"HOSTNAME":           "127.0.0.1",
+			"KEEP_ALIVE_TIMEOUT": strconv.FormatInt(config.AppKeepAliveTimeout.Milliseconds(), 10),
+			"GATEWAY_PEER_TOKEN": cfg.PeerToken,
 		})
 		var err error
 		child, err = supervisor.Start(o.Command, env)
@@ -226,12 +238,12 @@ func Run(o Options) int {
 		logger.Printf("[Gateway] started the app server (pid %d) on 127.0.0.1:%d", child.Pid(), cfg.AppPort)
 	}
 
-	g := New(cfg, logger, o.Version, o.Transport)
+	g := New(cfg, logger, o.Version)
 
 	// Listen only once the app server accepts, so a client during boot gets
 	// a refused connection, as it does today, instead of a 502.
 	if child != nil {
-		if code, stop := waitForApp(g.appAddr, child, o.Signals, logger, cfg); stop {
+		if code, stop := waitForApp(g.appAddr, child, o.Signals, logger, childDeadline); stop {
 			return code
 		}
 	}
@@ -239,10 +251,10 @@ func Run(o Options) int {
 	ln := o.Listener
 	if ln == nil {
 		var err error
-		ln, err = net.Listen("tcp", net.JoinHostPort(cfg.ListenHost, strconv.Itoa(cfg.ListenPort)))
+		ln, err = net.Listen(listenNetwork(cfg.ListenHost), net.JoinHostPort(cfg.ListenHost, strconv.Itoa(cfg.ListenPort)))
 		if err != nil {
 			logger.Printf("[Gateway] listen: %v", err)
-			stopChild(child, syscall.SIGTERM, cfg.DrainTimeout+ListenerWait+time.Second, logger)
+			stopChild(child, syscall.SIGTERM, childDeadline, logger)
 			return 1
 		}
 	}
@@ -250,6 +262,7 @@ func Run(o Options) int {
 		Handler:           g,
 		ReadHeaderTimeout: cfg.HeadersTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
+		MaxHeaderBytes:    MaxHeaderBytes,
 		ErrorLog:          log.New(logger.Writer(), "[Gateway] http: ", 0),
 	}
 	serveErr := make(chan error, 1)
@@ -277,17 +290,17 @@ func Run(o Options) int {
 				continue
 			}
 			logger.Printf("[Gateway] serve: %v", err)
-			stopChild(child, syscall.SIGTERM, cfg.DrainTimeout+ListenerWait+time.Second, logger)
+			stopChild(child, syscall.SIGTERM, childDeadline, logger)
 			return 1
 		case sig := <-o.Signals:
-			return g.shutdown(sig, srv, child, o.Signals)
+			return g.shutdown(sig, srv, child, o.Signals, childDeadline)
 		}
 	}
 }
 
 // waitForApp blocks until the app server accepts a connection. stop is true
 // when Run should return code instead (the child exited, or a signal came).
-func waitForApp(addr string, child *supervisor.Child, signals <-chan os.Signal, logger *log.Logger, cfg config.Config) (code int, stop bool) {
+func waitForApp(addr string, child *supervisor.Child, signals <-chan os.Signal, logger *log.Logger, childDeadline time.Duration) (code int, stop bool) {
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -303,7 +316,7 @@ func waitForApp(addr string, child *supervisor.Child, signals <-chan os.Signal, 
 		case sig := <-signals:
 			logger.Printf("[Gateway] %s before the app server listened: stopping it", sigName(sig))
 			child.Signal(sig)
-			return waitChild(child, cfg.DrainTimeout+ListenerWait+time.Second, logger), true
+			return waitChild(child, childDeadline, logger), true
 		case <-tick.C:
 		}
 	}
@@ -339,7 +352,7 @@ func stopChild(child *supervisor.Child, sig os.Signal, d time.Duration, logger *
 // app server, and waits until both the gateway's model requests and the app
 // server are done. A repeat within DuplicateSignalWindow is ignored; a later
 // one exits at once.
-func (g *Gateway) shutdown(sig os.Signal, srv *http.Server, child *supervisor.Child, signals <-chan os.Signal) int {
+func (g *Gateway) shutdown(sig os.Signal, srv *http.Server, child *supervisor.Child, signals <-chan os.Signal, childDeadline time.Duration) int {
 	logger := g.logger
 	timeout := g.cfg.DrainTimeout
 	if timeout <= 0 {
@@ -378,10 +391,11 @@ func (g *Gateway) shutdown(sig os.Signal, srv *http.Server, child *supervisor.Ch
 	// The app server's own deadline comes first, then its listeners get theirs.
 	limit := timeout
 	if child != nil {
-		limit += ListenerWait + time.Second
+		limit = childDeadline
 	}
 	deadline := time.NewTimer(limit)
 	defer deadline.Stop()
+	// No model request is admitted after Begin, so once idle stays idle.
 	gatewayIdle := false
 	var flush <-chan time.Time
 
@@ -408,10 +422,6 @@ func (g *Gateway) shutdown(sig os.Signal, srv *http.Server, child *supervisor.Ch
 		case <-idle:
 			gatewayIdle, idle = true, nil
 		case <-flush:
-			if g.tracker.Inflight() > 0 {
-				flush = nil
-				continue
-			}
 			logger.Printf("[Gateway] drained in %ds, exiting", seconds(time.Since(startedAt)))
 			_ = srv.Close()
 			if child != nil {

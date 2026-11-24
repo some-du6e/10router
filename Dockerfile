@@ -3,13 +3,18 @@ ARG NODE_IMAGE=node:22-alpine
 ARG GO_IMAGE=golang:1.24-alpine
 
 # The Go gateway (gateway/, docs/GO_GATEWAY.md). A static binary: the runner is
-# Alpine with no cgo. It only runs when GATEWAY_MODE=proxy or native.
-FROM ${GO_IMAGE} AS gateway
+# Alpine with no cgo. It only runs when GATEWAY_MODE=proxy or native. Built on
+# the build machine's platform and cross-compiled, so a multi-arch build
+# doesn't run the Go compiler under emulation.
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS gateway
 WORKDIR /src
 COPY gateway/ ./
 ARG SOURCE_COMMIT
+ARG TARGETOS
+ARG TARGETARCH
 RUN --mount=type=cache,target=/root/.cache/go-build \
-  CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${SOURCE_COMMIT:-dev}" \
+  CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+  go build -trimpath -ldflags "-s -w -X main.version=${SOURCE_COMMIT:-dev}" \
   -o /out/10router-gateway ./cmd/10router-gateway
 
 FROM ${NODE_IMAGE} AS base

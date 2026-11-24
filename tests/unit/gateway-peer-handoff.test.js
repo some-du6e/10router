@@ -89,22 +89,37 @@ describe("custom-server behind the Go gateway", () => {
     }
   });
 
-  it("does not trust a wrong token", async () => {
-    const h = await get(handed("203.0.113.7", { "x-9r-gw-token": "e".repeat(64) }));
-    // The socket (loopback) is used, and the forged headers are gone.
+  // A relayed request whose peer can't be proven is nobody: never this
+  // machine, even with a loopback Host and no forwarding header.
+  for (const [what, extra] of [
+    ["a wrong token", { "x-9r-gw-token": "e".repeat(64) }],
+    ["a token of the wrong length", { "x-9r-gw-token": TOKEN.slice(1) }],
+    ["no token", { "x-9r-gw-token": undefined }],
+    ["a peer that is not an address", { "x-9r-gw-peer-ip": "not-an-ip" }],
+  ]) {
+    it(`fails closed on ${what}`, async () => {
+      const headers = handed("127.0.0.1", extra);
+      for (const [k, v] of Object.entries(headers)) if (v === undefined) delete headers[k];
+      const h = await get(headers);
+      expect(h["x-9r-real-ip"]).toBe("unknown");
+      expect(h["x-9r-via-proxy"]).toBe("1");
+      for (const name of ["x-9r-gw-token", "x-9r-gw-peer-ip", "x-9r-gw-peer-port"]) expect(h[name]).toBeUndefined();
+    });
+  }
+
+  it("leaves a loopback request with no gateway headers local (the bridge, self-calls)", async () => {
+    const h = await get();
     expect(h["x-9r-real-ip"]).toBe("127.0.0.1");
-    expect(h["x-9r-gw-peer-ip"]).toBeUndefined();
-    expect(h["x-9r-gw-token"]).toBeUndefined();
+    expect(h["x-9r-via-proxy"]).toBeUndefined();
   });
 
-  it("does not trust a token of the wrong length", async () => {
-    const h = await get(handed("203.0.113.7", { "x-9r-gw-token": TOKEN.slice(1) }));
-    expect(h["x-9r-real-ip"]).toBe("127.0.0.1");
-  });
-
-  it("does not take a handed peer that is not an address", async () => {
-    const h = await get(handed("not-an-ip"));
-    expect(h["x-9r-real-ip"]).toBe("127.0.0.1");
-    expect(h["x-9r-gw-peer-ip"]).toBeUndefined();
+  it("hands the Codex WebSocket bridge the same peer", () => {
+    const { upgradePeerIp } = require(SERVER_PATH).__test__;
+    const req = (headers) => ({ headers: { ...headers } });
+    expect(upgradePeerIp(req(handed("203.0.113.7")), { remoteAddress: "127.0.0.1" })).toBe("203.0.113.7");
+    expect(upgradePeerIp(req(handed("203.0.113.7", { "x-9r-gw-token": "e".repeat(64) })), { remoteAddress: "127.0.0.1" })).toBe("unknown");
+    expect(upgradePeerIp(req({}), { remoteAddress: "127.0.0.1" })).toBe("127.0.0.1");
+    // Only a loopback socket can hand a peer over; a remote one is itself.
+    expect(upgradePeerIp(req(handed("127.0.0.1")), { remoteAddress: "198.51.100.20" })).toBe("198.51.100.20");
   });
 });

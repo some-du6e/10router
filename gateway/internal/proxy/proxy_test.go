@@ -157,7 +157,7 @@ func TestClientAbortReachesUpstream(t *testing.T) {
 		close(started)
 		<-r.Context().Done()
 		close(upstreamGone)
-	}), Options{})
+	}), Options{RequestTimeout: 30 * time.Second})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, "POST", s.front.URL+"/v1/messages", strings.NewReader("{}"))
@@ -197,7 +197,10 @@ func TestWebSocketUpgradePassesThrough(t *testing.T) {
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-	fmt.Fprintf(conn, "GET /backend-api/codex/responses HTTP/1.1\r\nHost: router.example.test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+	// The first frame goes out with the handshake, before the 101, as Codex
+	// sends its response.create.
+	early := "an early frame"
+	fmt.Fprintf(conn, "GET /backend-api/codex/responses HTTP/1.1\r\nHost: router.example.test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n%s", early)
 	br := bufio.NewReader(conn)
 	res, err := http.ReadResponse(br, nil)
 	if err != nil {
@@ -209,11 +212,39 @@ func TestWebSocketUpgradePassesThrough(t *testing.T) {
 	if got := sawUpgrade.Load().(string); got != "websocket|Upgrade|dGhlIHNhbXBsZSBub25jZQ==|router.example.test" {
 		t.Fatalf("upstream saw %q", got)
 	}
+	echo := make([]byte, len(early))
+	if _, err := io.ReadFull(br, echo); err != nil || string(echo) != early {
+		t.Fatalf("early frame echo %q, %v", echo, err)
+	}
 	frame := "a frame of bytes, both ways"
 	fmt.Fprint(conn, frame)
-	echo := make([]byte, len(frame))
+	echo = make([]byte, len(frame))
 	if _, err := io.ReadFull(br, echo); err != nil || string(echo) != frame {
 		t.Fatalf("echo %q, %v", echo, err)
+	}
+}
+
+func TestQueryAndConnectionListedForwardingHeadersKept(t *testing.T) {
+	seen := make(chan *http.Request, 1)
+	s := newStack(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Clone(context.Background())
+	}), Options{})
+	conn, err := net.Dial("tcp", s.front.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	fmt.Fprintf(conn, "GET /v1beta/models/x:generateContent?b=2&q=50%%&a=1;c HTTP/1.1\r\nHost: localhost\r\nConnection: x-real-ip, cf-connecting-ip\r\nX-Real-IP: 198.51.100.4\r\nCF-Connecting-IP: 198.51.100.5\r\n\r\n")
+	if _, err := http.ReadResponse(bufio.NewReader(conn), nil); err != nil {
+		t.Fatal(err)
+	}
+	r := <-seen
+	if r.URL.RawQuery != "b=2&q=50%&a=1;c" {
+		t.Errorf("query %q", r.URL.RawQuery)
+	}
+	if r.Header.Get("X-Real-Ip") != "198.51.100.4" || r.Header.Get("Cf-Connecting-Ip") != "198.51.100.5" {
+		t.Errorf("forwarding headers a client listed in Connection were dropped: %v", r.Header)
 	}
 }
 
@@ -234,7 +265,8 @@ func TestHeadersAndPeer(t *testing.T) {
 	req.Header.Set("Forwarded", "for=198.51.100.1")
 	req.Header.Set("X-Real-Ip", "198.51.100.2")
 	req.Header.Set("X-9r-Gw-Token", "forged")
-	req.Header.Set("X-9r-Gw-Peer-Ip", "127.0.0.1")
+	req.Header.Set("X-9r-Gw-Peer-Ip", "203.0.113.1")
+	req.Header.Set("X-9r-Gw-Peer-Port", "1")
 	req.Header.Set("X-9r-Real-Ip", "127.0.0.1")
 	req.Header.Set("Authorization", "Bearer sk-client")
 	req.Header.Set("Anthropic-Beta", "a,b")
@@ -279,8 +311,8 @@ func TestHeadersAndPeer(t *testing.T) {
 			t.Errorf("upstream %s = %q, want %q", name, got, want)
 		}
 	}
-	if r.Header.Get("X-9r-Gw-Peer-Port") == "" {
-		t.Error("no peer port")
+	if p := r.Header.Get("X-9r-Gw-Peer-Port"); p == "" || p == "1" || len(r.Header.Values("X-9r-Gw-Peer-Ip")) != 1 {
+		t.Errorf("peer port %q, peer ip %v: the client's copies survived", p, r.Header.Values("X-9r-Gw-Peer-Ip"))
 	}
 	if res.Header.Get("X-Kept") != "yes" || res.Header.Get("Keep-Alive") != "" {
 		t.Errorf("response headers %v", res.Header)

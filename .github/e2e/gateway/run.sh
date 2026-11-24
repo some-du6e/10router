@@ -58,33 +58,38 @@ legs() { # legs <leg> [GATEWAY_MODE]
   start "$leg" "$mode" || { fail=1; echo "::endgroup::"; return; }
   echo "::endgroup::"
   # Next renames the node process "next-server (vX)".
-  docker exec gw-e2e ps -o pid,ppid,args > "$o.ps" 2>&1
+  docker exec gw-e2e ps -o user,pid,ppid,args > "$o.ps" 2>&1
   show "$leg: processes" "$o.ps"
+  # docker exec runs ps itself as root.
+  check "$leg: everything runs as the node user" "[ -z \"\$(awk 'NR>1 && \$4!=\"ps\" && \$1!=\"node\"' '$o.ps')\" ]"
   if [ -n "$mode" ]; then
     check "$leg: the gateway is PID 1 and runs node as its child" \
-      "awk '\$1==1' '$o.ps' | grep -q 10router-gateway && awk '\$1!=1 && \$2==1' '$o.ps' | grep -q next-server"
+      "awk '\$2==1' '$o.ps' | grep -q 10router-gateway && awk '\$2!=1 && \$3==1' '$o.ps' | grep -q next-server"
     check "$leg: health endpoint answers" "curl -sf $LOCAL/_gateway/health | grep -q '\"status\":\"ok\"'"
     check "$leg: Node's loopback port is not reachable from outside" "[ \"\$(code_of http://$HOST_IP:20129/v1/models)\" = 000 ]"
   else
-    check "$leg: node is PID 1, no gateway running" "awk '\$1==1' '$o.ps' | grep -q next-server && ! grep -q 10router-gateway '$o.ps'"
+    check "$leg: node is PID 1, no gateway running" "awk '\$2==1' '$o.ps' | grep -q next-server && ! grep -q 10router-gateway '$o.ps'"
     check "$leg: no gateway health endpoint" "! curl -s $LOCAL/_gateway/health | grep -q '\"mode\"'"
   fi
 
-  # Who the request comes from.
+  # Who the request comes from. Behind the gateway Node's own peer is always
+  # loopback, so "Host: localhost" with no forwarding header is what a remote
+  # client would send to pass as local if the handoff were broken.
   check "$leg: local client needs no key" "[ \"\$(code_of $LOCAL/v1/models)\" = 200 ]"
   check "$leg: remote client without a key is refused" "[ \"\$(code_of $REMOTE/v1/models)\" = 401 ]"
   check "$leg: remote client with the key is served" "[ \"\$(code_of -H 'x-api-key: $E2E_API_KEY' $REMOTE/v1/models)\" = 200 ]"
+  check "$leg: remote client can't pass as local with Host: localhost" "[ \"\$(code_of -H 'Host: localhost' $REMOTE/v1/models)\" = 401 ]"
+  check "$leg: remote client can't pass as local with forged gateway headers" \
+    "[ \"\$(code_of -H 'Host: localhost' -H 'X-9r-Gw-Peer-Ip: 127.0.0.1' -H 'X-9r-Gw-Token: forged' $REMOTE/v1/models)\" = 401 ]"
   check "$leg: remote client can't claim loopback with forwarding headers" \
     "[ \"\$(code_of -H 'X-Forwarded-For: 127.0.0.1' -H 'X-Real-IP: 127.0.0.1' -H 'Host: localhost' $REMOTE/v1/models)\" = 401 ]"
 
   # The hot-path shape: Anthropic messages, streamed.
-  node "$HERE/stream-probe.mjs" "$REMOTE/v1/messages" \
+  RAW_OUT="$o.stream.raw" node "$HERE/stream-probe.mjs" "$REMOTE/v1/messages" \
     '{"model":"mock/fast","stream":true,"max_tokens":64,"messages":[{"role":"user","content":"ping"}]}' "$E2E_API_KEY" > "$o.stream.json"
   show "$leg: /v1/messages stream" "$o.stream.json"
   check "$leg: /v1/messages streams pong to message_stop" \
     "[ \"\$(json status < '$o.stream.json')\" = 200 ] && json contentType < '$o.stream.json' | grep -q text/event-stream && [ \"\$(json text < '$o.stream.json')\" = pong ] && [ \"\$(json done < '$o.stream.json')\" = true ]"
-  curl -s -N --max-time 30 -X POST "$REMOTE/v1/messages" -H 'content-type: application/json' -H "x-api-key: $E2E_API_KEY" -H 'anthropic-version: 2023-06-01' \
-    -d '{"model":"mock/fast","stream":true,"max_tokens":64,"messages":[{"role":"user","content":"ping"}]}' > "$o.stream.raw"
   # The stream with its generated ids and times taken out, for the legs to compare.
   sed -E 's/"(id|created|created_at)":("[^"]*"|[0-9]+)/"\1":_/g; s/msg_[A-Za-z0-9_-]+/msg_/g' "$o.stream.raw" > "$o.stream.norm"
 
@@ -92,8 +97,17 @@ legs() { # legs <leg> [GATEWAY_MODE]
   node "$HERE/stream-probe.mjs" "$REMOTE/v1/chat/completions" \
     '{"model":"mock/drip6","stream":true,"messages":[{"role":"user","content":"ping"}]}' "$E2E_API_KEY" > "$o.drip.json"
   show "$leg: drip stream arrivals" "$o.drip.json"
-  check "$leg: six chunks, each arriving on its own (>= 250 ms apart)" \
-    "node -e 'const o=JSON.parse(require(\"fs\").readFileSync(\"$o.drip.json\",\"utf8\"));const a=o.arrivals;process.exit(o.status===200&&a.length===6&&a.every((t,i)=>i===0||t-a[i-1]>=0.25)?0:1)'"
+  # Chunk i is sent 0.4 s x i after the first; buffered, they'd arrive together.
+  check "$leg: six chunks, each arriving when it is sent (400 ms apart, +-200 ms)" \
+    "node -e 'const o=JSON.parse(require(\"fs\").readFileSync(\"$o.drip.json\",\"utf8\"));const a=o.arrivals;process.exit(o.status===200&&a.length===6&&a.every((t,i)=>Math.abs(t-a[0]-0.4*i)<=0.2)?0:1)'"
+
+  # A client that hangs up mid-stream stops the upstream request (a model id
+  # per leg, since the legs share the mock's log).
+  local abort_model="drip3${#leg}"
+  curl -s -N --max-time 1 -X POST "$REMOTE/v1/chat/completions" -H 'content-type: application/json' -H "x-api-key: $E2E_API_KEY" \
+    -d "{\"model\":\"mock/$abort_model\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}" > /dev/null
+  sleep 3
+  check "$leg: a client hang-up reaches the upstream" "grep '\"model\":\"$abort_model\"' '$OUT/mock.log' | grep -q closed-by-client"
 
   # A 4 MB body.
   node "$HERE/stream-probe.mjs" "$REMOTE/v1/chat/completions" "@$OUT/big.json" "$E2E_API_KEY" > "$o.big.json"
@@ -112,6 +126,9 @@ legs() { # legs <leg> [GATEWAY_MODE]
   node "$HERE/ws-probe.mjs" "$REMOTE" mock/fast > "$o.ws-nokey.json"
   show "$leg: WebSocket (remote, no key)" "$o.ws-nokey.json"
   check "$leg: WebSocket turn from a remote client without a key is not served" "! json text < '$o.ws-nokey.json' | grep -q pong"
+  WS_HOST=localhost node "$HERE/ws-probe.mjs" "$REMOTE" mock/fast > "$o.ws-spoof.json"
+  show "$leg: WebSocket (remote, no key, Host: localhost)" "$o.ws-spoof.json"
+  check "$leg: WebSocket turn from a remote client passing as local is not served" "! json text < '$o.ws-spoof.json' | grep -q pong"
 
   # The dashboard (the legs must agree; compared at the end).
   echo "$(code_of "$REMOTE/dashboard") $(code_of "$REMOTE/login") $(code_of "$LOCAL/dashboard")" > "$o.dashboard"
@@ -136,7 +153,8 @@ legs() { # legs <leg> [GATEWAY_MODE]
   show "$leg: shutdown lines" <(grep -E '\[(Shutdown|Gateway|Exit)\]' "$o.log")
   check "$leg: the in-flight stream finished across the stop" \
     "node -e 'const o=JSON.parse(require(\"fs\").readFileSync(\"$o.drain.json\",\"utf8\"));process.exit(o.status===200&&o.arrivals.length===20&&o.done?0:1)'"
-  check "$leg: a request during the drain is not served ($(cat "$o.during-drain"))" "! grep -qx 200 '$o.during-drain'"
+  # Refused (000) or the drain's 503; a 502 would mean a request relayed to a stopped Node.
+  check "$leg: a request during the drain is refused ($(cat "$o.during-drain"))" "grep -Eqx '000|503' '$o.during-drain'"
   check "$leg: the container exited 0 after draining (${took}s)" "grep -qx 0 '$o.exit' && [ $took -lt 60 ]"
   check "$leg: Node drained" "grep -q '\[Shutdown\] drained' '$o.log'"
   if [ -n "$mode" ]; then
@@ -148,10 +166,8 @@ legs() { # legs <leg> [GATEWAY_MODE]
 legs off
 legs proxy proxy
 
-check "both legs stream the same bytes (ids and times aside)" "cmp -s '$OUT/off.stream.norm' '$OUT/proxy.stream.norm'"
+check "both legs stream the same bytes (ids and times aside)" \
+  "cmp -s '$OUT/off.stream.norm' '$OUT/proxy.stream.norm' || { diff '$OUT/off.stream.norm' '$OUT/proxy.stream.norm' | head -40; false; }"
 check "both legs answer the dashboard the same ($(cat "$OUT/off.dashboard") / $(cat "$OUT/proxy.dashboard"))" "cmp -s '$OUT/off.dashboard' '$OUT/proxy.dashboard'"
-if ! cmp -s "$OUT/off.stream.norm" "$OUT/proxy.stream.norm"; then
-  diff "$OUT/off.stream.norm" "$OUT/proxy.stream.norm" | head -40
-fi
 show "mock upstream log" "$OUT/mock.log"
 exit "$fail"

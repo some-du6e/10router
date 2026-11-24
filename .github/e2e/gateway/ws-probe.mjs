@@ -17,6 +17,8 @@ const headers = {
   "sec-websocket-key": crypto.randomBytes(16).toString("base64"),
 };
 if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+// WS_HOST sends another Host than the URL's (a client claiming to be local).
+if (process.env.WS_HOST) headers.host = process.env.WS_HOST;
 const out = { status: null, events: [], text: "" };
 const finish = () => {
   console.log(JSON.stringify(out));

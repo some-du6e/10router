@@ -70,6 +70,7 @@ func baseConfig(appPort int) config.Config {
 		RequestTimeout: config.DefaultRequestTimeout,
 		HeadersTimeout: config.DefaultHeadersTimeout,
 		IdleTimeout:    config.DefaultKeepAliveTimeout,
+		PeerToken:      strings.Repeat("t", config.MinPeerTokenLength),
 	}
 }
 
@@ -233,27 +234,74 @@ func TestDrainOffStopsAtOnce(t *testing.T) {
 	}
 }
 
-func TestDashboardStreamsDontHoldTheDrain(t *testing.T) {
+func TestDashboardStreamsCloseWhenTheDrainStarts(t *testing.T) {
 	app, started, release := heldApp(t)
-	defer close(release)
 	g := startUnsupervised(t, baseConfig(portOf(t, app.URL)))
-	res, err := http.Get(g.url + "/api/usage/stream")
+	stream, err := http.Get(g.url + "/api/usage/stream")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer stream.Body.Close()
+	<-started
+	// A model request keeps the drain open meanwhile.
+	model, err := http.Post(g.url+"/v1/messages", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer model.Body.Close()
 	<-started
 	g.signals <- syscall.SIGTERM
-	if code := g.waitExit(t, 2*time.Second); code != 0 {
+	ended := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, stream.Body)
+		close(ended)
+	}()
+	select {
+	case <-ended:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the dashboard stream stayed open during the drain")
+	}
+	select {
+	case code := <-g.exit:
+		t.Fatalf("exited with %d while a model request was in flight", code)
+	default:
+	}
+	close(release)
+	_, _ = io.Copy(io.Discard, model.Body)
+	if code := g.waitExit(t, 3*time.Second); code != 0 {
 		t.Fatalf("exit code %d", code)
+	}
+}
+
+func TestRefusesAShortPeerToken(t *testing.T) {
+	cfg := baseConfig(freePort(t))
+	cfg.PeerToken = "short"
+	logs := &lockedBuffer{}
+	if code := Run(Options{Config: cfg, Logger: log.New(logs, "", 0)}); code != 2 {
+		t.Fatalf("exit code %d", code)
+	}
+	cfg.PeerToken = ""
+	if code := Run(Options{Config: cfg, Logger: log.New(logs, "", 0)}); code != 2 {
+		t.Fatalf("no token, no command: exit code %d", code)
+	}
+	if !strings.Contains(logs.String(), "GATEWAY_PEER_TOKEN must be at least 32 characters") {
+		t.Errorf("log:\n%s", logs.String())
+	}
+}
+
+func TestListenNetwork(t *testing.T) {
+	for host, want := range map[string]string{"0.0.0.0": "tcp4", "127.0.0.1": "tcp4", "::": "tcp", "localhost": "tcp", "": "tcp"} {
+		if got := listenNetwork(host); got != want {
+			t.Errorf("listenNetwork(%q) = %q, want %q", host, got, want)
+		}
 	}
 }
 
 func TestRequestsDuringTheDrainGet503(t *testing.T) {
 	app, _, release := heldApp(t)
 	defer close(release)
-	g := New(baseConfig(portOf(t, app.URL)), log.New(io.Discard, "", 0), "test", nil)
-	g.Tracker().Begin()
+	g := New(baseConfig(portOf(t, app.URL)), log.New(io.Discard, "", 0), "test")
+	g.tracker.Begin()
 	w := httptest.NewRecorder()
 	g.ServeHTTP(w, httptest.NewRequest("POST", "/v1/messages", strings.NewReader("{}")))
 	if w.Code != 503 || w.Header().Get("Retry-After") != "5" || !strings.Contains(w.Body.String(), "server_draining") {
@@ -266,7 +314,7 @@ func TestHealth(t *testing.T) {
 		t.Error("the health check reached the app")
 	}))
 	defer app.Close()
-	g := New(baseConfig(portOf(t, app.URL)), log.New(io.Discard, "", 0), "test", nil)
+	g := New(baseConfig(portOf(t, app.URL)), log.New(io.Discard, "", 0), "test")
 
 	check := func(remote string) (int, map[string]any) {
 		r := httptest.NewRequest("GET", HealthPath, nil)
@@ -286,13 +334,13 @@ func TestHealth(t *testing.T) {
 	if code != 200 || body["status"] != "ok" || body["version"] != nil || body["inflight"] != nil {
 		t.Fatalf("remote: %d %v", code, body)
 	}
-	g.Tracker().Begin()
+	g.tracker.Begin()
 	if code, body = check("127.0.0.1:5000"); code != 503 || body["status"] != "draining" {
 		t.Fatalf("draining: %d %v", code, body)
 	}
 
 	app.Close()
-	down := New(baseConfig(portOf(t, app.URL)), log.New(io.Discard, "", 0), "test", nil)
+	down := New(baseConfig(portOf(t, app.URL)), log.New(io.Discard, "", 0), "test")
 	r := httptest.NewRequest("GET", HealthPath, nil)
 	w := httptest.NewRecorder()
 	down.ServeHTTP(w, r)
@@ -312,6 +360,11 @@ func TestHelperChild(t *testing.T) {
 	if os.Getenv(childEnv) != "1" {
 		t.Skip("helper process")
 	}
+	if os.Getenv("GATEWAY_TEST_CHILD_EARLY_EXIT") != "" {
+		// Dies at boot, before it listens.
+		os.Exit(4)
+	}
+	exitCode, _ := strconv.Atoi(os.Getenv("GATEWAY_TEST_CHILD_EXIT"))
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
 	var wg sync.WaitGroup
@@ -348,20 +401,22 @@ func TestHelperChild(t *testing.T) {
 	fmt.Fprintln(os.Stderr, "[child] draining")
 	_ = srv.Shutdown(context.Background())
 	wg.Wait()
-	os.Exit(0)
+	os.Exit(exitCode)
 }
 
-func startSupervised(t *testing.T) (*running, config.Config) {
+func startSupervised(t *testing.T, env ...string) (*running, config.Config) {
 	t.Helper()
 	cfg := baseConfig(freePort(t))
 	cfg.ListenPort = freePort(t)
+	// The gateway makes its own when it starts the app server.
+	cfg.PeerToken = ""
 	r := &running{signals: make(chan os.Signal, 4), exit: make(chan int, 1), logs: &lockedBuffer{}}
 	listening := make(chan string, 1)
 	go func() {
 		r.exit <- Run(Options{
 			Config:      cfg,
 			Command:     []string{os.Args[0], "-test.run=^TestHelperChild$"},
-			Env:         append(os.Environ(), childEnv+"=1", "PORT=1", "HOSTNAME=0.0.0.0"),
+			Env:         append(append(os.Environ(), childEnv+"=1", "PORT=1", "HOSTNAME=0.0.0.0"), env...),
 			Signals:     r.signals,
 			Logger:      log.New(r.logs, "", 0),
 			OnListening: func(addr string) { listening <- addr },
@@ -414,6 +469,36 @@ func TestSupervisedChildGetsItsPortAndPeer(t *testing.T) {
 	}
 	if !strings.Contains(g.logs.String(), "the app server exited with code 0") {
 		t.Errorf("log:\n%s", g.logs.String())
+	}
+}
+
+func TestSupervisedExitCodeIsTheAppServers(t *testing.T) {
+	g, _ := startSupervised(t, "GATEWAY_TEST_CHILD_EXIT=5")
+	g.signals <- syscall.SIGTERM
+	if code := g.waitExit(t, 10*time.Second); code != 5 {
+		t.Fatalf("exit code %d, want the child's 5; log:\n%s", code, g.logs.String())
+	}
+}
+
+func TestSupervisedChildDyingAtBoot(t *testing.T) {
+	cfg := baseConfig(freePort(t))
+	cfg.ListenPort = freePort(t)
+	cfg.PeerToken = ""
+	logs := &lockedBuffer{}
+	code := Run(Options{
+		Config:  cfg,
+		Command: []string{os.Args[0], "-test.run=^TestHelperChild$"},
+		Env:     append(os.Environ(), childEnv+"=1", "GATEWAY_TEST_CHILD_EARLY_EXIT=1"),
+		Signals: make(chan os.Signal),
+		Logger:  log.New(logs, "", 0),
+	})
+	if code != 4 || !strings.Contains(logs.String(), "before it listened") {
+		t.Fatalf("exit code %d; log:\n%s", code, logs.String())
+	}
+	// It never listened on the public port.
+	if conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.ListenPort))); err == nil {
+		conn.Close()
+		t.Fatal("the public port is open")
 	}
 }
 

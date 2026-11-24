@@ -134,15 +134,16 @@ func (t *Tracker) notify() {
 // It returns false once the drain has started, and the caller answers with
 // Reject. Otherwise it returns the request to serve (with a context the drain
 // cancels, for a long-lived stream) and a done func to call when it ends.
-// Upgrades are admitted without being counted: a WebSocket turn holds the app
-// server's own drain, and the gateway waits for that process.
+// WebSocket upgrades are admitted without being counted: a WebSocket turn
+// holds the app server's own drain, and the gateway waits for that process.
+// (An h2c upgrade is served as a plain request, so it counts like one.)
 func (t *Tracker) Admit(r *http.Request) (*http.Request, func(), bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.draining {
 		return r, func() {}, false
 	}
-	if r.Header.Get("Upgrade") != "" {
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 		return r, func() {}, true
 	}
 	target := r.RequestURI

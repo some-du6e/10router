@@ -55,20 +55,31 @@ func TestLoadDefaultsMatchNode(t *testing.T) {
 func TestLoad(t *testing.T) {
 	c := Load(env(map[string]string{
 		"GATEWAY_MODE": "proxy", "HOSTNAME": "::", "PORT": "8080", "GATEWAY_APP_PORT": "8080",
-		"KEEP_ALIVE_TIMEOUT": "65000", "SHUTDOWN_DRAIN_TIMEOUT_MS": "off", "GATEWAY_REQUEST_TIMEOUT_MS": "0",
-		"TRUST_PROXY": "10.0.0.0/8",
+		"KEEP_ALIVE_TIMEOUT": "65000", "SHUTDOWN_DRAIN_TIMEOUT_MS": "off", "TRUST_PROXY": "10.0.0.0/8",
 	}))
 	if c.Mode != ModeProxy || c.ListenHost != "::" || c.ListenPort != 8080 || c.AppPort != 8081 {
 		t.Errorf("%+v", c)
 	}
-	if c.IdleTimeout != 65*time.Second || c.DrainTimeout != 0 || c.RequestTimeout != 0 || c.TrustProxy != "10.0.0.0/8" {
+	if c.IdleTimeout != 65*time.Second || c.DrainTimeout != 0 || c.TrustProxy != "10.0.0.0/8" {
 		t.Errorf("%+v", c)
 	}
 	if len(c.Warnings) != 1 {
 		t.Errorf("want one warning (the port clash), got %v", c.Warnings)
 	}
 	bad := Load(env(map[string]string{"GATEWAY_MODE": "fast", "PORT": "http", "KEEP_ALIVE_TIMEOUT": "-5"}))
-	if bad.Mode != ModeOff || bad.ListenPort != 20128 || bad.IdleTimeout != 5*time.Second || len(bad.Warnings) != 3 {
+	if bad.Mode != ModeOff || bad.ListenPort != 20128 || bad.IdleTimeout != 5*time.Second || len(bad.Warnings) != 2 {
 		t.Errorf("%+v", bad)
+	}
+}
+
+// Next's standalone server.js: parseInt, and only a positive value counts.
+func TestParseKeepAlive(t *testing.T) {
+	for value, want := range map[string]time.Duration{
+		"": 5 * time.Second, "0": 5 * time.Second, "-5": 5 * time.Second, "abc": 5 * time.Second, "+": 5 * time.Second,
+		"65000": 65 * time.Second, " 30000ms": 30 * time.Second, "+7000": 7 * time.Second, "1.5": time.Millisecond,
+	} {
+		if got := ParseKeepAlive(value); got != want {
+			t.Errorf("ParseKeepAlive(%q) = %v, want %v", value, got, want)
+		}
 	}
 }

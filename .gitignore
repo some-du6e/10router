@@ -56,7 +56,11 @@ docs/*
 !docs/API_KEY_BUDGETS.md
 !docs/MANAGEMENT_KEYS.md
 !docs/MEMORY_ADMISSION.md
+!docs/GO_GATEWAY.md
 test/*
+# go build output inside gateway/
+/gateway/10router-gateway
+/gateway/gateway-bench
 open-sse/test/*
 RM.vn.md
 RM.md

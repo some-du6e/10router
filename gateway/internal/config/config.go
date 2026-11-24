@@ -4,6 +4,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -79,15 +80,15 @@ type Config struct {
 	// Zero means no drain: a signal stops at once.
 	DrainTimeout time.Duration
 	// RequestTimeout bounds how long a client may take to send its request
-	// body (GATEWAY_REQUEST_TIMEOUT_MS; 0 turns it off, as for Node).
+	// body, and HeadersTimeout its headers: Node's defaults, which nothing in
+	// this repo changes (0 turns either off).
 	RequestTimeout time.Duration
-	// HeadersTimeout bounds how long a client may take to send its headers.
 	HeadersTimeout time.Duration
 	// IdleTimeout is the public keep-alive timeout (KEEP_ALIVE_TIMEOUT).
 	IdleTimeout time.Duration
 	// PeerToken proves the gateway's peer headers to the Node server
-	// (GATEWAY_PEER_TOKEN). When the gateway starts Node itself and none is
-	// set, it makes a random one.
+	// (GATEWAY_PEER_TOKEN, at least MinPeerTokenLength characters). When the
+	// gateway starts Node itself and none is set, it makes a random one.
 	PeerToken string
 	// TrustProxy is TRUST_PROXY, read by the client-IP rule.
 	TrustProxy string
@@ -119,9 +120,9 @@ func Load(getenv func(string) string) Config {
 	if warn != "" {
 		c.Warnings = append(c.Warnings, warn)
 	}
-	c.RequestTimeout = c.millis(getenv, "GATEWAY_REQUEST_TIMEOUT_MS", DefaultRequestTimeout)
-	c.HeadersTimeout = c.millis(getenv, "GATEWAY_HEADERS_TIMEOUT_MS", DefaultHeadersTimeout)
-	c.IdleTimeout = c.millis(getenv, "KEEP_ALIVE_TIMEOUT", DefaultKeepAliveTimeout)
+	c.RequestTimeout = DefaultRequestTimeout
+	c.HeadersTimeout = DefaultHeadersTimeout
+	c.IdleTimeout = ParseKeepAlive(getenv("KEEP_ALIVE_TIMEOUT"))
 	c.PeerToken = strings.TrimSpace(getenv("GATEWAY_PEER_TOKEN"))
 	c.TrustProxy = getenv("TRUST_PROXY")
 	return c
@@ -140,15 +141,30 @@ func (c *Config) port(getenv func(string) string, name string, fallback int) int
 	return n
 }
 
-func (c *Config) millis(getenv func(string) string, name string, fallback time.Duration) time.Duration {
-	raw := strings.TrimSpace(getenv(name))
-	if raw == "" {
-		return fallback
+// MinPeerTokenLength is the shortest GATEWAY_PEER_TOKEN custom-server.js
+// accepts. A shorter one would leave Node using its loopback socket for every
+// request, so the gateway refuses to run with one.
+const MinPeerTokenLength = 32
+
+// ParseKeepAlive reads KEEP_ALIVE_TIMEOUT the way Next's standalone server.js
+// does: parseInt (leading digits, "30000ms" is 30000), and anything that isn't
+// a positive number of ms leaves the default.
+func ParseKeepAlive(value string) time.Duration {
+	text := strings.TrimLeft(value, " \t\n\r\v\f")
+	end := 0
+	if end < len(text) && (text[0] == '+' || text[0] == '-') {
+		end++
 	}
-	n, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || n < 0 || n > maxDrainTimeoutMs {
-		c.Warnings = append(c.Warnings, fmt.Sprintf("%s=%q is not a whole number of ms; using %d", name, raw, fallback.Milliseconds()))
-		return fallback
+	start := end
+	for end < len(text) && text[end] >= '0' && text[end] <= '9' {
+		end++
+	}
+	if end == start {
+		return DefaultKeepAliveTimeout
+	}
+	n, err := strconv.ParseInt(text[:end], 10, 64)
+	if err != nil || n <= 0 || n > maxDrainTimeoutMs {
+		return DefaultKeepAliveTimeout
 	}
 	return time.Duration(n) * time.Millisecond
 }
@@ -165,19 +181,12 @@ func ParseDrainTimeout(value string) (time.Duration, string) {
 	case "0", "off", "false":
 		return 0, ""
 	}
-	digits := true
-	for _, r := range text {
-		if r < '0' || r > '9' {
-			digits = false
-			break
-		}
-	}
-	if !digits {
+	n, err := strconv.ParseUint(text, 10, 64)
+	if errors.Is(err, strconv.ErrSyntax) {
 		return DefaultDrainTimeout, fmt.Sprintf("SHUTDOWN_DRAIN_TIMEOUT_MS=%q is not a whole number of ms; using %d", value, DefaultDrainTimeout.Milliseconds())
 	}
-	n, err := strconv.ParseUint(text, 10, 64)
 	if err != nil || n > maxDrainTimeoutMs {
-		// More digits than uint64 holds is past the ceiling too.
+		// Past uint64 (ErrRange) is past the ceiling too.
 		n = maxDrainTimeoutMs
 	}
 	return time.Duration(n) * time.Millisecond, ""

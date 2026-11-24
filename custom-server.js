@@ -501,7 +501,7 @@ function bridgeCodexTurn(request, port, headers, peerIp, send, done, { errorFram
   return req;
 }
 
-function handleCodexUpgrade(req, socket, head, port, peerIp = socket.remoteAddress || "") {
+function handleCodexUpgrade(req, socket, head, port, peerIp) {
   const key = req.headers["sec-websocket-key"];
   if (!key || String(req.headers["sec-websocket-version"] || "") !== "13") {
     socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
@@ -713,17 +713,22 @@ if (GATEWAY_ON && !GATEWAY_TOKEN) {
 const GATEWAY_HEADERS = ["x-9r-gw-token", "x-9r-gw-peer-ip", "x-9r-gw-peer-port"];
 
 // The peer the gateway handed over for this request, or null to use the
-// socket. Removes the gateway's headers either way.
+// socket. Removes the gateway's headers either way. A loopback request with
+// none of them is this machine's own (the Codex bridge's POST, a self-call),
+// as before. One that carries them but can't prove them is a relayed client
+// nobody can place, so it is "unknown": never this machine.
+const UNPROVEN_PEER = { ip: "unknown", port: "" };
 function gatewayPeer(headers, socketIp) {
   if (!GATEWAY_ON) return null;
+  const sent = GATEWAY_HEADERS.some((name) => headers[name] !== undefined);
   const token = headers["x-9r-gw-token"];
   const ip = String(headers["x-9r-gw-peer-ip"] || "");
   const port = String(headers["x-9r-gw-peer-port"] || "");
   for (const name of GATEWAY_HEADERS) delete headers[name];
-  if (!GATEWAY_TOKEN || !isLoopbackHost(socketIp) || typeof token !== "string") return null;
-  const sent = Buffer.from(token);
-  if (sent.length !== GATEWAY_TOKEN.length || !crypto.timingSafeEqual(sent, GATEWAY_TOKEN)) return null;
-  if (!net.isIP(ip)) return null;
+  if (!sent || !isLoopbackHost(socketIp)) return null;
+  if (!GATEWAY_TOKEN || typeof token !== "string" || !net.isIP(ip)) return UNPROVEN_PEER;
+  const given = Buffer.from(token);
+  if (given.length !== GATEWAY_TOKEN.length || !crypto.timingSafeEqual(given, GATEWAY_TOKEN)) return UNPROVEN_PEER;
   return { ip, port };
 }
 
@@ -893,7 +898,7 @@ http.createServer = (...args) => {
   return server;
 };
 
-module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY, drain, isLoopbackHost, isOnThisMachine, clientIpFor, clientKeysFor, isTrustedProxyPeer, isTunnelTraffic } };
+module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY, drain, isLoopbackHost, isOnThisMachine, clientIpFor, clientKeysFor, isTrustedProxyPeer, isTunnelTraffic, upgradePeerIp } };
 
 if (require.main === module) {
   // Before the app loads: its own signal listeners must not see SIGTERM first.

@@ -86,6 +86,13 @@ func TestTrackerCountsModelTrafficOnly(t *testing.T) {
 	if tr.Inflight() != 1 {
 		t.Fatalf("inflight %d, want 1", tr.Inflight())
 	}
+	h2c := request("/v1/messages")
+	h2c.Header.Set("Upgrade", "h2c")
+	_, doneH2C, _ := tr.Admit(h2c)
+	if tr.Inflight() != 2 {
+		t.Fatalf("an h2c model request was not counted: inflight %d", tr.Inflight())
+	}
+	doneH2C()
 	doneDash()
 	doneWS()
 	doneModel()

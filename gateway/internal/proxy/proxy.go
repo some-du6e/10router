@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,10 +31,15 @@ const (
 	HeaderPeerPort  = "X-9r-Gw-Peer-Port"
 )
 
-// Forwarding headers ReverseProxy drops before Rewrite runs. The app server
-// applies its own rule to them (a loopback or TRUST_PROXY-listed peer's are
-// read, anyone else's ignored), so they pass through as the client sent them.
-var forwardedHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"}
+// custom-server.js's FORWARDING_HEADERS. The app server applies its own rule
+// to them (a loopback or TRUST_PROXY-listed peer's are read, anyone else's
+// ignored), so they reach it exactly as the client sent them. ReverseProxy
+// drops the X-Forwarded ones before Rewrite runs, and any of them a client
+// names in Connection; Node honoured neither.
+var forwardingHeaders = []string{
+	"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-Ip", "True-Client-Ip",
+	"Cf-Connecting-Ip", "Cf-Ray", "Tailscale-Funnel-Request",
+}
 
 // Options configure a Proxy.
 type Options struct {
@@ -103,10 +110,13 @@ func New(o Options) *Proxy {
 	p.rp = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(upstream)
+			// The client's query as sent: ReverseProxy re-encodes one with a
+			// ';' or a bad '%' escape, dropping those parameters.
+			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
 			// The client's Host, not the upstream's: the app's origin checks,
 			// tunnel detection and local-client rule all read it.
 			pr.Out.Host = pr.In.Host
-			for _, name := range forwardedHeaders {
+			for _, name := range forwardingHeaders {
 				if v, ok := pr.In.Header[name]; ok {
 					pr.Out.Header[name] = v
 				}
@@ -177,12 +187,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		stripH2C(r.Header)
 		r = r.WithContext(context.WithValue(r.Context(), keyH2C, true))
 	}
+	if r.Header.Get("Upgrade") != "" {
+		w = upgradeWriter{w}
+	}
 	if p.requestTimeout > 0 && hasBody(r) {
-		state := &bodyState{}
+		timedOut := &atomic.Bool{}
 		rc := http.NewResponseController(w)
 		if err := rc.SetReadDeadline(time.Now().Add(p.requestTimeout)); err == nil {
-			r.Body = &deadlineBody{ReadCloser: r.Body, rc: rc, state: state}
-			r = r.WithContext(context.WithValue(r.Context(), keyBodyState, state))
+			r.Body = &deadlineBody{ReadCloser: r.Body, rc: rc, timedOut: timedOut}
+			r = r.WithContext(context.WithValue(r.Context(), keyBodyState, timedOut))
 		}
 	}
 	p.rp.ServeHTTP(w, r)
@@ -222,31 +235,37 @@ func stripH2C(h http.Header) {
 	}
 }
 
-// bodyState records that the request-body deadline cut a body off.
-type bodyState struct {
-	mu       sync.Mutex
-	timedOut bool
+// upgradeWriter makes the hijacked connection ReverseProxy splices to the app
+// server read through the server's buffer first. ReverseProxy copies from the
+// raw connection, so bytes the client sent right behind its upgrade request
+// (Codex sends its response.create frame without waiting for the 101) would
+// be left in that buffer and lost.
+type upgradeWriter struct{ http.ResponseWriter }
+
+func (u upgradeWriter) Unwrap() http.ResponseWriter { return u.ResponseWriter }
+
+func (u upgradeWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, brw, err := http.NewResponseController(u.ResponseWriter).Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	return bufferedConn{Conn: conn, r: brw.Reader}, brw, nil
 }
 
-func (s *bodyState) set() {
-	s.mu.Lock()
-	s.timedOut = true
-	s.mu.Unlock()
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
 }
 
-func (s *bodyState) get() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.timedOut
-}
+func (c bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
 // deadlineBody lifts the read deadline once the body has been read, so the
 // response (an SSE stream of ten minutes or more) is never cut by it.
 type deadlineBody struct {
 	io.ReadCloser
-	rc    *http.ResponseController
-	state *bodyState
-	once  sync.Once
+	rc       *http.ResponseController
+	timedOut *atomic.Bool
+	once     sync.Once
 }
 
 func (b *deadlineBody) Read(buf []byte) (int, error) {
@@ -256,7 +275,7 @@ func (b *deadlineBody) Read(buf []byte) (int, error) {
 	} else if err != nil {
 		var ne net.Error
 		if errors.As(err, &ne) && ne.Timeout() {
-			b.state.set()
+			b.timedOut.Store(true)
 		}
 	}
 	return n, err
@@ -265,7 +284,7 @@ func (b *deadlineBody) Read(buf []byte) (int, error) {
 var upstreamErrorBody = []byte(`{"error":{"message":"The gateway could not reach the app server; retry shortly.","type":"server_error","code":"gateway_upstream_unavailable"}}`)
 
 func (p *Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
-	if state, _ := r.Context().Value(keyBodyState).(*bodyState); state != nil && state.get() {
+	if timedOut, _ := r.Context().Value(keyBodyState).(*atomic.Bool); timedOut != nil && timedOut.Load() {
 		// Node answers a body that misses requestTimeout with a bare 408.
 		w.Header().Set("Connection", "close")
 		w.WriteHeader(http.StatusRequestTimeout)

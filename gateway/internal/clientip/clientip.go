@@ -300,11 +300,6 @@ func (r *Rule) ClientKeys(h Headers, socketIP string) []string {
 	return keys
 }
 
-// ClientIP is the address logged and keyed on.
-func (r *Rule) ClientIP(h Headers, socketIP string) string {
-	return r.ClientKeys(h, socketIP)[0]
-}
-
 var tunnelHostSuffixes = []string{".trycloudflare.com", ".ts.net"}
 
 // IsTunnelTraffic: a loopback peer whose Host is a Cloudflare quick tunnel or

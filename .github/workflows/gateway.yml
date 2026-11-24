@@ -17,7 +17,13 @@ on:
       - "Dockerfile"
       - ".dockerignore"
       - "scripts/docker-entrypoint.sh"
-      - "tests/unit/gateway-*.test.js"
+      - "scripts/resolve-src-alias.mjs"
+      - "tests/unit/gateway-peer-handoff.test.js"
+      - "tests/unit/gateway-clientip-parity.test.js"
+      - "tests/unit/custom-server-peer-headers.test.js"
+      - "tests/unit/custom-server-h2c.test.js"
+      - "tests/unit/codex-ws-bridge-peer.test.js"
+      - "tests/unit/server-drain*.test.js"
       - ".github/e2e/gateway/**"
       - ".github/e2e/early-headers/mock-upstream.mjs"
       - ".github/e2e/early-headers/seed.mjs"
@@ -217,7 +223,7 @@ jobs:
         run: |
           {
             echo '```'
-            grep -vE '^::(end)?group::' e2e.txt | grep -E '^(PASS|FAIL)' | head -100
+            grep -E '^(PASS|FAIL)' e2e.txt | head -100
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4

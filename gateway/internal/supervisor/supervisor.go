@@ -27,13 +27,9 @@ func Start(argv []string, env []string) (*Child, error) {
 	if len(argv) == 0 {
 		return nil, errors.New("supervisor: no command")
 	}
-	path, err := exec.LookPath(argv[0])
-	if err != nil {
-		return nil, err
-	}
-	cmd := exec.Command(path, argv[1:]...)
+	// A command it can't find fails in Start, below.
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = env
-	cmd.Stdin = nil
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = sysProcAttr()

@@ -2,9 +2,9 @@
 // JSON line: status, content type, when each `data:` line carrying text came
 // (seconds from the start), and whether the stream ended with [DONE] or
 // message_stop.
-//   node stream-probe.mjs <url> <json body | @file> [api key]
+//   [RAW_OUT=file] node stream-probe.mjs <url> <json body | @file> [api key]
 import http from "node:http";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 const [url, bodyArg, apiKey] = process.argv.slice(2);
 const body = bodyArg.startsWith("@") ? readFileSync(bodyArg.slice(1)) : Buffer.from(bodyArg);
@@ -35,6 +35,8 @@ const req = http.request(url, { method: "POST", headers }, (res) => {
     }
   });
   res.on("end", () => {
+    // RAW_OUT keeps the body as it came, for byte comparisons.
+    if (process.env.RAW_OUT) writeFileSync(process.env.RAW_OUT, raw);
     // A JSON reply (stream: false) has no data: lines.
     if (!arrivals.length) text = (raw.match(/"(?:content|text)":"([^"]+)"/) || [])[1] || "";
     console.log(JSON.stringify({

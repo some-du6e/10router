@@ -47,12 +47,12 @@ func main() {
 	rounds := flag.Int("rounds", 3, "alternating direct/proxy rounds per scenario; the median round is reported")
 	flag.Parse()
 
-	small := bytes.Repeat([]byte(`{"k":"v"},`), 100)
-	small = append(append([]byte(`{"messages":[`), small[:len(small)-1]...), []byte(`]}`)...)
+	small := jsonBody(100)  // about 1 KB
+	medium := jsonBody(200) // about 2 KB
 	big := bytes.Repeat([]byte("0123456789abcdef"), (4<<20)/16)
 	scenarios := []scenario{
 		{"small JSON (1 KB in, 30 B out)", "/small", small, *n},
-		{"SSE (2 KB in, 51 events / 13 KB out)", "/sse", small[:2000], *n},
+		{"SSE (2 KB in, 51 events / 13 KB out)", "/sse", medium, *n},
 		{"4 MB body in", "/big", big, *bigN},
 	}
 
@@ -80,6 +80,12 @@ func main() {
 		fmt.Printf("| | overhead | +%s | +%s | +%s | | | | |\n",
 			ms(pct(p.latencies, 50)-pct(d.latencies, 50)), ms(pct(p.latencies, 90)-pct(d.latencies, 90)), ms(pct(p.latencies, 99)-pct(d.latencies, 99)))
 	}
+}
+
+// jsonBody is {"messages":[{"k":"v"},...]} with n entries.
+func jsonBody(n int) []byte {
+	entries := bytes.Repeat([]byte(`{"k":"v"},`), n)
+	return append(append([]byte(`{"messages":[`), entries[:len(entries)-1]...), []byte(`]}`)...)
 }
 
 func row(s scenario, label string, r result, gw bool) {
