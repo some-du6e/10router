@@ -319,6 +319,9 @@ func TestHeaderCapFollowsNode(t *testing.T) {
 	if got := maxHeaderBytes("", []string{"node", "-r", "./preload.js", "--max-http-header-size=32768", "custom-server.js"}); got != 28<<10 {
 		t.Errorf("after -r <value>: %d", got)
 	}
+	if got := maxHeaderBytes("", []string{"node", "--disable-warning", "ExperimentalWarning", "--max-http-header-size=32768", "custom-server.js"}); got != 28<<10 {
+		t.Errorf("after --disable-warning <value>: %d", got)
+	}
 }
 
 func TestSignalsPassedOnToNode(t *testing.T) {
@@ -333,9 +336,16 @@ func TestSignalsPassedOnToNode(t *testing.T) {
 		{"--heapsnapshot-signal=SIGUSR2", []string{"node", "custom-server.js"}},
 		{"", []string{"node", "--report-on-signal", "custom-server.js"}},
 		{"--heapsnapshot_signal=SIGUSR2", nil},
+		{"", []string{"node", "--heapsnapshot-signal", "SIGUSR2", "custom-server.js"}},
 	} {
 		if got := PassOnSignals(c.opts, c.cmd); len(got) != 2 || got[1] != syscall.SIGUSR2 {
 			t.Errorf("PassOnSignals(%q, %v) = %v, want SIGUSR2 too", c.opts, c.cmd, got)
+		}
+	}
+	// A handler on another signal leaves SIGUSR2 without one.
+	for _, opts := range []string{"--heapsnapshot-signal=SIGHUP", "--report-on-signal --report-signal=SIGQUIT"} {
+		if got := PassOnSignals(opts, nil); len(got) != 1 {
+			t.Errorf("PassOnSignals(%q) = %v, want SIGUSR1 only", opts, got)
 		}
 	}
 	// A script argument is not a Node flag.
@@ -441,6 +451,7 @@ func TestHelperChild(t *testing.T) {
 				"port":      os.Getenv("PORT"),
 				"hostname":  os.Getenv("HOSTNAME"),
 				"keepAlive": os.Getenv("KEEP_ALIVE_TIMEOUT"),
+				"mode":      os.Getenv("GATEWAY_MODE"),
 				"peerOK":    r.Header.Get("X-9r-Gw-Token") != "" && r.Header.Get("X-9r-Gw-Token") == os.Getenv("GATEWAY_PEER_TOKEN"),
 				"peerIP":    r.Header.Get("X-9r-Gw-Peer-Ip"),
 			})
@@ -478,9 +489,10 @@ func startSupervised(t *testing.T, env ...string) (*running, config.Config) {
 	listening := make(chan string, 1)
 	go func() {
 		r.exit <- Run(Options{
-			Config:      cfg,
-			Command:     []string{os.Args[0], "-test.run=^TestHelperChild$"},
-			Env:         append(append(os.Environ(), childEnv+"=1", "PORT=1", "HOSTNAME=0.0.0.0"), env...),
+			Config:  cfg,
+			Command: []string{os.Args[0], "-test.run=^TestHelperChild$"},
+			// A raw GATEWAY_MODE the child must not see as given.
+			Env:         append(append(os.Environ(), childEnv+"=1", "PORT=1", "HOSTNAME=0.0.0.0", "GATEWAY_MODE= Proxy\u0085"), env...),
 			Signals:     r.signals,
 			Logger:      log.New(r.logs, "", 0),
 			OnListening: func(addr string) { listening <- addr },
@@ -506,7 +518,8 @@ func TestSupervisedChildGetsItsPortAndPeer(t *testing.T) {
 	var env map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&env)
 	res.Body.Close()
-	if env["port"] != strconv.Itoa(cfg.AppPort) || env["hostname"] != "127.0.0.1" || env["keepAlive"] != "30000" {
+	// The mode the gateway parsed, whatever spelling it was given.
+	if env["port"] != strconv.Itoa(cfg.AppPort) || env["hostname"] != "127.0.0.1" || env["keepAlive"] != "30000" || env["mode"] != "proxy" {
 		t.Errorf("child env %v", env)
 	}
 	if env["peerOK"] != true || env["peerIP"] != "127.0.0.1" {

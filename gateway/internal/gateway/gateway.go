@@ -85,8 +85,11 @@ func maxHeaderBytes(nodeOptions string, command []string) int {
 // app server; the value is not the script.
 var nodeValueFlags = map[string]bool{
 	"--max-http-header-size": true, "-r": true, "--require": true, "--import": true, "--loader": true,
-	"--experimental-loader": true, "--env-file": true, "--title": true, "--inspect-port": true,
-	"--heapsnapshot-signal": true, "--report-signal": true, "--max-old-space-size": true, "-C": true, "--conditions": true,
+	"--experimental-loader": true, "--env-file": true, "--env-file-if-exists": true, "--title": true,
+	"--inspect-port": true, "--heapsnapshot-signal": true, "--report-signal": true, "-C": true, "--conditions": true,
+	"--disable-warning": true, "--dns-result-order": true, "--unhandled-rejections": true, "--input-type": true,
+	"--redirect-warnings": true, "--report-dir": true, "--report-directory": true, "--diagnostic-dir": true,
+	"--openssl-config": true, "--icu-data-dir": true, "--secure-heap": true, "--stack-trace-limit": true,
 }
 
 // nodeFlags is args up to the script: every leading "-" argument, and the
@@ -259,20 +262,34 @@ func seconds(d time.Duration) int { return int((d + 500*time.Millisecond) / time
 
 // PassOnSignals are the signals the gateway hands to the app server instead
 // of acting on them: SIGUSR1 (Node's inspector), and SIGUSR2 only when Node
-// was started with a handler for it (--heapsnapshot-signal,
-// --report-on-signal); otherwise its default action would kill Node, which
-// as PID 1 used to ignore it.
+// was started with a handler on it (--heapsnapshot-signal=SIGUSR2, or
+// --report-on-signal with --report-signal unset or SIGUSR2); otherwise its
+// default action would kill Node, which as PID 1 used to ignore it.
 func PassOnSignals(nodeOptions string, command []string) []os.Signal {
 	signals := []os.Signal{syscall.SIGUSR1}
 	args := strings.Fields(nodeOptions)
 	if len(command) > 1 {
 		args = append(args, nodeFlags(command[1:])...)
 	}
-	for _, a := range args {
-		name := strings.ReplaceAll(strings.SplitN(a, "=", 2)[0], "_", "-")
-		if name == "--heapsnapshot-signal" || name == "--report-on-signal" {
-			return append(signals, syscall.SIGUSR2)
+	heapSignal, reportOn, reportSignal := "", false, "SIGUSR2"
+	for i, a := range args {
+		name, value, hasValue := strings.Cut(a, "=")
+		name = strings.ReplaceAll(name, "_", "-")
+		if !hasValue && nodeValueFlags[name] && i+1 < len(args) {
+			value = args[i+1]
 		}
+		value = strings.ToUpper(strings.Trim(value, `"'`))
+		switch name {
+		case "--heapsnapshot-signal":
+			heapSignal = value
+		case "--report-on-signal":
+			reportOn = true
+		case "--report-signal":
+			reportSignal = value
+		}
+	}
+	if heapSignal == "SIGUSR2" || (reportOn && reportSignal == "SIGUSR2") {
+		signals = append(signals, syscall.SIGUSR2)
 	}
 	return signals
 }
@@ -343,6 +360,10 @@ func Run(o Options) int {
 			"HOSTNAME":           "127.0.0.1",
 			"KEEP_ALIVE_TIMEOUT": strconv.FormatInt(config.AppKeepAliveTimeout.Milliseconds(), 10),
 			"GATEWAY_PEER_TOKEN": cfg.PeerToken,
+			// The mode the gateway settled on, so Node doesn't parse the raw
+			// value its own way (JS and Go trim and lowercase some Unicode
+			// differently) and end up ignoring the handoff.
+			"GATEWAY_MODE": string(cfg.Mode),
 		})
 		var err error
 		child, err = supervisor.Start(o.Command, env)

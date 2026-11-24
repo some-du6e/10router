@@ -706,8 +706,12 @@ delete process.env.TENROUTER_LAUNCH_NONCE;
 const GATEWAY_TOKEN_TEXT = String(process.env.GATEWAY_PEER_TOKEN || "");
 delete process.env.GATEWAY_PEER_TOKEN;
 // Both, so a token pinned in an env file does nothing once GATEWAY_MODE is
-// back to off.
-const GATEWAY_ON = GATEWAY_TOKEN_TEXT !== "" && ["proxy", "native"].includes(String(process.env.GATEWAY_MODE || "").trim().toLowerCase());
+// back to off. The gateway hands Node the mode it settled on ("proxy" or
+// "native"), so this never re-parses a value the gateway read differently.
+function gatewayEnabled(env) {
+  return String(env.GATEWAY_PEER_TOKEN || "") !== "" && ["proxy", "native"].includes(String(env.GATEWAY_MODE || "").trim().toLowerCase());
+}
+const GATEWAY_ON = gatewayEnabled({ GATEWAY_PEER_TOKEN: GATEWAY_TOKEN_TEXT, GATEWAY_MODE: process.env.GATEWAY_MODE });
 const GATEWAY_TOKEN = GATEWAY_TOKEN_TEXT.length >= 32 ? Buffer.from(GATEWAY_TOKEN_TEXT) : null;
 if (GATEWAY_ON && !GATEWAY_TOKEN) {
   console.warn("[Gateway] GATEWAY_PEER_TOKEN is shorter than 32 characters; every request relayed with peer headers gets the peer \"unknown\"");
@@ -917,7 +921,7 @@ http.createServer = (...args) => {
   return server;
 };
 
-module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY, drain, isLoopbackHost, isOnThisMachine, clientIpFor, clientKeysFor, isTrustedProxyPeer, isTunnelTraffic, upgradePeerIp } };
+module.exports = { __test__: { bridgeForwardHeaders, bridgeErrorFrame, bridgeCodexTurn, MAX_ERROR_BODY, drain, isLoopbackHost, isOnThisMachine, clientIpFor, clientKeysFor, isTrustedProxyPeer, isTunnelTraffic, upgradePeerIp, gatewayEnabled } };
 
 if (require.main === module) {
   // Before the app loads: its own signal listeners must not see SIGTERM first.

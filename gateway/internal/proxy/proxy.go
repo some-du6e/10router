@@ -119,6 +119,9 @@ func New(o Options) *Proxy {
 			// '%' escape, dropping those parameters.
 			if raw := rawPath(pr.In.RequestURI); raw != "" {
 				pr.Out.URL.Opaque = raw
+			} else if pr.In.RequestURI == "*" {
+				// OPTIONS *, which SetURL would turn into /*.
+				pr.Out.URL.Opaque = "*"
 			}
 			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
 			// The client's Host, not the upstream's: the app's origin checks,

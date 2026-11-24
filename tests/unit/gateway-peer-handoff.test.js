@@ -129,6 +129,16 @@ describe("custom-server behind the Go gateway", () => {
     expect(h["x-9r-via-proxy"]).toBe("1");
   });
 
+  it("acts on the token only while GATEWAY_MODE is proxy or native", () => {
+    const { gatewayEnabled } = require(SERVER_PATH).__test__;
+    expect(gatewayEnabled({ GATEWAY_PEER_TOKEN: TOKEN, GATEWAY_MODE: "proxy" })).toBe(true);
+    expect(gatewayEnabled({ GATEWAY_PEER_TOKEN: TOKEN, GATEWAY_MODE: "native" })).toBe(true);
+    // A token left in an env file after going back to off.
+    expect(gatewayEnabled({ GATEWAY_PEER_TOKEN: TOKEN })).toBe(false);
+    expect(gatewayEnabled({ GATEWAY_PEER_TOKEN: TOKEN, GATEWAY_MODE: "off" })).toBe(false);
+    expect(gatewayEnabled({ GATEWAY_MODE: "proxy" })).toBe(false);
+  });
+
   it("hands the Codex WebSocket bridge the same peer", () => {
     const { upgradePeerIp } = require(SERVER_PATH).__test__;
     const req = (headers) => ({ headers: { ...headers } });
