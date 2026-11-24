@@ -126,3 +126,22 @@ export function toProxyOptions(cfg: Partial<ResolvedProxy> | null | undefined) {
     blockedReason: cfg?.blockedReason || "",
   };
 }
+
+// Where an account's traffic leaves from, when that's a proxy: the proxy or
+// relay URL, so two pools pointing at one proxy count as one. Accounts of a
+// provider with the same exit share an IP. Direct and the system proxy aren't
+// counted, since they aren't a per-account choice.
+export function proxyExit(r: ResolvedProxy): string | null {
+  if (r.source === "blocked" || r.direct || r.layer === "system") return null;
+  return str(r.connectionProxyUrl || r.vercelRelayUrl) || null;
+}
+
+// The pool each account gets from "Give each its own pool": active pools with a
+// URL, in name order, one per account, or null when there aren't enough.
+export function oneEachAssignments(accountIds: string[], pools: ProxyPoolLike[]): { id: string; poolId: string }[] | null {
+  const seen = new Set<string>();
+  // One pool per proxy URL, so no two accounts end up on the same proxy.
+  const usable = pools.filter((p) => p.isActive === true && str(p.proxyUrl) && !seen.has(str(p.proxyUrl)) && seen.add(str(p.proxyUrl))).sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)));
+  if (usable.length < accountIds.length) return null;
+  return accountIds.map((id, i) => ({ id, poolId: usable[i].id }));
+}

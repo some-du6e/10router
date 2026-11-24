@@ -289,6 +289,7 @@
 
 ## Features
 - **Proxies are set per account, per provider, or globally, and the Proxy Pools page shows which one each account uses.** A new Proxy routing card stacks every account over its provider, and every provider over Global. Each block shows the proxy it uses and whether it set that itself or inherited it. Click a block to change it: an account lights its path down to the layer that decides its route, and a provider or Global lights every account it decides. An account's panel shows the route its requests take (account → proxy → provider), whether that route fails closed, and a Send test request button.
+  - One proxy per account: a provider's panel shows how many separate proxies its accounts use and has a Give each its own pool button, which assigns every account a different active pool after you confirm. An account sharing its proxy with another account of the same provider shows a warning.
   - Each layer can be Inherit, Direct (no proxy) or a pool. An account uses its own setting, else its provider's, else Global's, else the outbound proxy from Settings. Before, a proxy could only be set per account (or per provider for no-auth providers), and an account proxy replaced the outbound proxy entirely.
   - Direct now means direct: it also skips the outbound proxy from Settings and `HTTP(S)_PROXY`.
   - An account bound to a pool that's turned off or deleted is blocked, with the reason, instead of quietly falling through to no proxy. A pool still used by a provider or Global can't be deleted.

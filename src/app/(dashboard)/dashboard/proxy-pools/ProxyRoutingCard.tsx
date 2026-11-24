@@ -6,7 +6,7 @@ import SharedProviderIcon from "@/shared/components/ProviderIcon.js";
 import { useBlurEmails } from "@/shared/hooks/useBlurEmails.js";
 import { AI_PROVIDERS } from "@/shared/constants/providers.js";
 import { useNotificationStore } from "@/store/notificationStore.js";
-import { PROXY_DIRECT, normalizeLayerSetting, resolveProxyChain, type ProxyPoolLike, type ResolvedProxy } from "@/lib/network/proxyRouting.js";
+import { PROXY_DIRECT, normalizeLayerSetting, oneEachAssignments, proxyExit, resolveProxyChain, type ProxyPoolLike, type ResolvedProxy } from "@/lib/network/proxyRouting.js";
 
 // The shared components are untyped JavaScript; these are the props used here.
 const Badge = Shared.Badge as unknown as ComponentType<{ variant?: string; size?: string; icon?: string; className?: string; children?: ReactNode }>;
@@ -17,6 +17,11 @@ const Select = Shared.Select as unknown as ComponentType<{
   placeholder?: string; disabled?: boolean; "aria-label"?: string;
 }>;
 const ProviderIcon = SharedProviderIcon as unknown as ComponentType<{ providerId: string; size?: number; className?: string }>;
+const ConfirmModal = Shared.ConfirmModal as unknown as ComponentType<{
+  isOpen: boolean; onClose: () => void; onConfirm: () => void; title?: string; message?: ReactNode;
+  confirmText?: string; variant?: string; loading?: boolean;
+}>;
+
 
 // The Select's placeholder option owns "", so Inherit needs its own value.
 const INHERIT = "__inherit__";
@@ -93,6 +98,7 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
   const [selected, setSelected] = useState<Selection | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);
+  const [confirmOneEach, setConfirmOneEach] = useState<string | null>(null);
   const [testState, setTest] = useState<TestState>(null);
   const testRun = useRef(0);
 
@@ -152,6 +158,12 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
     return connections.filter((c) => c.provider === s.id && resolveAccount(c).layer === "provider");
   };
   const governedIds = new Set(governed(sel).map((c) => c.id));
+
+  // Other accounts of the same provider leaving through the same proxy.
+  const sharesWith = (c: Connection) => {
+    const exit = proxyExit(resolveAccount(c));
+    return exit ? connections.filter((o) => o.id !== c.id && o.provider === c.provider && proxyExit(resolveAccount(o)) === exit) : [];
+  };
 
   const roleOf = (type: Selection["type"], id?: string): Role => {
     if (!sel) return "dim";
@@ -307,6 +319,13 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
     const usesProxy = route.connectionProxyEnabled || !!route.vercelRelayUrl;
     const url = maskProxyUrl(route.connectionProxyUrl || route.vercelRelayUrl);
 
+    const shared = sharesWith(account);
+    const sharedNote = shared.length > 0 && (
+      <Note icon="warning" tone={TONE.warn}>
+        Same proxy as <span className={blurClass}>{shared.map(accountName).join(", ")}</span>, so these {providerName(account.provider, connections)} accounts reach it from one IP.
+      </Note>
+    );
+
     let mode: ReactNode;
     if (blocked) mode = <Note icon="block" tone={TONE.error}>{route.blockedReason}, so requests from this account are blocked instead of going direct.</Note>;
     else if (route.source === "direct") mode = <Note icon="language" tone={TONE.muted}>Sent from this machine&apos;s IP.</Note>;
@@ -328,13 +347,59 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
           {chip(2, "cloud", providerName(account.provider, connections))}
         </div>
         {url && <p className="truncate font-mono text-[11px] text-text-muted">{url}</p>}
-        <div>{mode}</div>
+        <div className="flex flex-col gap-2">{mode}{sharedNote}</div>
         <div className="border-t border-border-subtle pt-3">
           <Button size="sm" variant="secondary" icon="send" loading={test?.status === "running"} onClick={() => runTest(account)}>Send test request</Button>
           {done && <div className="fade-in mt-3"><Note icon={done.ok ? "check_circle" : "error"} tone={done.ok ? TONE.ok : TONE.error}>{done.text}</Note></div>}
         </div>
       </>
     );
+  }
+
+  function oneEachPanel(pid: string, accounts: Connection[]) {
+    if (accounts.length < 2) return null;
+    const exits = accounts.map((c) => proxyExit(resolveAccount(c)));
+    const distinct = new Set(exits.filter(Boolean)).size;
+    const allOwn = distinct === accounts.length;
+    const plan = oneEachAssignments(accounts.map((c) => c.id), proxyPools);
+    const usable = proxyPools.filter((p) => p.isActive === true && p.proxyUrl).length;
+    return (
+      <div className="flex flex-col gap-2 rounded-[8px] bg-surface-2 p-2.5">
+        <p className={`flex items-center gap-1.5 text-xs ${allOwn ? TONE.ok : TONE.muted}`}>
+          <span className="material-symbols-outlined text-[16px]">{allOwn ? "check_circle" : "call_split"}</span>
+          {accounts.length} accounts · {distinct} separate prox{distinct === 1 ? "y" : "ies"}
+        </p>
+        {!allOwn && (plan
+          ? <div><Button size="sm" variant="secondary" icon="call_split" disabled={saving} onClick={() => setConfirmOneEach(pid)}>Give each its own pool</Button></div>
+          : <p className="text-[11px] text-text-muted">One proxy each needs {accounts.length} active pools; there {usable === 1 ? "is" : "are"} {usable}.</p>)}
+      </div>
+    );
+  }
+
+  async function applyOneEach(pid: string) {
+    const accounts = connections.filter((c) => c.provider === pid);
+    const plan = oneEachAssignments(accounts.map((c) => c.id), proxyPools);
+    setConfirmOneEach(null);
+    if (!plan) return;
+    setSaving(true);
+    setTest(null);
+    let failed = 0;
+    for (const { id, poolId } of plan) {
+      try {
+        const res = await fetch(`/api/providers/${id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ proxyPoolId: poolId, connectionProxyEnabled: false, connectionProxyUrl: "" }),
+        });
+        if (!res.ok) failed += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    if (failed) notify.error(`${failed} of ${plan.length} accounts couldn't be updated`);
+    else notify.success(`Each ${providerName(pid, connections)} account now has its own pool`);
+    await load();
+    setSaving(false);
   }
 
   function reachPanel(s: Selection) {
@@ -355,6 +420,7 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
         <p className="text-xs text-text-muted">
           Decides the route for <span className="font-semibold text-text-main">{decided.length} of {scope.length}</span> account{scope.length === 1 ? "" : "s"}.
         </p>
+        {s.type === "provider" && oneEachPanel(s.id, scope)}
         {decided.length > 0 && <ul className="max-h-48 divide-y divide-border-subtle overflow-y-auto">{decided.map(row)}</ul>}
         {own.length > 0 && (
           <div>
@@ -427,7 +493,12 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
                   <div className="flex flex-1 flex-col justify-end gap-2">
                     {shown.map((c) => node("account", c.id, 0, <>
                       <p className={`truncate text-xs font-medium text-text-main ${blurClass}`}>{accountName(c)}</p>
-                      <div className="mt-1 flex h-5 min-w-0 items-center">{valueLine(accountSetting(c), resolveAccount(c))}</div>
+                      <div className="mt-1 flex h-5 min-w-0 items-center gap-1">
+                        {valueLine(accountSetting(c), resolveAccount(c))}
+                        {sharesWith(c).length > 0 && (
+                          <span className={`material-symbols-outlined shrink-0 text-[14px] ${TONE.warn}`} title={`Shares its proxy with ${sharesWith(c).length} other ${providerName(c.provider, connections)} account${sharesWith(c).length === 1 ? "" : "s"}`}>warning</span>
+                        )}
+                      </div>
                     </>))}
                     {accs.length > MAX_ACCOUNTS && (
                       <button type="button" onClick={() => setExpanded((e) => ({ ...e, [pid]: !e[pid] }))} className="text-left text-[11px] text-text-muted hover:text-text-main">
@@ -461,6 +532,16 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
         </div>
         {sidePanel(sel)}
       </div>
+      <ConfirmModal
+        isOpen={!!confirmOneEach}
+        onClose={() => setConfirmOneEach(null)}
+        onConfirm={() => confirmOneEach && applyOneEach(confirmOneEach)}
+        title="Give each account its own pool?"
+        message={confirmOneEach ? `Every ${providerName(confirmOneEach, connections)} account gets a different active pool, replacing what each account has set now.` : ""}
+        confirmText="Assign pools"
+        variant="primary"
+        loading={saving}
+      />
     </Card>
   );
 }

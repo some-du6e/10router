@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PROXY_DIRECT, resolveProxyChain, toProxyOptions } from "../../src/lib/network/proxyRouting.ts";
+import { PROXY_DIRECT, oneEachAssignments, proxyExit, resolveProxyChain, toProxyOptions } from "../../src/lib/network/proxyRouting.ts";
 
 const pools = {
   eu: { id: "eu", name: "Residential EU", proxyUrl: "http://eu.proxy.test:3128", isActive: true, strictProxy: true },
@@ -48,6 +48,28 @@ describe("toProxyOptions", () => {
     expect(toProxyOptions(blocked)).toMatchObject({ strictProxy: true, direct: false, blockedReason: blocked.blockedReason });
     expect(toProxyOptions(resolveProxyChain({ account: { proxyPoolId: PROXY_DIRECT }, pools }))).toMatchObject({ direct: true });
     expect(toProxyOptions(null)).toMatchObject({ connectionProxyEnabled: false, strictProxy: false, blockedReason: "" });
+  });
+});
+
+describe("one proxy per account", () => {
+  it("treats pools on the same proxy URL as one exit, and Direct, blocked or system routes as none", () => {
+    const twin = { ...pools.eu, id: "eu-copy", name: "EU copy" };
+    const all = { ...pools, "eu-copy": twin };
+    expect(proxyExit(resolveProxyChain({ account: { proxyPoolId: "eu" }, pools: all })))
+      .toBe(proxyExit(resolveProxyChain({ account: { proxyPoolId: "eu-copy" }, pools: all })));
+    expect(proxyExit(resolveProxyChain({ account: { proxyPoolId: "eu" }, pools: all })))
+      .not.toBe(proxyExit(resolveProxyChain({ account: { proxyPoolId: "sg" }, pools: all })));
+    expect(proxyExit(resolveProxyChain({ account: { proxyPoolId: PROXY_DIRECT }, pools }))).toBeNull();
+    expect(proxyExit(resolveProxyChain({ account: { proxyPoolId: "off" }, pools }))).toBeNull();
+    expect(proxyExit(resolveProxyChain({ pools }))).toBeNull();
+  });
+
+  it("gives each account a different active pool with its own URL, or nothing when there aren't enough", () => {
+    const list = [pools.sg, pools.off, pools.eu, { ...pools.eu, id: "eu-copy", name: "A copy of EU" }, pools.relay];
+    const plan = oneEachAssignments(["a", "b", "c"], list);
+    expect(plan.map((x) => x.poolId)).toEqual(["sg", "relay", "eu"]);
+    expect(new Set(plan.map((x) => x.poolId)).size).toBe(3);
+    expect(oneEachAssignments(["a", "b", "c", "d"], list)).toBeNull();
   });
 });
 
