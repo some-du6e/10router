@@ -82,29 +82,28 @@ const json = (value: unknown): string | undefined => JSON.stringify(value ?? nul
 export function connectionConfigChanged(before: ConnectionFields, after: ConnectionFields, refreshed: RefreshedFields | null = null): boolean {
   const refreshedTop = new Set(refreshed?.fields || []);
   const refreshedPsd = new Set(refreshed?.providerSpecificData || []);
-  const keys = new Set([...Object.keys(before || {}), ...Object.keys(after || {})]);
-  for (const key of keys) {
-    if (isRuntimeField(key) || refreshedTop.has(key)) continue;
-    if (key === "providerSpecificData" && refreshedPsd.size > 0) {
-      if (providerSpecificDataChanged(before?.[key], after?.[key], refreshedPsd)) return true;
-      continue;
-    }
-    if (json(before?.[key]) !== json(after?.[key])) return true;
-  }
-  return false;
+  return differsExcept(before || {}, after || {}, (key) => isRuntimeField(key) || refreshedTop.has(key), (key, a, b) => {
+    // providerSpecificData key by key, without the keys the refresh wrote.
+    // A missing one is empty: the refresh's patch is applied over `{}`.
+    if (key !== "providerSpecificData" || refreshedPsd.size === 0) return json(a) !== json(b);
+    const pa = a ?? {};
+    const pb = b ?? {};
+    if (!isPlainObject(pa) || !isPlainObject(pb)) return json(pa) !== json(pb);
+    return differsExcept(pa, pb, (k) => refreshedPsd.has(k), (_, x, y) => json(x) !== json(y));
+  });
 }
 
-// providerSpecificData compared key by key, leaving out the keys a refresh
-// wrote. A missing one is empty: the refresh's patch is applied over `{}`.
-function providerSpecificDataChanged(before: unknown, after: unknown, skip: ReadonlySet<string>): boolean {
-  const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
-  before ??= {};
-  after ??= {};
-  if (!isObject(before) || !isObject(after)) return json(before) !== json(after);
-  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
-  for (const key of keys) {
-    if (skip.has(key)) continue;
-    if (json(before[key]) !== json(after[key])) return true;
+const isPlainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+// Does any key of either object, other than the skipped ones, differ?
+function differsExcept(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+  skip: (key: string) => boolean,
+  differs: (key: string, before: unknown, after: unknown) => boolean,
+): boolean {
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (!skip(key) && differs(key, before[key], after[key])) return true;
   }
   return false;
 }

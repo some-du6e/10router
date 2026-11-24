@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/some-du6e/10router/gateway/internal/db/jsjson"
+	"github.com/some-du6e/10router/gateway/internal/decline"
 )
 
 //go:embed tables.json
@@ -76,14 +77,7 @@ func BuiltinModelAlias(alias string) (string, bool) {
 	return v, ok
 }
 
-// DeclineError: the gateway hands the request to Node, which resolves it itself.
-type DeclineError struct{ Reason string }
-
-func (e *DeclineError) Error() string { return "combo: proxy to Node: " + e.Reason }
-
-func decline(format string, args ...any) error {
-	return &DeclineError{fmt.Sprintf(format, args...)}
-}
+func declined(format string, args ...any) error { return decline.New("combo", format, args...) }
 
 // protoKeys are Object.prototype's members. Node looks model ids up in plain
 // objects (the alias tables, aliases from the database), where one of these
@@ -106,35 +100,27 @@ func HasProtoKey(s string) bool {
 	return false
 }
 
-// checkID declines ids Node would read differently: Object.prototype names,
+// CheckID declines ids Node would read differently: Object.prototype names,
 // and anything but printable ASCII (JavaScript's toLowerCase maps some
-// non-ASCII letters to ASCII ones, the Kelvin sign to "k").
-func checkID(what, s string) error {
+// non-ASCII letters to ASCII ones, the Kelvin sign to "k"). pkg names the
+// package that declines.
+func CheckID(pkg, what, s string) error {
 	if HasProtoKey(s) {
-		return decline("%s names an Object.prototype member", what)
+		return decline.New(pkg, "%s names an Object.prototype member", what)
 	}
-	for i := 0; i < len(s); i++ {
-		if s[i] < 0x20 || s[i] > 0x7e {
-			return decline("%s is not printable ASCII", what)
-		}
-	}
-	return nil
+	return decline.ASCII(pkg, what, s)
 }
 
 // contextWindowSuffix is /\[(\d+[km])\]$/i.
-var contextWindowSuffix = regexp.MustCompile(`(?i)\[([0-9]+[km])\]$`)
+var contextWindowSuffix = regexp.MustCompile(`(?i)\[[0-9]+[km]\]$`)
 
-// StripContextWindowSuffix is stripContextWindowSuffix: "claude-opus-5[1m]" →
-// "claude-opus-5", "1m".
-func StripContextWindowSuffix(model string) (string, string) {
-	if model == "" {
-		return model, ""
+// StripContextWindowSuffix is stripContextWindowSuffix's model:
+// "claude-opus-5[1m]" → "claude-opus-5".
+func StripContextWindowSuffix(model string) string {
+	if loc := contextWindowSuffix.FindStringIndex(model); loc != nil {
+		return model[:loc[0]]
 	}
-	loc := contextWindowSuffix.FindStringSubmatchIndex(model)
-	if loc == nil {
-		return model, ""
-	}
-	return model[:loc[0]], strings.ToLower(model[loc[2]:loc[3]])
+	return model
 }
 
 // StripContextMarker is modelMarkers.js's stripModelContextMarker: Claude
@@ -149,44 +135,41 @@ func StripContextMarker(model string) (string, bool) {
 }
 
 // ComboLookupName is comboLookupName: the name combos are stored under.
-func ComboLookupName(model string) string {
-	m, _ := StripContextWindowSuffix(model)
-	return m
-}
+func ComboLookupName(model string) string { return StripContextWindowSuffix(model) }
 
-// ResolveProviderAlias is resolveProviderAlias.
-func ResolveProviderAlias(aliasOrID string) string {
+// resolveProviderAlias is resolveProviderAlias.
+func resolveProviderAlias(aliasOrID string) string {
 	if id, ok := tbl.AliasToProviderID[aliasOrID]; ok && id != "" {
 		return id
 	}
 	return aliasOrID
 }
 
-// Parsed is parseModel's result.
+// Parsed is parseModel's result (its context window is never read on the
+// hot path).
 type Parsed struct {
 	Provider      string
 	Model         string
 	IsAlias       bool
 	ProviderAlias string
-	ContextWindow string
 }
 
 // ParseModel is src/sse/services/model.js's parseModel: the core parse, then
-// the local provider aliases. The caller has checked the id (HasProtoKey).
+// the local provider aliases. The caller has checked the id (CheckID).
 func ParseModel(modelStr string) Parsed {
 	if modelStr == "" {
 		return Parsed{}
 	}
-	stripped, cw := StripContextWindowSuffix(modelStr)
+	stripped := StripContextWindowSuffix(modelStr)
 	if i := strings.IndexByte(stripped, '/'); i >= 0 {
 		alias := stripped[:i]
-		p := Parsed{Provider: ResolveProviderAlias(alias), Model: stripped[i+1:], ProviderAlias: alias, ContextWindow: cw}
+		p := Parsed{Provider: resolveProviderAlias(alias), Model: stripped[i+1:], ProviderAlias: alias}
 		if local, ok := tbl.LocalProviderAliases[alias]; ok && local != "" {
 			p.Provider = local
 		}
 		return p
 	}
-	return Parsed{Model: stripped, IsAlias: true, ContextWindow: cw}
+	return Parsed{Model: stripped, IsAlias: true}
 }
 
 // Node is a provider node as getModelInfo matches it.
@@ -202,8 +185,9 @@ type Node struct {
 type Config struct {
 	// Nodes in table order (getProviderNodes has no ORDER BY: rowid order).
 	Nodes []Node
-	// Combos by name: the stored models value (combosRepo.js's rowToCombo).
-	Combos map[string][]any
+	// Combos by name: the stored models value as rowToCombo reads it
+	// (parseJson(row.models, []), normally an array).
+	Combos map[string]any
 	// Aliases is the modelAliases kv scope.
 	Aliases *jsjson.Object
 }
@@ -221,7 +205,7 @@ var nodeTypes = []string{"openai-compatible", "anthropic-compatible", "custom-em
 
 // ModelInfo is src/sse/services/model.js's getModelInfo.
 func (c *Config) ModelInfo(modelStr string) (Info, error) {
-	if err := checkID("model id", modelStr); err != nil {
+	if err := CheckID("combo", "model id", modelStr); err != nil {
 		return Info{}, err
 	}
 	if modelStr == "" {
@@ -281,9 +265,9 @@ func resolveAliasFrom(alias string, aliases *jsjson.Object) (Info, bool, error) 
 		ps, ok1 := prov.(string)
 		ms, ok2 := model.(string)
 		if !ok1 || !ok2 || HasProtoKey(ps) {
-			return Info{}, false, decline("alias %q stores a non-string provider or model", alias)
+			return Info{}, false, declined("alias %q stores a non-string provider or model", alias)
 		}
-		return Info{Provider: ResolveProviderAlias(ps), Model: ms}, true, nil
+		return Info{Provider: resolveProviderAlias(ps), Model: ms}, true, nil
 	}
 	// A truthy number, boolean or array: Node returns null too.
 	return Info{}, false, nil
@@ -294,7 +278,7 @@ func splitAlias(target string) (Info, bool) {
 	if i < 0 {
 		return Info{}, false
 	}
-	return Info{Provider: ResolveProviderAlias(target[:i]), Model: target[i+1:]}, true
+	return Info{Provider: resolveProviderAlias(target[:i]), Model: target[i+1:]}, true
 }
 
 // inferProvider is inferProviderFromModelName.
@@ -311,7 +295,7 @@ func inferProvider(model string) string {
 	return "openai"
 }
 
-// jsLower is toLowerCase for an ASCII id (checkID).
+// jsLower is toLowerCase for an ASCII id (CheckID).
 func jsLower(s string) string {
 	b := []byte(s)
 	for i, c := range b {
@@ -330,18 +314,31 @@ func (c *Config) ComboModels(modelStr string) ([]string, error) {
 		return nil, nil
 	}
 	name := ComboLookupName(modelStr)
-	if err := checkID("combo name", name); err != nil {
+	// getComboByName's lookup is exact (binary collation, a UNIQUE name).
+	if err := CheckID("combo", "combo name", name); err != nil {
 		return nil, err
 	}
-	models, ok := c.Combos[name]
-	if !ok || len(models) == 0 {
+	stored, ok := c.Combos[name]
+	if !ok {
+		return nil, nil
+	}
+	// combo.models && combo.models.length > 0: an array, or a string Node
+	// would iterate by character.
+	models, isArray := stored.([]any)
+	if !isArray {
+		if s, isString := stored.(string); isString && s != "" {
+			return nil, declined("combo %q stores its members as a string", name)
+		}
+		return nil, nil
+	}
+	if len(models) == 0 {
 		return nil, nil
 	}
 	out := make([]string, 0, len(models))
 	for _, m := range models {
 		s, ok := m.(string)
 		if !ok {
-			return nil, decline("combo %q has a member that is not a string", name)
+			return nil, declined("combo %q has a member that is not a string", name)
 		}
 		out = append(out, s)
 	}

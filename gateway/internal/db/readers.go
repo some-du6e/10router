@@ -163,10 +163,13 @@ func (d *DB) APIKeyByKey(ctx context.Context, key string) (*APIKey, error) {
 
 // Combo is combosRepo.js's rowToCombo.
 type Combo struct {
-	ID        string
-	Name      string
-	Kind      *string
-	Models    []any
+	ID   string
+	Name string
+	Kind *string
+	// Models is parseJson(row.models, []): normally an array, but whatever
+	// JSON the column holds (Node's getComboModels takes a non-empty string
+	// as members too).
+	Models    any
 	CreatedAt string
 	UpdatedAt string
 }

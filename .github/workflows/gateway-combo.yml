@@ -1,17 +1,21 @@
 name: Gateway combo parity
 
 # The Go port of Node's model and combo resolution (gateway/internal/combo,
-# docs/GO_GATEWAY.md "Parity testing"):
-#   parity           this PR's Node still makes the committed fixtures and the
-#                    registry table export, and the Go tests match them
+# docs/GO_GATEWAY.md "Phase 2c"):
+#   parity           this PR's Node still makes the committed fixtures (over a
+#                    real Node database) and the registry table export, and
+#                    the Go tests match them through the gateway's snapshot
 #   no-new-failures  the whole vitest suite, base vs this branch
 on:
   pull_request:
     paths:
       - "gateway/internal/combo/**"
-      - "gateway/internal/db/snapshot.go"
+      - "gateway/internal/db/**"
+      - "gateway/internal/decline/**"
       - "gateway/node-map.json"
       - "tests/unit/gateway-combo-parity.test.js"
+      - "tests/helpers/nodeDb.js"
+      - "src/lib/db/repos/aliasRepo.js"
       - ".github/workflows/gateway-combo.yml"
       - "src/sse/services/model.js"
       - "open-sse/services/model.js"

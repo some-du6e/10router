@@ -1,7 +1,7 @@
 name: Gateway admission parity
 
 # The gateway's own memory gate (gateway/internal/admission,
-# docs/GO_GATEWAY.md "Phase 2"):
+# docs/GO_GATEWAY.md "Phase 2c"):
 #   parity           this PR's Node still makes the committed MEMORY_ADMISSION
 #                    export and its 503 for a Claude client, and the Go tests
 #                    (the gate, under -race) match them

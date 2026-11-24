@@ -1,5 +1,5 @@
 // Package route is the native /v1/messages entry (docs/GO_GATEWAY.md, phase
-// 2): which request targets reach Node's src/app/api/v1/messages/route.js
+// 2c): which request targets reach Node's src/app/api/v1/messages/route.js
 // (the next.config.mjs rewrites), the body as chat.ts reads it
 // (src/sse/utils/requestBody.js), the [1m] marker strip, and the Claude Code
 // bypass for warmup, title and count requests (open-sse/utils/bypassHandler.js).
@@ -8,36 +8,49 @@
 // production hot path: a JSON object with a model, `stream: true` and a
 // non-empty messages array of objects. Everything else, every body Node
 // would refuse with a 400 and every request Node would answer itself
-// without calling an upstream (the bypass), is a *DeclineError, and the
-// request goes to Node with its bytes unchanged.
+// without calling an upstream (the bypass), is a decline, and the request
+// goes to Node with its bytes unchanged.
 package route
 
 import (
+	_ "embed"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/some-du6e/10router/gateway/internal/claudeprep"
 	"github.com/some-du6e/10router/gateway/internal/combo"
+	"github.com/some-du6e/10router/gateway/internal/decline"
 )
 
-// DeclineError: the request goes to Node.
-type DeclineError struct{ Reason string }
+const pkg = "route"
 
-func (e *DeclineError) Error() string { return "route: proxy to Node: " + e.Reason }
+func declined(format string, args ...any) error { return decline.New(pkg, format, args...) }
 
-func decline(format string, args ...any) error {
-	return &DeclineError{fmt.Sprintf(format, args...)}
-}
+//go:embed tables.json
+var tablesJSON []byte
 
-// Paths are the request paths that reach /api/v1/messages: the route itself
+// skipPatterns is runtimeConfig.js's SKIP_PATTERNS, exported by
+// tests/unit/gateway-route-parity.test.js.
+var skipPatterns = func() []string {
+	var t struct {
+		SkipPatterns []string `json:"skipPatterns"`
+	}
+	if err := json.Unmarshal(tablesJSON, &t); err != nil || len(t.SkipPatterns) == 0 {
+		panic(fmt.Sprintf("route: tables.json has no skipPatterns (%v)", err))
+	}
+	return t.SkipPatterns
+}()
+
+// paths are the request paths that reach /api/v1/messages: the route itself
 // and the two rewrites in next.config.mjs (/v1/:path* and /v1/v1/:path*).
 // Any other spelling (a trailing slash, which Next redirects, a doubled
 // slash, an escape) is Node's.
-var Paths = []string{"/v1/messages", "/v1/v1/messages", "/api/v1/messages"}
+var paths = []string{"/v1/messages", "/v1/v1/messages", "/api/v1/messages"}
 
-// Match reports whether a request is one native serves: POST to one of
-// Paths, the request target in origin form (a path and maybe a query).
+// Match reports whether a request is one native serves: POST to one of the
+// paths, the request target in origin form (a path and maybe a query).
 func Match(method, requestURI string) bool {
 	if method != http.MethodPost || !strings.HasPrefix(requestURI, "/") {
 		return false
@@ -46,7 +59,7 @@ func Match(method, requestURI string) bool {
 	if i := strings.IndexByte(path, '?'); i >= 0 {
 		path = path[:i]
 	}
-	for _, p := range Paths {
+	for _, p := range paths {
 		if path == p {
 			return true
 		}
@@ -64,82 +77,65 @@ type Request struct {
 }
 
 // Inspect parses the body as readJsonObject does and checks its shape.
-// userAgent is the client's User-Agent ("" when absent), ccFilterNaming the
-// setting of that name.
-func Inspect(raw []byte, userAgent string, ccFilterNaming bool) (*Request, error) {
+// header is the client's; Node reads its User-Agent as Headers.get does,
+// every value joined with ", ". ccFilterNaming is that setting's truthiness
+// (chat.ts passes !!settings.ccFilterNaming): db.Settings.Truthy, not Bool.
+func Inspect(raw []byte, header http.Header, ccFilterNaming bool) (*Request, error) {
 	body, err := claudeprep.Parse(raw)
 	if err != nil {
-		if claudeprep.IsDecline(err) {
-			return nil, &DeclineError{err.Error()}
+		if decline.Is(err) {
+			return nil, err
 		}
-		return nil, decline("a body that isn't JSON (Node answers 400)")
+		return nil, declined("a body that isn't JSON (Node answers 400)")
 	}
 	if !body.IsObject() {
-		return nil, decline("a body that isn't an object (Node answers 400)")
+		return nil, declined("a body that isn't an object (Node answers 400)")
 	}
 	m := body.Get("model")
 	if !m.IsString() {
-		return nil, decline("model is not a string (Node answers 400)")
+		return nil, declined("model is not a string (Node answers 400)")
 	}
-	if err := asciiModel(m.Str()); err != nil {
+	if err := combo.CheckID(pkg, "the model", m.Str()); err != nil {
 		return nil, err
 	}
 	model, _ := combo.StripContextMarker(m.Str())
-	if strings.Trim(model, " \t\n\v\f\r") == "" {
-		return nil, decline("no model (Node answers 400)")
+	// Printable ASCII: only the space is whitespace to trim().
+	if strings.Trim(model, " ") == "" {
+		return nil, declined("no model (Node answers 400)")
 	}
-	// The hot path's shape: a stream, and a conversation.
+	// The hot path's shape: a stream, and a conversation of message objects.
 	if s := body.Get("stream"); s.Kind() != claudeprep.KindBool || !s.Truthy() {
-		return nil, decline("not stream: true")
+		return nil, declined("not stream: true")
 	}
 	msgs := body.Get("messages")
 	if !msgs.IsArray() || msgs.Len() == 0 {
-		return nil, decline("messages is not a non-empty array")
+		return nil, declined("messages is not a non-empty array")
 	}
 	for _, msg := range msgs.Items() {
 		if !msg.IsObject() {
-			return nil, decline("a message that is not an object")
+			return nil, declined("a message that is not an object")
 		}
 	}
-	bypassed, err := Bypassed(body, userAgent, ccFilterNaming)
+	userAgent := strings.Join(header.Values("User-Agent"), ", ")
+	bypass, err := bypassed(body, msgs.Items(), userAgent, ccFilterNaming)
 	if err != nil {
 		return nil, err
 	}
-	if bypassed {
-		return nil, decline("a Claude Code warmup, title or count request (Node answers it itself)")
+	if bypass {
+		return nil, declined("a Claude Code warmup, title or count request (Node answers it itself)")
 	}
 	return &Request{Body: body, Model: model}, nil
 }
 
-// asciiModel: the model id is matched against combos, aliases and allowlists
-// with JavaScript's trim and case rules, which follow Unicode; only
-// printable ASCII is matched the same way here.
-func asciiModel(s string) error {
-	for i := 0; i < len(s); i++ {
-		if s[i] < 0x20 || s[i] > 0x7e {
-			return decline("a model id that is not printable ASCII")
-		}
-	}
-	return nil
-}
-
-// skipPatterns is runtimeConfig.js's SKIP_PATTERNS.
-var skipPatterns = []string{"Please write a 5-10 word title for the following conversation:"}
-
-// Bypassed is handleBypassRequest's decision: would Node answer this request
-// with its canned reply? An input on which Node would throw is declined.
-func Bypassed(body *claudeprep.Value, userAgent string, ccFilterNaming bool) (bool, error) {
+// bypassed is handleBypassRequest's decision for a body Inspect has checked
+// (messages a non-empty array of objects): would Node answer it with its
+// canned reply? An input on which Node would throw is declined.
+func bypassed(body *claudeprep.Value, items []*claudeprep.Value, userAgent string, ccFilterNaming bool) (bool, error) {
 	if !strings.Contains(userAgent, "claude-cli") {
 		return false, nil
 	}
-	msgs := body.Get("messages")
-	if !msgs.IsArray() || msgs.Len() == 0 {
-		return false, nil
-	}
-	items := msgs.Items()
 	// Pattern 1: title extraction (the last message is an assistant "{").
-	last := items[len(items)-1]
-	if last.IsObject() && last.Get("role").Is("assistant") {
+	if last := items[len(items)-1]; last.Get("role").Is("assistant") {
 		// content?.[0]?.text: an array's first item, or an object's "0" key (a
 		// string's first character has no text).
 		c := last.Get("content")
@@ -155,7 +151,7 @@ func Bypassed(body *claudeprep.Value, userAgent string, ccFilterNaming bool) (bo
 		}
 	}
 	// Pattern 2: warmup.
-	text, err := getText(firstContent(items))
+	text, err := getText(items[0].Get("content"))
 	if err != nil {
 		return false, err
 	}
@@ -163,15 +159,12 @@ func Bypassed(body *claudeprep.Value, userAgent string, ccFilterNaming bool) (bo
 		return true, nil
 	}
 	// Pattern 3: count.
-	if len(items) == 1 && items[0].IsObject() && items[0].Get("role").Is("user") && text == "count" {
+	if len(items) == 1 && items[0].Get("role").Is("user") && text == "count" {
 		return true, nil
 	}
 	// Pattern 4: skip patterns, over every user message's text.
 	var parts []string
 	for _, m := range items {
-		if m.IsNullish() {
-			return false, decline("a null message (Node throws reading its role)")
-		}
 		if m.Get("role").Is("user") {
 			t, err := getText(m.Get("content"))
 			if err != nil {
@@ -218,14 +211,6 @@ func Bypassed(body *claudeprep.Value, userAgent string, ccFilterNaming bool) (bo
 	return false, nil
 }
 
-// firstContent is messages[0]?.content.
-func firstContent(items []*claudeprep.Value) *claudeprep.Value {
-	if items[0].IsNullish() {
-		return claudeprep.Undefined()
-	}
-	return items[0].Get("content")
-}
-
 // getText is bypassHandler.js's getText.
 func getText(content *claudeprep.Value) (string, error) {
 	switch {
@@ -244,7 +229,7 @@ func textOf(blocks []*claudeprep.Value) (string, error) {
 	var parts []string
 	for _, b := range blocks {
 		if b.IsNullish() {
-			return "", decline("a null content block (Node throws reading its type)")
+			return "", declined("a null content block (Node throws reading its type)")
 		}
 		if !b.Get("type").Is("text") {
 			continue
@@ -256,7 +241,7 @@ func textOf(blocks []*claudeprep.Value) (string, error) {
 		case t.IsNullish():
 			parts = append(parts, "")
 		default:
-			return "", decline("a text block whose text is not a string")
+			return "", declined("a text block whose text is not a string")
 		}
 	}
 	return strings.Join(parts, " "), nil

@@ -24,12 +24,15 @@ import (
 type Headers func(name string) string
 
 // FromRequest reads r's headers as Node would see them.
-func FromRequest(r *http.Request) Headers {
+func FromRequest(r *http.Request) Headers { return FromHeader(r.Header, r.Host) }
+
+// FromHeader reads h, with host as the Host header, as Node would see them.
+func FromHeader(h http.Header, host string) Headers {
 	return func(name string) string {
 		if name == "host" {
-			return r.Host
+			return host
 		}
-		return strings.Join(r.Header.Values(name), ", ")
+		return strings.Join(h.Values(name), ", ")
 	}
 }
 

@@ -1,5 +1,5 @@
 // Package clientauth decides whether the client may make a native request,
-// by Node's rules for /v1 (docs/GO_GATEWAY.md, phase 2):
+// by Node's rules for /v1 (docs/GO_GATEWAY.md, phase 2c):
 //
 //   - the key, from Authorization: Bearer, x-api-key, x-goog-api-key or ?key=
 //     (src/shared/utils/clientApiKey.js);
@@ -10,13 +10,12 @@
 //     src/shared/utils/apiKeyLimits.js, src/lib/db/repos/apiKeysRepo.js).
 //
 // The gateway never answers a refusal itself. Every refusal Node would make,
-// and anything this package can't decide exactly, is a *DeclineError: the
-// request goes to Node, which answers it as it does today. So a check here
-// may be stricter than Node's, never looser.
+// and anything this package can't decide exactly, is a decline: the request
+// goes to Node, which answers it as it does today. So a check here may be
+// stricter than Node's, never looser.
 package clientauth
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -25,16 +24,12 @@ import (
 	"github.com/some-du6e/10router/gateway/internal/combo"
 	"github.com/some-du6e/10router/gateway/internal/db"
 	"github.com/some-du6e/10router/gateway/internal/db/jsjson"
+	"github.com/some-du6e/10router/gateway/internal/decline"
 )
 
-// DeclineError: Node decides this request (and answers a refusal its way).
-type DeclineError struct{ Reason string }
+const pkg = "clientauth"
 
-func (e *DeclineError) Error() string { return "clientauth: proxy to Node: " + e.Reason }
-
-func decline(format string, args ...any) error {
-	return &DeclineError{fmt.Sprintf(format, args...)}
-}
+func declined(format string, args ...any) error { return decline.New(pkg, format, args...) }
 
 // managementKeyPrefix is managementKey.js's MANAGEMENT_KEY_PREFIX.
 const managementKeyPrefix = "10r-mgmt-"
@@ -50,7 +45,7 @@ var keyHeaders = []string{"Authorization", "X-Api-Key", "X-Goog-Api-Key"}
 func ExtractKey(h http.Header, rawQuery string) (string, error) {
 	for _, name := range keyHeaders {
 		if len(h.Values(name)) > 1 {
-			return "", decline("repeated %s header", name)
+			return "", declined("repeated %s header", name)
 		}
 	}
 	key, found := "", false
@@ -62,12 +57,10 @@ func ExtractKey(h http.Header, rawQuery string) (string, error) {
 		key, found = v, true
 	}
 	if !found && rawQuery != "" {
-		return "", decline("no key header and a query string (Node reads ?key=)")
+		return "", declined("no key header and a query string (Node reads ?key=)")
 	}
-	for i := 0; i < len(key); i++ {
-		if key[i] < 0x20 || key[i] > 0x7e {
-			return "", decline("a key that is not printable ASCII")
-		}
+	if err := decline.ASCII(pkg, "the key", key); err != nil {
+		return "", err
 	}
 	return key, nil
 }
@@ -86,7 +79,9 @@ type Request struct {
 
 // Config is what the checks read from the database.
 type Config struct {
-	Rule          *clientip.Rule
+	Rule *clientip.Rule
+	// RequireAPIKey is settings.requireApiKey's truthiness, as chat.ts reads
+	// it (`if (settings.requireApiKey)`): db.Settings.Truthy, not Bool.
 	RequireAPIKey bool
 	// Policy reads a key's row fresh (getApiKeyPolicy); nil, nil when the key
 	// is not one 10router issued.
@@ -109,9 +104,9 @@ type Decision struct {
 	Local bool
 }
 
-// Check runs Node's checks in order. It returns an error, a *DeclineError
-// unless the database read failed, whenever Node would refuse the request
-// or the answer isn't certain.
+// Check runs Node's checks. It returns a decline whenever Node would refuse
+// the request or the answer isn't certain, and another error only when the
+// database read failed.
 func Check(r Request, c Config) (Decision, error) {
 	key, err := ExtractKey(r.Header, r.RawQuery)
 	if err != nil {
@@ -119,7 +114,7 @@ func Check(r Request, c Config) (Decision, error) {
 	}
 	// dashboardGuard: refused even from loopback, anywhere in the token.
 	if strings.Contains(key, managementKeyPrefix) {
-		return Decision{}, decline("a management key (Node answers 401)")
+		return Decision{}, declined("a management key (Node answers 401)")
 	}
 	var policy *db.APIKey
 	if key != "" {
@@ -132,19 +127,19 @@ func Check(r Request, c Config) (Decision, error) {
 	// canAccessPublicLlmApi: local, a CLI token, or an active key. A request
 	// that gets in only by its CLI token is Node's to serve.
 	if !local && !active {
-		return Decision{}, decline("not on this machine and no active key (Node answers 401, or checks a CLI token)")
+		return Decision{}, declined("not on this machine and no active key (Node answers 401, or checks a CLI token)")
 	}
 	// chat.ts: requireApiKey.
 	if c.RequireAPIKey && !active {
-		return Decision{}, decline("requireApiKey without an active key (Node answers 401)")
+		return Decision{}, declined("requireApiKey without an active key (Node answers 401)")
 	}
 	// missingModel. JavaScript's trim and the allowlist's lowercasing follow
 	// Unicode rules Go's don't match letter for letter.
-	if err := asciiID(r.Model); err != nil {
+	if err := combo.CheckID(pkg, "the model", r.Model); err != nil {
 		return Decision{}, err
 	}
-	if strings.TrimSpace(r.Model) == "" {
-		return Decision{}, decline("no model (Node answers 400)")
+	if trim(r.Model) == "" {
+		return Decision{}, declined("no model (Node answers 400)")
 	}
 	d := Decision{Key: key, Policy: policy, Local: local}
 	if policy == nil {
@@ -157,28 +152,31 @@ func Check(r Request, c Config) (Decision, error) {
 	return d, nil
 }
 
+// trim is String#trim for printable ASCII: only the space is whitespace there.
+func trim(s string) string { return strings.Trim(s, " ") }
+
 // checkLimits is apiKeyLimitDenial: expiry, then the allowlist, then the budget.
 func checkLimits(k *db.APIKey, model string, c Config) error {
 	if k.ExpiresAt != "" {
 		at, err := time.Parse("2006-01-02T15:04:05.000Z", k.ExpiresAt)
 		if err != nil {
-			return decline("an expiresAt Node's Date parser would read its own way")
+			return declined("an expiresAt Node's Date parser would read its own way")
 		}
 		if !at.After(c.Now) {
-			return decline("an expired key (Node answers 401)")
+			return declined("an expired key (Node answers 401)")
 		}
 	}
 	if len(k.AllowedModels) > 0 {
-		ok, err := IsModelAllowed(model, k.AllowedModels, c.Lookup, 0)
+		ok, err := IsModelAllowed(model, k.AllowedModels, c.Lookup)
 		if err != nil {
 			return err
 		}
 		if !ok {
-			return decline("a model the key's allowlist refuses (Node answers 403)")
+			return declined("a model the key's allowlist refuses (Node answers 403)")
 		}
 	}
 	if k.BudgetUsd != nil && k.SpentUsd >= *k.BudgetUsd {
-		return decline("a spent budget (Node answers 402)")
+		return declined("a spent budget (Node answers 402)")
 	}
 	return nil
 }
@@ -189,13 +187,8 @@ func checkLimits(k *db.APIKey, model string, c Config) error {
 // Origin makes it not local here; Node accepts a loopback one, so such a
 // request needs an active key to go native.
 func isLocalRequest(r Request, rule *clientip.Rule) bool {
-	h := func(name string) string {
-		if name == "host" {
-			return r.Host
-		}
-		return strings.Join(r.Header.Values(name), ", ")
-	}
-	if rule == nil || !rule.IsOnThisMachine(clientip.Headers(h), r.PeerIP) {
+	h := clientip.FromHeader(r.Header, r.Host)
+	if rule == nil || !rule.IsOnThisMachine(h, r.PeerIP) {
 		return false
 	}
 	if len(r.Header.Values("Origin")) > 0 {
@@ -210,18 +203,18 @@ func isLocalRequest(r Request, rule *clientip.Rule) bool {
 // Lookup is what allowlist matching reads from the router's config
 // (keyLimits.js's allowlistLookup).
 type Lookup struct {
+	// Combos also holds the stored aliases (getModelAliases()), which lie
+	// over BUILTIN_MODEL_ALIASES.
 	Combos *combo.Config
 	// Settings for comboStrategies and comboStrategy (a fusion combo's judge
 	// is a member too).
 	Settings db.Settings
-	// Aliases is getModelAliases(), laid over BUILTIN_MODEL_ALIASES.
-	Aliases *jsjson.Object
 }
 
 // alias is lookup.aliases[raw]: the stored alias, else the built-in one.
 func (l *Lookup) alias(raw string) (any, bool) {
-	if l != nil {
-		if v, ok := l.Aliases.Get(raw); ok {
+	if l != nil && l.Combos != nil {
+		if v, ok := l.Combos.Aliases.Get(raw); ok {
 			return v, true
 		}
 	}
@@ -246,39 +239,23 @@ func (l *Lookup) comboMembers(name string) ([]string, error) {
 	if v, ok := strategies.Get(key); ok {
 		strategy, _ = v.(*jsjson.Object)
 		if strategy == nil && jsjson.Truthy(v) {
-			return nil, decline("combo %q has a strategy entry that is not an object", key)
+			return nil, declined("combo %q has a strategy entry that is not an object", key)
 		}
 	}
-	fallback, _ := strategy.Get("fallbackStrategy")
-	chosen := fallback
-	if !jsjson.Truthy(fallback) {
+	chosen, _ := strategy.Get("fallbackStrategy")
+	if !jsjson.Truthy(chosen) {
 		chosen, _ = l.Settings.Get("comboStrategy")
 	}
 	if s, _ := chosen.(string); s == "fusion" {
 		// The judge counts as a member; fusion combos are Node's anyway.
-		return nil, decline("a fusion combo in the allowlist walk")
+		return nil, declined("a fusion combo in the allowlist walk")
 	}
 	return members, nil
 }
 
-// asciiID: allowlist matching lowercases and trims with JavaScript's Unicode
-// rules, which differ from Go's for a few letters, so only printable ASCII
-// is matched here.
-func asciiID(s string) error {
-	for i := 0; i < len(s); i++ {
-		if s[i] < 0x20 || s[i] > 0x7e {
-			return decline("an allowlist entry or model that is not printable ASCII")
-		}
-	}
-	if combo.HasProtoKey(s) {
-		return decline("an allowlist entry or model naming an Object.prototype member")
-	}
-	return nil
-}
-
 // canonicalModel: "CC/Claude-Opus-5-5[1m]" → "claude/claude-opus-5-5".
 func canonicalModel(id string) string {
-	t := strings.TrimSpace(id)
+	t := trim(id)
 	if t == "" {
 		return ""
 	}
@@ -301,51 +278,61 @@ func matchesAllowed(requested string, allowed map[string]bool) bool {
 	return !strings.Contains(bare, "/") && allowed[bare]
 }
 
+// allowlist is one key's allowedModels, checked and canonicalized once.
+type allowlist struct {
+	entries []string
+	allowed map[string]bool
+	lookup  *Lookup
+}
+
 // IsModelAllowed is keyLimits.js's isModelAllowed: the model is on the list,
 // or is an alias whose target is, or is a combo whose every member is (a
-// combo named on the list is allowed whole).
-func IsModelAllowed(requested string, allowedModels []string, l *Lookup, depth int) (bool, error) {
+// combo named on the list is allowed whole). An empty list allows anything.
+func IsModelAllowed(requested string, allowedModels []string, l *Lookup) (bool, error) {
 	if len(allowedModels) == 0 {
 		return true, nil
 	}
-	if err := asciiID(requested); err != nil {
-		return false, err
-	}
+	a := &allowlist{entries: allowedModels, allowed: map[string]bool{}, lookup: l}
 	for _, e := range allowedModels {
-		if err := asciiID(e); err != nil {
+		if err := combo.CheckID(pkg, "an allowlist entry", e); err != nil {
 			return false, err
 		}
+		if c := canonicalModel(e); c != "" {
+			a.allowed[c] = true
+		}
+	}
+	return a.allows(requested, 0)
+}
+
+func (a *allowlist) allows(requested string, depth int) (bool, error) {
+	if err := combo.CheckID(pkg, "a model", requested); err != nil {
+		return false, err
 	}
 	req := canonicalModel(requested)
 	if req == "" {
 		return false, nil
 	}
-	allowed := map[string]bool{}
-	for _, e := range allowedModels {
-		if c := canonicalModel(e); c != "" {
-			allowed[c] = true
-		}
-	}
-	raw, _ := combo.StripContextWindowSuffix(strings.TrimSpace(requested))
+	raw := combo.StripContextWindowSuffix(trim(requested))
 	namedExactly := func() bool {
-		for _, e := range allowedModels {
-			if m, _ := combo.StripContextWindowSuffix(strings.TrimSpace(e)); m == raw {
+		for _, e := range a.entries {
+			if combo.StripContextWindowSuffix(trim(e)) == raw {
 				return true
 			}
 		}
 		return false
 	}
 	if !strings.Contains(raw, "/") {
-		members, err := l.comboMembers(raw)
+		members, err := a.lookup.comboMembers(raw)
 		if err != nil {
 			return false, err
 		}
 		if len(members) > 0 {
+			// Routing refuses a combo nested this deep, so it reaches nothing.
 			if namedExactly() || depth >= combo.MaxComboDepth() {
 				return true, nil
 			}
 			for _, m := range members {
-				ok, err := IsModelAllowed(m, allowedModels, l, depth+1)
+				ok, err := a.allows(m, depth+1)
 				if err != nil || !ok {
 					return false, err
 				}
@@ -353,13 +340,13 @@ func IsModelAllowed(requested string, allowedModels []string, l *Lookup, depth i
 			return true, nil
 		}
 	}
-	if target, ok := l.alias(raw); ok {
+	if target, ok := a.lookup.alias(raw); ok {
 		if s, isString := target.(string); isString {
-			if err := asciiID(s); err != nil {
+			if err := combo.CheckID(pkg, "an alias target", s); err != nil {
 				return false, err
 			}
-			return namedExactly() || matchesAllowed(canonicalModel(s), allowed), nil
+			return namedExactly() || matchesAllowed(canonicalModel(s), a.allowed), nil
 		}
 	}
-	return matchesAllowed(req, allowed), nil
+	return matchesAllowed(req, a.allowed), nil
 }

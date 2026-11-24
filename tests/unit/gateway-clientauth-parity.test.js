@@ -5,17 +5,21 @@
 // one, with its key in one of the places Node reads it from. It goes through
 // Node's real public-LLM gate (dashboardGuard.js's proxy) and then chat.ts's
 // checks as it runs them (requireApiKey, missingModel, checkApiKeyLimits,
-// keyHasBudget) over one synthetic key table. The Go port must let a request
+// keyHasBudget) over one synthetic key table in a real Node database. The
+// fixture holds those rows as Node stored them; the Go test loads them into
+// its own SQLite file and reads them through the gateway's readers. The Go
+// port must let a request
 // through exactly when Node does; where it is stricter on purpose, the case
 // says why ("conservative"), and the request goes to Node.
 //
 // Without CLIENTAUTH_RECORD this checks that Node still gives the committed
 // answers. With CLIENTAUTH_RECORD=1 it writes them.
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterAll } from "vitest";
 import { createRequire } from "node:module";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { fileURLToPath } from "node:url";
+import { closeRepos, openRepos, tempDataDir } from "../helpers/nodeDb.js";
 
 const PEER_TOKEN = "peer-token-fixture-0000000000000000";
 const db = {
@@ -46,6 +50,12 @@ const db = {
     { key: "sk-allow-empty", isActive: 1, allowedModels: JSON.stringify([]) },
     { key: "sk-budget-allow", isActive: 1, budgetUsd: 10, spentUsd: 2, allowedModels: JSON.stringify(["main"]) },
     { key: " sk-padded", isActive: 1 },
+    { key: "sk-disabled-by-owner", isActive: 1, disabledBy: "dashboard" },
+    { key: "sk-allow-object-alias", isActive: 1, allowedModels: JSON.stringify(["hot/model-b"]) },
+    { key: "sk-allow-object-alias-name", isActive: 1, allowedModels: JSON.stringify(["objectAlias"]) },
+    { key: "sk-allow-suffix-member", isActive: 1, allowedModels: JSON.stringify(["hot/model-c(high)"]) },
+    { key: "sk-allowlist-not-array", isActive: 1, allowedModels: JSON.stringify({ main: true }) },
+    { key: "sk-allowlist-non-strings", isActive: 1, allowedModels: JSON.stringify([7, null]) },
   ],
   combos: {
     main: ["hot/model-a", "hot/model-b"],
@@ -53,18 +63,14 @@ const db = {
     d1: ["d2"], d2: ["d3"], d3: ["d4"], d4: ["d5"], d5: ["hot/model-z"],
     loop: ["loop"],
     fusey: ["hot/model-a"],
+    suffixed: ["hot/model-c(high)"],
   },
-  aliases: { fast: "hot/model-a" },
+  aliases: { fast: "hot/model-a", objectAlias: { provider: "hot", model: "model-b" } },
   comboStrategies: { fusey: { fallbackStrategy: "fusion", judgeModel: " hot/judge " } },
 };
 
-const rowFor = (key) => {
-  const row = db.keys.find((k) => k.key === key);
-  return row ? { id: `id-${key.trim()}`, name: key.trim(), createdAt: "2026-01-01T00:00:00.000Z", ...row } : null;
-};
-
-const settings = { requireApiKey: true, comboStrategy: "fallback", comboStrategies: db.comboStrategies };
-
+// Only what isn't the database is mocked: Next's response helpers, the CLI
+// token (which needs a machine id), the dashboard session and OIDC.
 vi.mock("next/server", () => ({
   NextResponse: {
     next: () => ({ next: true }),
@@ -72,27 +78,30 @@ vi.mock("next/server", () => ({
     redirect: (url) => ({ status: 307, url }),
   },
 }));
-vi.mock("@/lib/localDb", () => ({
-  getSettings: async () => structuredClone(settings),
-  validateApiKey: async (key) => { const row = rowFor(key); return !!row && (row.isActive === 1 || row.isActive === true); },
-  getModelAliases: async () => structuredClone(db.aliases),
-  getComboByName: async (name) => (Object.hasOwn(db.combos, name) ? { id: `c-${name}`, name, models: structuredClone(db.combos[name]) } : null),
-  getProviderNodes: async () => [],
-}));
-vi.mock("@/lib/db/index.js", async (importOriginal) => {
-  const actual = await importOriginal();
-  const { rowToKey } = await import("@/lib/db/repos/apiKeysRepo.js");
-  return {
-    ...actual,
-    getApiKeyPolicy: async (key) => (key ? rowToKey(rowFor(key)) : null),
-    getModelAliases: async () => structuredClone(db.aliases),
-    getSettings: async () => structuredClone(settings),
-  };
-});
 vi.mock("@/lib/auth/cliToken.js", () => ({ CLI_TOKEN_HEADER: "x-9r-cli-token", isValidCliToken: async () => false }));
 vi.mock("@/lib/auth/dashboardSession", () => ({ verifyDashboardAuthToken: async () => false, getDashboardAuthSession: async () => null }));
-vi.mock("@/lib/db/helpers/metaStore.js", () => ({ getMeta: async () => "0", setMeta: async () => {} }));
 vi.mock("@/lib/auth/oidc", () => ({ isOidcConfigured: () => false }));
+
+// The key table, combos and aliases in a real Node database, read by the
+// real repos (validateApiKey, getApiKeyPolicy, getComboByName, getModelAliases).
+const NOW = "2026-01-01T00:00:00.000Z";
+const dir = tempDataDir("gateway-clientauth-");
+const { adapter, repos } = await openRepos("sql.js", dir);
+for (const row of db.keys) {
+  const full = { id: `id-${row.key.trim()}`, name: row.key.trim(), createdAt: NOW, ...row };
+  const cols = Object.keys(full);
+  adapter.run(`INSERT INTO apiKeys(${cols.join(", ")}) VALUES(${cols.map(() => "?").join(", ")})`, cols.map((c) => full[c]));
+}
+for (const [name, models] of Object.entries(db.combos)) {
+  adapter.run(`INSERT INTO combos(id, name, kind, models, createdAt, updatedAt) VALUES(?, ?, NULL, ?, ?, ?)`, [`combo-${name}`, name, JSON.stringify(models), NOW, NOW]);
+}
+for (const [key, value] of Object.entries(db.aliases)) {
+  adapter.run(`INSERT INTO kv(scope, key, value) VALUES('modelAliases', ?, ?)`, [key, JSON.stringify(value)]);
+}
+afterAll(() => {
+  closeRepos();
+  rmSync(dir, { recursive: true, force: true });
+});
 
 const { proxy } = await import("../../src/dashboardGuard.js");
 const { isValidApiKey, extractApiKey } = await import("../../src/sse/services/auth.js");
@@ -112,20 +121,31 @@ const RECORD = process.env.CLIENTAUTH_RECORD === "1";
 const LOCAL = { socketIp: "127.0.0.1", headers: { host: "localhost:20128" } };
 const REMOTE = { socketIp: "203.0.113.7", headers: { host: "router.example.test" } };
 
-// One case: who sends it, its headers, the query, the model, the setting.
+// One case: who sends it, its headers, the query, the model, the settings.
+// requireApiKey is the stored value, whatever its type. conservative is the
+// words the Go decline must contain when Node serves the case and Go, on
+// purpose, sends it to Node.
 function build() {
   const cases = [];
-  const add = (name, { peer = LOCAL, headers = {}, query = "", model = "main", requireApiKey = true, conservative = "" } = {}) =>
-    cases.push({ name, socketIp: peer.socketIp, headers: { ...peer.headers, ...headers }, query, model, requireApiKey, conservative });
+  const add = (name, { peer = LOCAL, headers = {}, query = "", model = "main", requireApiKey = true, comboStrategy = "fallback", conservative = "" } = {}) =>
+    cases.push({ name, socketIp: peer.socketIp, headers: { ...peer.headers, ...headers }, query, model, requireApiKey, comboStrategy, conservative });
 
   for (const row of db.keys) {
     for (const [where, peer] of [["local", LOCAL], ["remote", REMOTE]]) {
       for (const requireApiKey of [true, false]) {
-        const conservative = /unicode/.test(row.key) ? "a non-ASCII allowlist entry" : "";
+        const conservative = /unicode/.test(row.key) ? "not printable ASCII" : "";
         add(`${row.key.trim()} ${where} requireApiKey=${requireApiKey}`, { peer, headers: { "x-api-key": row.key }, requireApiKey, conservative });
       }
     }
   }
+  // requireApiKey is read by truthiness.
+  for (const requireApiKey of [1, "yes", 0, "", null]) {
+    add(`no key local requireApiKey=${JSON.stringify(requireApiKey)}`, { requireApiKey });
+  }
+  // A global fusion strategy makes every combo's judge a member.
+  add("global fusion, no allowlist", { peer: REMOTE, headers: { "x-api-key": "sk-active" }, comboStrategy: "fusion" });
+  add("global fusion, allowlist walks the combo", { peer: REMOTE, headers: { "x-api-key": "sk-allow-members" }, comboStrategy: "fusion", conservative: "fusion" });
+  add("global fusion, combo named", { peer: REMOTE, headers: { "x-api-key": "sk-allow-combo" }, comboStrategy: "fusion", conservative: "fusion" });
   for (const requireApiKey of [true, false]) {
     add(`no key local requireApiKey=${requireApiKey}`, { requireApiKey });
     add(`no key remote requireApiKey=${requireApiKey}`, { peer: REMOTE, requireApiKey });
@@ -140,9 +160,9 @@ function build() {
   add("empty bearer hides x-api-key", { peer: REMOTE, headers: { authorization: "Bearer ", "x-api-key": "sk-active" } });
   add("x-goog-api-key", { peer: REMOTE, headers: { "x-goog-api-key": "sk-active" } });
   add("x-api-key before x-goog-api-key", { peer: REMOTE, headers: { "x-api-key": "sk-inactive", "x-goog-api-key": "sk-active" } });
-  add("query key", { peer: REMOTE, query: "key=sk-active", conservative: "the key in the query string" });
+  add("query key", { peer: REMOTE, query: "key=sk-active", conservative: "query string" });
   add("query without a key", { peer: REMOTE, query: "beta=true", headers: { "x-api-key": "sk-active" } });
-  add("query and no header, local, no key needed", { query: "beta=true", requireApiKey: false, conservative: "a query string with no key header" });
+  add("query and no header, local, no key needed", { query: "beta=true", requireApiKey: false, conservative: "query string" });
   add("padded key", { peer: REMOTE, headers: { authorization: "Bearer  sk-padded" } });
   // Management keys, however padded.
   add("management key local", { headers: { "x-api-key": "10r-mgmt-abc" }, requireApiKey: false });
@@ -150,7 +170,7 @@ function build() {
   add("management key padded", { headers: { authorization: "Bearer  x10r-mgmt-abc" }, requireApiKey: false });
   // Who is on this machine.
   add("local with a forwarding header", { headers: { "x-forwarded-for": "198.51.100.4" }, requireApiKey: false });
-  add("local with a loopback origin", { headers: { origin: "http://localhost:3000" }, requireApiKey: false, conservative: "an Origin header" });
+  add("local with a loopback origin", { headers: { origin: "http://localhost:3000" }, requireApiKey: false, conservative: "not on this machine" });
   add("local with a loopback origin and a key", { headers: { origin: "http://localhost:3000", "x-api-key": "sk-active" }, requireApiKey: false });
   add("local with a foreign origin", { headers: { origin: "https://other.example.test" }, requireApiKey: false });
   add("local with a bad origin", { headers: { origin: "null" }, requireApiKey: false });
@@ -168,8 +188,10 @@ function build() {
     ["loop", "sk-allow-members"], ["fusey", "sk-allow-fusion"], ["fusey", "sk-allow-members"], ["hot/model-a", "sk-allow-bare"],
     ["other/model-a", "sk-allow-bare"], ["hot/x/model-a", "sk-allow-bare"], ["HOT/MODEL-A", "sk-allow-members"], ["main", "sk-allow-upper-members"],
     ["cc/claude-x", "sk-allow-members"], ["main", "sk-budget-allow"], ["nested", "sk-budget-allow"],
+    ["objectAlias", "sk-allow-object-alias"], ["objectAlias", "sk-allow-object-alias-name"], ["suffixed", "sk-allow-suffix-member"],
+    ["suffixed", "sk-allow-members"], ["hot/model-c(high)", "sk-allow-suffix-member"],
   ]) {
-    const conservative = /^fusey$/.test(model) ? "a fusion combo in the allowlist walk" : "";
+    const conservative = /^fusey$/.test(model) ? "fusion" : "";
     add(`model ${JSON.stringify(model)} with ${key}`, { peer: REMOTE, headers: { "x-api-key": key }, model, conservative });
   }
   return cases;
@@ -194,12 +216,12 @@ function guardRequest(c) {
 
 // The request through Node: the gate, then chat.ts's checks in its order.
 async function runNode(c) {
-  settings.requireApiKey = c.requireApiKey;
+  await repos.updateSettings({ requireApiKey: c.requireApiKey, comboStrategy: c.comboStrategy, comboStrategies: db.comboStrategies });
   const request = guardRequest(c);
   const gate = await proxy(request);
   if (!gate?.next) return { gate: gate.status };
   const apiKey = extractApiKey(request);
-  if (c.requireApiKey) {
+  if ((await repos.getSettings()).requireApiKey) {
     if (!apiKey) return { gate: "next", chat: 401 };
     if (!(await isValidApiKey(apiKey))) return { gate: "next", chat: 401 };
   }
@@ -219,7 +241,13 @@ describe("client check fixtures for the Go gateway", () => {
     const passes = cases.filter((c) => c.node.chat === "pass").length;
     expect(passes).toBeGreaterThan(30);
     expect(cases.length - passes).toBeGreaterThan(30);
-    const text = JSON.stringify({ db, cases }, null, 1) + "\n";
+    // The rows as Node stored them, for the Go test to load.
+    const rows = {
+      apiKeys: adapter.all(`SELECT * FROM apiKeys ORDER BY rowid`),
+      combos: adapter.all(`SELECT * FROM combos ORDER BY rowid`),
+      kv: adapter.all(`SELECT * FROM kv WHERE scope = 'modelAliases' ORDER BY rowid`),
+    };
+    const text = JSON.stringify({ rows, comboStrategies: db.comboStrategies, cases }, null, 1) + "\n";
     if (RECORD) writeFileSync(FIXTURE_FILE, text);
     expect(readFileSync(FIXTURE_FILE, "utf8"), "Node's client checks changed: regenerate with CLIENTAUTH_RECORD=1 and update gateway/internal/clientauth").toBe(text);
   });

@@ -1,21 +1,21 @@
 package combo
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"testing"
 
-	"github.com/some-du6e/10router/gateway/internal/db/jsjson"
+	"github.com/some-du6e/10router/gateway/internal/db"
+	"github.com/some-du6e/10router/gateway/internal/db/dbtest"
+	"github.com/some-du6e/10router/gateway/internal/decline"
 )
 
 // fixture is testdata/resolve.json, recorded from Node by
 // tests/unit/gateway-combo-parity.test.js.
 type fixture struct {
-	Config struct {
-		Nodes  []map[string]any `json:"nodes"`
-		Combos map[string][]any `json:"combos"`
-	} `json:"config"`
+	// Rows are the tables as Node stored them.
+	Rows  map[string][]map[string]any `json:"rows"`
 	Cases []struct {
 		Model string `json:"model"`
 		Info  struct {
@@ -28,6 +28,24 @@ type fixture struct {
 	} `json:"cases"`
 }
 
+// LoadFixtureDB loads rows into a database shaped like Node's and reads them
+// back through the gateway's snapshot, the production path.
+func LoadFixtureDB(t *testing.T, rows map[string][]map[string]any) *db.Snapshot {
+	t.Helper()
+	path, node := dbtest.New(t, dbtest.Options{})
+	dbtest.InsertRows(t, node, rows)
+	d, err := db.Open(path, db.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	s, err := d.LoadSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
 func loadFixture(t *testing.T) (*fixture, *Config) {
 	t.Helper()
 	raw, err := os.ReadFile("testdata/resolve.json")
@@ -38,28 +56,7 @@ func loadFixture(t *testing.T) (*fixture, *Config) {
 	if err := json.Unmarshal(raw, &f); err != nil {
 		t.Fatal(err)
 	}
-	// The aliases keep their stored shapes: read them as Node's JSON does.
-	var whole struct {
-		Config struct {
-			Aliases json.RawMessage `json:"aliases"`
-		} `json:"config"`
-	}
-	if err := json.Unmarshal(raw, &whole); err != nil {
-		t.Fatal(err)
-	}
-	aliases, err := jsjson.ParseObject(whole.Config.Aliases)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := &Config{Combos: f.Config.Combos, Aliases: aliases}
-	for _, n := range f.Config.Nodes {
-		node := Node{ID: n["id"].(string), Type: n["type"].(string)}
-		if p, ok := n["prefix"].(string); ok {
-			node.Prefix, node.HasPrefix = p, true
-		}
-		c.Nodes = append(c.Nodes, node)
-	}
-	return &f, c
+	return &f, FromSnapshot(LoadFixtureDB(t, f.Rows))
 }
 
 func TestResolutionParityWithNode(t *testing.T) {
@@ -93,27 +90,30 @@ func TestResolutionParityWithNode(t *testing.T) {
 				}
 			}
 
-			var nodeMembers []any
-			_ = json.Unmarshal(tc.ComboModels, &nodeMembers)
+			var node any
+			if err := json.Unmarshal(tc.ComboModels, &node); err != nil {
+				t.Fatalf("fixture comboModels: %v", err)
+			}
 			members, err := c.ComboModels(tc.Model)
-			allStrings := true
+			nodeMembers, isArray := node.([]any)
+			allStrings := isArray
 			for _, m := range nodeMembers {
 				if _, ok := m.(string); !ok {
 					allStrings = false
 				}
 			}
-			if !allStrings {
-				// Members Node would route however its loops read them: declined.
-				var d *DeclineError
-				if !errors.As(err, &d) {
-					t.Errorf("Node's members %v aren't all strings; Go must decline, got %v, %v", nodeMembers, members, err)
+			if node != nil && !allStrings {
+				// Members Node would route however its loops read them (a
+				// non-string member, a string of members, a throw): declined.
+				if !decline.Is(err) {
+					t.Errorf("Node's members %s aren't a list of strings; Go must decline, got %v, %v", tc.ComboModels, members, err)
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("Go declined: %v", err)
 			}
-			if len(members) != len(nodeMembers) || (nodeMembers == nil) != (members == nil) {
+			if len(members) != len(nodeMembers) || (node == nil) != (members == nil) {
 				t.Fatalf("ComboModels = %#v, Node %s", members, tc.ComboModels)
 			}
 			for i := range members {
@@ -128,20 +128,13 @@ func TestResolutionParityWithNode(t *testing.T) {
 func TestDeclinesIDsNodeReadsDifferently(t *testing.T) {
 	_, c := loadFixture(t)
 	for _, id := range []string{"constructor", "hot/toString", "__proto__/x", "deepseeK-r1", "café", "tab\tmodel"} {
-		if _, err := c.ModelInfo(id); err == nil {
-			t.Errorf("ModelInfo(%q) did not decline", id)
-		}
-		if _, err := c.ComboModels(id); err == nil && !containsSlash(id) {
-			t.Errorf("ComboModels(%q) did not decline", id)
+		if _, err := c.ModelInfo(id); !decline.Is(err) {
+			t.Errorf("ModelInfo(%q) did not decline: %v", id, err)
 		}
 	}
-}
-
-func containsSlash(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] == '/' {
-			return true
+	for _, id := range []string{"constructor", "café"} {
+		if _, err := c.ComboModels(id); !decline.Is(err) {
+			t.Errorf("ComboModels(%q) did not decline: %v", id, err)
 		}
 	}
-	return false
 }

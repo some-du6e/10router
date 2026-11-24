@@ -489,7 +489,7 @@ dashboard quota tracker; add a combo fallback.
 
 - Node.js 20+
 - Next.js 16, React 19, Tailwind CSS 4
-- SQLite (`bun:sqlite` → `better-sqlite3` → `node:sqlite` → `sql.js` fallback chain)
+- SQLite (`bun:sqlite` → `better-sqlite3` → `node:sqlite` → `sql.js` fallback chain; no `sql.js` with `GATEWAY_MODE=native`)
 - Server-Sent Events
 - OAuth 2.0 (PKCE) + JWT + API keys
 

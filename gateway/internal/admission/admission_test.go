@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -205,6 +206,76 @@ func TestMemoryHighWaterWaitsForMemoryToDrop(t *testing.T) {
 	}
 }
 
+// A Content-Length as big as a client likes is counted clamped, so the sums
+// can't wrap negative and let everything in.
+func TestHugeLengthDoesNotWrapTheSums(t *testing.T) {
+	g := gate(Options{BudgetBytes: 100 * mib, Copies: 16, MaxWait: 0})
+	tk, _, _ := g.Acquire(context.Background(), 10*mib)
+	defer tk.Release()
+	if _, r, _ := g.Acquire(context.Background(), math.MaxInt64); r == nil || r.Reason != "budget" {
+		t.Fatalf("a 2^63-1 body beside another fit the budget: %+v", r)
+	}
+	tk.NoteBodyLength(math.MaxInt64)
+	if s := g.Snapshot(); s.Held <= 0 || s.Pending <= 0 {
+		t.Fatalf("the sums wrapped: %+v", s)
+	}
+	if _, r, _ := g.Acquire(context.Background(), 1); r == nil {
+		t.Fatal("a tiny body got in beside a huge one")
+	}
+}
+
+func TestOutOfTurnAdmitWhenTheWaitEnds(t *testing.T) {
+	var mem atomic.Int64
+	mem.Store(2000)
+	// No recheck runs before the timer: memory drops in between, and the
+	// waiter's own timer finds the room.
+	g := gate(Options{HighWaterBytes: 1000, MaxWait: 40 * time.Millisecond, Recheck: time.Hour, Memory: mem.Load})
+	tk, _, _ := g.Acquire(context.Background(), 1)
+	defer tk.Release()
+	go func() {
+		for g.Snapshot().Waiting == 0 {
+			time.Sleep(time.Millisecond)
+		}
+		mem.Store(0)
+	}()
+	t2, r, err := g.Acquire(context.Background(), 1)
+	if err != nil || r != nil || t2 == nil {
+		t.Fatalf("got %v %+v %v", t2, r, err)
+	}
+	t2.Release()
+}
+
+func TestMemoryRefusalAndNoWait(t *testing.T) {
+	g := gate(Options{HighWaterBytes: 10, MaxWait: 0, Memory: func() int64 { return 100 }})
+	tk, _, _ := g.Acquire(context.Background(), 1)
+	defer tk.Release()
+	if _, r, _ := g.Acquire(context.Background(), 1); r == nil || r.Reason != "memory" {
+		t.Fatalf("refusal %+v", r)
+	}
+}
+
+// A guessed length that turns out smaller lets a waiter in.
+func TestShrinkingGuessLetsAWaiterIn(t *testing.T) {
+	g := gate(Options{BudgetBytes: 6 * mib, UnknownBody: 4 * mib, MaxWait: time.Second})
+	a, _, _ := g.Acquire(context.Background(), -1)
+	got := make(chan *Ticket)
+	go func() {
+		tk, _, _ := g.Acquire(context.Background(), 4*mib)
+		got <- tk
+	}()
+	for g.Snapshot().Waiting == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	a.NoteBodyLength(1 * mib)
+	select {
+	case b := <-got:
+		b.Release()
+	case <-time.After(time.Second):
+		t.Fatal("the waiter stayed out after the guess shrank")
+	}
+	a.Release()
+}
+
 func TestFitBudget(t *testing.T) {
 	var g int64 = 2048 * mib
 	if b, why := FitBudget(256*mib, 900*mib, g); b != 256*mib || why != "" {
@@ -216,6 +287,10 @@ func TestFitBudget(t *testing.T) {
 	}
 	if b, _ := FitBudget(256*mib, 1900*mib, g); b != MinBudgetMB*mib {
 		t.Fatalf("floor: %d", b)
+	}
+	// The floor never raises a budget set below it.
+	if b, why := FitBudget(16*mib, 400*mib, 512*mib); b != 16*mib || why != "" {
+		t.Fatalf("a 16MB budget became %dMB: %q", b/mib, why)
 	}
 	if b, why := FitBudget(256*mib, 900*mib, 0); b != 256*mib || why != "" {
 		t.Fatal("no container limit: unchanged")
@@ -241,5 +316,18 @@ func TestFromEnvReadsNodesVariablesLikeNode(t *testing.T) {
 	}
 	if n := NodeBudgetBytes(func(string) string { return "" }); n != 900*mib {
 		t.Fatalf("Node's default budget %d", n)
+	}
+	env = map[string]string{
+		"GATEWAY_MEMORY_HIGH_WATER_MB":    "0",
+		"GATEWAY_BODY_COPIES":             "3",
+		"GATEWAY_INFLIGHT_BODY_BUDGET_MB": "9007199254740991",
+	}
+	o = FromEnv(func(k string) string { return env[k] }, 1000*mib)
+	if o.HighWaterBytes != 0 || o.Copies != 3 || o.BudgetBytes != maxMB*mib {
+		t.Fatalf("explicit values: %+v", o)
+	}
+	env["GATEWAY_BODY_COPIES"] = "17"
+	if o := FromEnv(func(k string) string { return env[k] }, 0); o.Copies != DefaultCopies {
+		t.Fatalf("copies over the range: %d", o.Copies)
 	}
 }

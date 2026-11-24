@@ -1,112 +1,224 @@
 {
- "config": {
-  "nodes": [
+ "rows": {
+  "providerNodes": [
    {
-    "id": "openai-compatible-chat-0001",
+    "id": "openai-compatible-chat-b002",
     "type": "openai-compatible",
-    "prefix": "hot"
+    "name": "openai-compatible-chat-b002",
+    "data": "{\"prefix\":\"hot\"}",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
    },
    {
-    "id": "openai-compatible-chat-0002",
+    "id": "openai-compatible-chat-a001",
     "type": "openai-compatible",
-    "prefix": "hot"
+    "name": "openai-compatible-chat-a001",
+    "data": "{\"prefix\":\"hot\"}",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
    },
    {
     "id": "openai-compatible-responses-0003",
     "type": "openai-compatible",
-    "prefix": "resp"
+    "name": "openai-compatible-responses-0003",
+    "data": "{\"prefix\":\"resp\"}",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
    },
    {
     "id": "anthropic-compatible-0004",
     "type": "anthropic-compatible",
-    "prefix": "anth"
+    "name": "anthropic-compatible-0004",
+    "data": "{\"prefix\":\"anth\"}",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
    },
    {
     "id": "anthropic-compatible-0005",
     "type": "anthropic-compatible",
-    "prefix": "both"
+    "name": "anthropic-compatible-0005",
+    "data": "{\"prefix\":\"both\"}",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
    },
    {
     "id": "openai-compatible-chat-0006",
     "type": "openai-compatible",
-    "prefix": "both"
+    "name": "openai-compatible-chat-0006",
+    "data": "{\"prefix\":\"both\"}",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
    },
    {
     "id": "custom-embedding-0007",
     "type": "custom-embedding",
-    "prefix": "emb"
+    "name": "custom-embedding-0007",
+    "data": "{\"prefix\":\"emb\"}",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
    },
    {
     "id": "openai-compatible-chat-0008",
     "type": "openai-compatible",
-    "prefix": "openai"
+    "name": "openai-compatible-chat-0008",
+    "data": "{\"prefix\":\"openai\"}",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
    },
    {
     "id": "openai-compatible-chat-0009",
     "type": "openai-compatible",
-    "prefix": "xmtp"
+    "name": "openai-compatible-chat-0009",
+    "data": "{\"prefix\":\"xmtp\"}",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
    },
    {
     "id": "openai-compatible-chat-0010",
     "type": "openai-compatible",
-    "prefix": ""
+    "name": "openai-compatible-chat-0010",
+    "data": "{\"prefix\":\"\"}",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
    },
    {
     "id": "openai-compatible-chat-0011",
     "type": "openai-compatible",
-    "prefix": 7
+    "name": "openai-compatible-chat-0011",
+    "data": "{\"prefix\":7}",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
    },
    {
     "id": "openai-compatible-chat-0012",
-    "type": "openai-compatible"
+    "type": "openai-compatible",
+    "name": "openai-compatible-chat-0012",
+    "data": "{}",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
    }
   ],
-  "combos": {
-   "main": [
-    "hot/model-a",
-    "hot/model-b(high)",
-    "anth/model-c"
-   ],
-   "nested": [
-    "main",
-    "hot/model-d"
-   ],
-   "self": [
-    "self",
-    "hot/model-a"
-   ],
-   "empty": [],
-   "mixed": [
-    "hot/model-a",
-    7,
-    null
-   ],
-   "with[1m]": [
-    "hot/model-a"
-   ],
-   "grok-build": [
-    "hot/model-e"
-   ]
-  },
-  "aliases": {
-   "fast": "hot/model-a",
-   "objectAlias": {
-    "provider": "hot",
-    "model": "model-b"
+  "combos": [
+   {
+    "id": "combo-main",
+    "name": "main",
+    "kind": null,
+    "models": "[\"hot/model-a\",\"hot/model-b(high)\",\"anth/model-c\"]",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
    },
-   "objectBuiltin": {
-    "provider": "cc",
-    "model": "claude-x"
+   {
+    "id": "combo-nested",
+    "name": "nested",
+    "kind": null,
+    "models": "[\"main\",\"hot/model-d\"]",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
    },
-   "halfObject": {
-    "provider": "hot"
+   {
+    "id": "combo-self",
+    "name": "self",
+    "kind": null,
+    "models": "[\"self\",\"hot/model-a\"]",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
    },
-   "noSlash": "model-only",
-   "falsy": "",
-   "numberAlias": 5,
-   "builtinTarget": "gcli/whatever",
-   "main": "hot/shadowed-by-combo"
-  }
+   {
+    "id": "combo-empty",
+    "name": "empty",
+    "kind": null,
+    "models": "[]",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+   },
+   {
+    "id": "combo-mixed",
+    "name": "mixed",
+    "kind": null,
+    "models": "[\"hot/model-a\",7,null]",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+   },
+   {
+    "id": "combo-with[1m]",
+    "name": "with[1m]",
+    "kind": null,
+    "models": "[\"hot/model-a\"]",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+   },
+   {
+    "id": "combo-grok-build",
+    "name": "grok-build",
+    "kind": null,
+    "models": "[\"hot/model-e\"]",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+   },
+   {
+    "id": "combo-stringModels",
+    "name": "stringModels",
+    "kind": null,
+    "models": "\"hot/model-a\"",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+   },
+   {
+    "id": "combo-brokenModels",
+    "name": "brokenModels",
+    "kind": null,
+    "models": "{not json",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+   }
+  ],
+  "kv": [
+   {
+    "scope": "modelAliases",
+    "key": "fast",
+    "value": "\"hot/model-a\""
+   },
+   {
+    "scope": "modelAliases",
+    "key": "objectAlias",
+    "value": "{\"provider\":\"hot\",\"model\":\"model-b\"}"
+   },
+   {
+    "scope": "modelAliases",
+    "key": "objectBuiltin",
+    "value": "{\"provider\":\"cc\",\"model\":\"claude-x\"}"
+   },
+   {
+    "scope": "modelAliases",
+    "key": "halfObject",
+    "value": "{\"provider\":\"hot\"}"
+   },
+   {
+    "scope": "modelAliases",
+    "key": "noSlash",
+    "value": "\"model-only\""
+   },
+   {
+    "scope": "modelAliases",
+    "key": "falsy",
+    "value": "\"\""
+   },
+   {
+    "scope": "modelAliases",
+    "key": "numberAlias",
+    "value": "5"
+   },
+   {
+    "scope": "modelAliases",
+    "key": "builtinTarget",
+    "value": "\"gcli/whatever\""
+   },
+   {
+    "scope": "modelAliases",
+    "key": "main",
+    "value": "\"hot/shadowed-by-combo\""
+   }
+  ]
  },
  "cases": [
   {
@@ -220,6 +332,24 @@
    "comboLookupName": "grok-build"
   },
   {
+   "model": "stringModels",
+   "info": {
+    "provider": null,
+    "model": "stringModels"
+   },
+   "comboModels": "hot/model-a",
+   "comboLookupName": "stringModels"
+  },
+  {
+   "model": "brokenModels",
+   "info": {
+    "provider": null,
+    "model": "brokenModels"
+   },
+   "comboModels": null,
+   "comboLookupName": "brokenModels"
+  },
+  {
    "model": "fast",
    "info": {
     "provider": "hot",
@@ -294,7 +424,7 @@
   {
    "model": "hot/model-a",
    "info": {
-    "provider": "openai-compatible-chat-0001",
+    "provider": "openai-compatible-chat-b002",
     "model": "model-a"
    },
    "comboModels": null,
@@ -303,7 +433,7 @@
   {
    "model": "hot/model-b(high)",
    "info": {
-    "provider": "openai-compatible-chat-0001",
+    "provider": "openai-compatible-chat-b002",
     "model": "model-b(high)"
    },
    "comboModels": null,
@@ -312,7 +442,7 @@
   {
    "model": "hot/model-a[1m]",
    "info": {
-    "provider": "openai-compatible-chat-0001",
+    "provider": "openai-compatible-chat-b002",
     "model": "model-a"
    },
    "comboModels": null,
@@ -321,7 +451,7 @@
   {
    "model": "hot/model-a[200K]",
    "info": {
-    "provider": "openai-compatible-chat-0001",
+    "provider": "openai-compatible-chat-b002",
     "model": "model-a"
    },
    "comboModels": null,
@@ -330,7 +460,7 @@
   {
    "model": "hot/a/b",
    "info": {
-    "provider": "openai-compatible-chat-0001",
+    "provider": "openai-compatible-chat-b002",
     "model": "a/b"
    },
    "comboModels": null,
@@ -339,7 +469,7 @@
   {
    "model": "hot/",
    "info": {
-    "provider": "openai-compatible-chat-0001",
+    "provider": "openai-compatible-chat-b002",
     "model": ""
    },
    "comboModels": null,

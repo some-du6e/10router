@@ -1,22 +1,27 @@
 // Golden fixtures for the Go gateway's model and combo resolution
-// (gateway/internal/combo, docs/GO_GATEWAY.md "Parity testing").
+// (gateway/internal/combo, docs/GO_GATEWAY.md "Phase 2c").
 //
-// Each model id goes through Node's real getModelInfo and getComboModels
-// (src/sse/services/model.js) over one synthetic database: custom nodes with
-// prefixes, combos (nested, empty, with non-string members), and aliases of
-// every stored shape. The Go test must give the same answers.
+// One synthetic database (custom nodes with prefixes, combos nested, empty and
+// with non-string members, aliases of every stored shape) is written to a real
+// Node database, and each model id goes through Node's real getModelInfo and
+// getComboModels (src/sse/services/model.js) over it. The fixture holds the
+// rows as Node stored them, which the Go test loads into its own SQLite file
+// and reads through the gateway's snapshot, and the answers it must give.
 //
 // Without COMBO_RECORD this checks that Node still gives the committed answers
 // and table export, so a Node change the Go port would miss fails here too.
 // With COMBO_RECORD=1 it writes them.
-import { describe, it, expect, vi } from "vitest";
-import { readFileSync, writeFileSync } from "node:fs";
+import { describe, it, expect, afterAll } from "vitest";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { closeRepos, openRepos, tempDataDir } from "../helpers/nodeDb.js";
 
 const config = {
+  // Inserted in this order. The two "hot" nodes are out of id order, so the
+  // first match is the first row, not the smaller id.
   nodes: [
-    { id: "openai-compatible-chat-0001", type: "openai-compatible", prefix: "hot" },
-    { id: "openai-compatible-chat-0002", type: "openai-compatible", prefix: "hot" },
+    { id: "openai-compatible-chat-b002", type: "openai-compatible", prefix: "hot" },
+    { id: "openai-compatible-chat-a001", type: "openai-compatible", prefix: "hot" },
     { id: "openai-compatible-responses-0003", type: "openai-compatible", prefix: "resp" },
     { id: "anthropic-compatible-0004", type: "anthropic-compatible", prefix: "anth" },
     { id: "anthropic-compatible-0005", type: "anthropic-compatible", prefix: "both" },
@@ -38,6 +43,8 @@ const config = {
     "with[1m]": ["hot/model-a"],
     "grok-build": ["hot/model-e"],
   },
+  // A combo whose models column isn't an array: rowToCombo's value, whatever it is.
+  rawCombos: { stringModels: "\"hot/model-a\"", brokenModels: "{not json" },
   aliases: {
     fast: "hot/model-a",
     objectAlias: { provider: "hot", model: "model-b" },
@@ -51,18 +58,29 @@ const config = {
   },
 };
 
-vi.mock("@/lib/localDb", () => ({
-  getModelAliases: async () => structuredClone(config.aliases),
-  getComboByName: async (name) => {
-    if (!Object.hasOwn(config.combos, name)) return null;
-    return { id: `combo-${name}`, name, kind: null, models: structuredClone(config.combos[name]) };
-  },
-  getProviderNodes: async ({ type } = {}) => config.nodes.filter((n) => !type || n.type === type).map((n) => ({ ...n })),
-}));
+const NOW = "2026-01-01T00:00:00.000Z";
+const dir = tempDataDir("gateway-combo-");
+const { adapter } = await openRepos("sql.js", dir);
+for (const { id, type, ...data } of config.nodes) {
+  adapter.run(`INSERT INTO providerNodes(id, type, name, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`, [id, type, id, JSON.stringify(data), NOW, NOW]);
+}
+const comboRows = [...Object.entries(config.combos).map(([n, m]) => [n, JSON.stringify(m)]), ...Object.entries(config.rawCombos)];
+for (const [name, models] of comboRows) {
+  adapter.run(`INSERT INTO combos(id, name, kind, models, createdAt, updatedAt) VALUES(?, ?, NULL, ?, ?, ?)`, [`combo-${name}`, name, models, NOW, NOW]);
+}
+for (const [key, value] of Object.entries(config.aliases)) {
+  adapter.run(`INSERT INTO kv(scope, key, value) VALUES('modelAliases', ?, ?)`, [key, JSON.stringify(value)]);
+}
 
+// After openRepos, so they share its database.
 const coreModel = await import("../../open-sse/services/model.js");
 const appModel = await import("../../src/sse/services/model.js");
 const { MAX_COMBO_DEPTH } = await import("../../open-sse/config/runtimeConfig.js");
+
+afterAll(() => {
+  closeRepos();
+  rmSync(dir, { recursive: true, force: true });
+});
 
 const GATEWAY_DIR = fileURLToPath(new URL("../../gateway/internal/combo/", import.meta.url));
 const TABLES_FILE = `${GATEWAY_DIR}tables.json`;
@@ -84,7 +102,7 @@ function tablesText() {
 }
 
 const MODELS = [
-  "main", "main[1m]", "MAIN", "nested", "self", "empty", "mixed", "with[1m]", "with", "grok-build",
+  "main", "main[1m]", "MAIN", "nested", "self", "empty", "mixed", "with[1m]", "with", "grok-build", "stringModels", "brokenModels",
   "fast", "objectAlias", "objectBuiltin", "halfObject", "noSlash", "falsy", "numberAlias", "builtinTarget",
   "hot/model-a", "hot/model-b(high)", "hot/model-a[1m]", "hot/model-a[200K]", "hot/a/b", "hot/",
   "resp/model", "anth/model", "both/model", "emb/model", "openai/gpt-x", "xmtp/model", "/model",
@@ -111,6 +129,13 @@ async function resolve(model) {
   return out;
 }
 
+// The rows as Node stored them, for the Go test to load.
+const dump = () => ({
+  providerNodes: adapter.all(`SELECT * FROM providerNodes ORDER BY rowid`),
+  combos: adapter.all(`SELECT * FROM combos ORDER BY rowid`),
+  kv: adapter.all(`SELECT * FROM kv WHERE scope = 'modelAliases' ORDER BY rowid`),
+});
+
 describe("model and combo resolution fixtures for the Go gateway", () => {
   it("keeps the table export the Go port embeds", () => {
     if (RECORD) writeFileSync(TABLES_FILE, tablesText());
@@ -120,7 +145,9 @@ describe("model and combo resolution fixtures for the Go gateway", () => {
   it("resolves every model id as the committed fixture says", async () => {
     const cases = [];
     for (const model of MODELS) cases.push(await resolve(model));
-    const text = JSON.stringify({ config, cases }, null, 1) + "\n";
+    // The out-of-order nodes really are matched by row order.
+    expect(cases.find((c) => c.model === "hot/model-a").info.provider).toBe("openai-compatible-chat-b002");
+    const text = JSON.stringify({ rows: dump(), cases }, null, 1) + "\n";
     if (RECORD) writeFileSync(FIXTURE_FILE, text);
     expect(readFileSync(FIXTURE_FILE, "utf8"), "Node's model resolution changed: regenerate with COMBO_RECORD=1 and update gateway/internal/combo").toBe(text);
   });

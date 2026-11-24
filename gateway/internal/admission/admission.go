@@ -36,6 +36,16 @@ import (
 
 const mib = 1 << 20
 
+// maxLength caps a body length the gate counts. A client's Content-Length
+// can be anything up to 2^63-1, and Node counts in doubles, where a huge one
+// just never fits; counted as is here, times the copies, it would wrap the
+// int64 sums negative and let everything in. Any body this long is over any
+// budget anyway.
+const maxLength = 1 << 40
+
+// maxMB caps a megabyte setting so it can't wrap once in bytes.
+const maxMB = 1 << 23
+
 //go:embed tables.json
 var tablesJSON []byte
 
@@ -126,30 +136,38 @@ var digits = regexp.MustCompile(`^[0-9]+$`)
 // GATEWAY_MEMORY_HIGH_WATER_MB: unset is Node's fraction of memory.max).
 // containerLimit is memory.max in bytes, 0 when there is none.
 func FromEnv(getenv func(string) string, containerLimit int64) Options {
-	const maxSafe = 1<<53 - 1
 	o := Options{
-		BudgetBytes:   envInt(getenv, "GATEWAY_INFLIGHT_BODY_BUDGET_MB", DefaultBudgetMB, 0, maxSafe) * mib,
+		BudgetBytes:   envMB(getenv, "GATEWAY_INFLIGHT_BODY_BUDGET_MB", DefaultBudgetMB),
 		Copies:        envInt(getenv, "GATEWAY_BODY_COPIES", DefaultCopies, 1, 16),
 		PendingCopies: DefaultPendingCopies,
-		UnknownBody:   envInt(getenv, "INFLIGHT_UNKNOWN_BODY_MB", nodeDefaults.UnknownBodyMB, 0, maxSafe) * mib,
+		UnknownBody:   envMB(getenv, "INFLIGHT_UNKNOWN_BODY_MB", nodeDefaults.UnknownBodyMB),
 		MaxWait:       time.Duration(envInt(getenv, "INFLIGHT_QUEUE_WAIT_MS", nodeDefaults.MaxWaitMs, 0, nodeDefaults.MaxTimerMs)) * time.Millisecond,
 		RetryAfterSec: envInt(getenv, "INFLIGHT_RETRY_AFTER_S", nodeDefaults.RetryAfterSec, 1, 3600),
 		Recheck:       time.Duration(nodeDefaults.RecheckMs) * time.Millisecond,
 	}
-	hw := envInt(getenv, "GATEWAY_MEMORY_HIGH_WATER_MB", -1, 0, maxSafe)
-	switch {
+	switch hw := envMB(getenv, "GATEWAY_MEMORY_HIGH_WATER_MB", -1); {
 	case hw >= 0:
-		o.HighWaterBytes = hw * mib
+		o.HighWaterBytes = hw
 	case containerLimit > 0:
 		o.HighWaterBytes = int64(float64(containerLimit) * nodeDefaults.HighWaterFraction)
 	}
 	return o
 }
 
+// envMB is envInt for a megabyte setting, in bytes (a negative default
+// stays negative). A value past maxMB counts as maxMB, so it can't wrap.
+func envMB(getenv func(string) string, name string, def int64) int64 {
+	n := envInt(getenv, name, def, 0, 1<<53-1)
+	if n < 0 {
+		return n
+	}
+	return min(n, maxMB) * mib
+}
+
 // NodeBudgetBytes is Node's own budget (INFLIGHT_BODY_BUDGET_MB, its bodies
 // times its three copies), read the way Node reads it.
 func NodeBudgetBytes(getenv func(string) string) int64 {
-	return envInt(getenv, "INFLIGHT_BODY_BUDGET_MB", nodeDefaults.BudgetMB, 0, 1<<53-1) * mib
+	return envMB(getenv, "INFLIGHT_BODY_BUDGET_MB", nodeDefaults.BudgetMB)
 }
 
 // FitBudget shrinks the gateway's budget so that it and Node's add up under
@@ -164,7 +182,11 @@ func FitBudget(goBudget, nodeBudget, containerLimit int64) (int64, string) {
 	if goBudget <= room {
 		return goBudget, ""
 	}
-	fit := max(room, MinBudgetMB*mib)
+	// Never above what was set: the floor only stops a shrink going too far.
+	fit := min(goBudget, max(room, MinBudgetMB*mib))
+	if fit == goBudget {
+		return goBudget, ""
+	}
 	return fit, fmt.Sprintf("the gateway's body budget (%dMB) and Node's (%dMB) don't fit under %.0f%% of the container's memory (%dMB); using %dMB for the gateway. Lower INFLIGHT_BODY_BUDGET_MB or GATEWAY_INFLIGHT_BODY_BUDGET_MB to choose the split",
 		goBudget/mib, nodeBudget/mib, nodeDefaults.HighWaterFraction*100, containerLimit/mib, fit/mib)
 }
@@ -249,6 +271,7 @@ func (g *Gate) Acquire(ctx context.Context, bodyLength int64) (*Ticket, *Refusal
 	if !sized {
 		length = g.o.UnknownBody
 	}
+	length = min(length, maxLength)
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -280,8 +303,10 @@ func (g *Gate) Acquire(ctx context.Context, bodyLength int64) (*Ticket, *Refusal
 		return t, nil, nil
 	case <-ctx.Done():
 		g.mu.Lock()
-		if g.leave(w) {
-			g.stats.Aborted++
+		g.stats.Aborted++
+		if g.remove(w) {
+			// Leaving from the front may let the next one in.
+			g.pump()
 			g.mu.Unlock()
 			return nil, nil, ctx.Err()
 		}
@@ -292,32 +317,31 @@ func (g *Gate) Acquire(ctx context.Context, bodyLength int64) (*Ticket, *Refusal
 		return nil, nil, ctx.Err()
 	case <-timer.C:
 		g.mu.Lock()
-		if !g.leave(w) {
+		if !g.remove(w) {
 			g.mu.Unlock()
 			return <-w.ready, nil, nil
 		}
 		// Out of turn but it fits now: let it in rather than turn it away.
+		// Decided before the waiters behind it get the room.
+		var t *Ticket
+		var r *Refusal
 		if why := g.blocker(length); why != "" {
-			r := g.refuse(why, length)
-			g.pump()
-			g.mu.Unlock()
-			return nil, r, nil
+			r = g.refuse(why, length)
+		} else {
+			t = g.grant(length, sized)
 		}
-		t := g.grant(length, sized)
 		g.pump()
 		g.mu.Unlock()
-		return t, nil, nil
+		return t, r, nil
 	}
 }
 
-// leave takes w out of the queue; false when it was already admitted.
-func (g *Gate) leave(w *waiter) bool {
+// remove takes w out of the queue; false when it was already admitted.
+// Callers hold mu, and pump afterwards.
+func (g *Gate) remove(w *waiter) bool {
 	for i, q := range g.queue {
 		if q == w {
 			g.queue = append(g.queue[:i], g.queue[i+1:]...)
-			if i == 0 {
-				g.pump()
-			}
 			return true
 		}
 	}
@@ -438,6 +462,7 @@ func (t *Ticket) NoteBodyLength(n int64) {
 	g := t.g
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	n = min(n, maxLength)
 	if n < 0 || t.released || (t.sized && n <= t.length) {
 		return
 	}
@@ -487,17 +512,15 @@ func (t *Ticket) Release() {
 
 // BusyBody is busyResponse's body for a Claude client: Node's own words.
 func BusyBody(retryAfterSec int64) []byte {
-	msg := strings.ReplaceAll(nodeDefaults.BusyMessage, "{s}", strconv.FormatInt(retryAfterSec, 10))
-	body, _ := json.Marshal(struct {
-		Type  string `json:"type"`
-		Error struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}{Type: "error", Error: struct {
+	type claudeError struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
-	}{nodeDefaults.BusyErrorType, msg}})
+	}
+	msg := strings.ReplaceAll(nodeDefaults.BusyMessage, "{s}", strconv.FormatInt(retryAfterSec, 10))
+	body, _ := json.Marshal(struct {
+		Type  string      `json:"type"`
+		Error claudeError `json:"error"`
+	}{"error", claudeError{nodeDefaults.BusyErrorType, msg}})
 	return body
 }
 

@@ -4,7 +4,7 @@ import "github.com/some-du6e/10router/gateway/internal/db"
 
 // FromSnapshot is the resolution config one database snapshot holds.
 func FromSnapshot(s *db.Snapshot) *Config {
-	c := &Config{Combos: make(map[string][]any, len(s.Combos)), Aliases: s.ModelAliases}
+	c := &Config{Combos: make(map[string]any, len(s.Combos)), Aliases: s.ModelAliases}
 	for name, combo := range s.Combos {
 		c.Combos[name] = combo.Models
 	}

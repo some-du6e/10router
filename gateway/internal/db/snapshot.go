@@ -129,11 +129,9 @@ func loadCombos(ctx context.Context, tx *sql.Tx, s *Snapshot) error {
 			return err
 		}
 		c.Kind = nullString(kind)
-		if list, ok := parseJSONOr(models, nil).([]any); ok {
-			c.Models = list
-		} else {
-			c.Models = []any{}
-		}
+		// parseJson(row.models, []): unreadable is [], and readable JSON that
+		// isn't an array is kept as it is, as rowToCombo keeps it.
+		c.Models = parseJSONOr(models, []any{})
 		c.CreatedAt, c.UpdatedAt = c1.String, u.String
 		// getComboByName: name is UNIQUE.
 		s.Combos[c.Name] = &c

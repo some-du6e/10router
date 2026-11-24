@@ -1,16 +1,19 @@
 name: Gateway route parity
 
 # The Go port of Node's /v1/messages entry (gateway/internal/route,
-# docs/GO_GATEWAY.md "Parity testing"):
+# docs/GO_GATEWAY.md "Phase 2c"):
 #   parity           this PR's Node still makes the committed fixtures (body
 #                    read, [1m] strip, missingModel, the Claude Code bypass,
-#                    the /api/v1 rewrites), and the Go tests match them
+#                    the /api/v1 rewrites, SKIP_PATTERNS), and the Go tests
+#                    match them and pass the 2a corpus's streamed bodies
 #   no-new-failures  the whole vitest suite, base vs this branch
 on:
   pull_request:
     paths:
       - "gateway/internal/route/**"
-      - "gateway/internal/claudeprep/jsvalue.go"
+      - "gateway/internal/claudeprep/**"
+      - "gateway/internal/combo/**"
+      - "gateway/internal/decline/**"
       - "gateway/node-map.json"
       - "tests/unit/gateway-route-parity.test.js"
       - ".github/workflows/gateway-route.yml"

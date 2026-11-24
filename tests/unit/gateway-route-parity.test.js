@@ -21,6 +21,7 @@ const { stripModelContextMarker } = await import("../../open-sse/utils/modelMark
 const { handleBypassRequest } = await import("../../open-sse/utils/bypassHandler.js");
 const { initTranslators } = await import("../../open-sse/translator/index.js");
 const { default: nextConfig } = await import("../../next.config.mjs");
+const { SKIP_PATTERNS } = await import("../../open-sse/config/runtimeConfig.js");
 
 const FIXTURE_FILE = fileURLToPath(new URL("../../gateway/internal/route/testdata/cases.json", import.meta.url));
 const RECORD = process.env.ROUTE_RECORD === "1";
@@ -51,7 +52,8 @@ function build() {
   add("blank model", hot({ model: "   " }));
   add("only a marker", hot({ model: "[1m]" }));
   add("number model", hot({ model: 5 }));
-  add("non-ASCII model", hot({ model: "mäin" }), { conservative: "a non-ASCII model id" });
+  add("non-ASCII model", hot({ model: "mäin" }), { conservative: "not printable ASCII" });
+  add("model naming an Object.prototype member", hot({ model: "constructor" }), { conservative: "Object.prototype" });
   add("not JSON", null, { raw: Buffer.from("{nope") });
   add("array body", null, { raw: Buffer.from("[1,2]") });
   add("null body", null, { raw: Buffer.from("null") });
@@ -59,14 +61,15 @@ function build() {
   add("empty body", null, { raw: Buffer.alloc(0) });
   add("BOM", null, { raw: Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(JSON.stringify(hot()))]) });
   add("invalid UTF-8 in a string", null, { raw: Buffer.concat([Buffer.from("{\"model\":\"main\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"a"), Buffer.from([0xff]), Buffer.from("\"}]}")]) });
-  add("stream false", hot({ stream: false }), { conservative: "not a stream" });
-  add("stream missing", hot({ stream: undefined }), { conservative: "not a stream" });
-  add("stream as a string", hot({ stream: "true" }), { conservative: "not a stream" });
-  add("messages empty", hot({ messages: [] }), { conservative: "no messages" });
-  add("messages missing", hot({ messages: undefined }), { conservative: "no messages" });
-  add("messages is a string", hot({ messages: "hi" }), { conservative: "messages is not an array" });
+  add("stream false", hot({ stream: false }), { conservative: "not stream: true" });
+  add("stream missing", hot({ stream: undefined }), { conservative: "not stream: true" });
+  add("stream as a string", hot({ stream: "true" }), { conservative: "not stream: true" });
+  add("messages empty", hot({ messages: [] }), { conservative: "not a non-empty array" });
+  add("messages missing", hot({ messages: undefined }), { conservative: "not a non-empty array" });
+  add("messages is a string", hot({ messages: "hi" }), { conservative: "not a non-empty array" });
   add("a null message", hot({ messages: [user("hi"), null] }));
   add("a null message, other client", hot({ messages: [user("hi"), null] }), { ua: "custom-client/1.0", conservative: "a message that is not an object" });
+  add("warmup, UA among others", hot({ messages: [user("Warmup")] }), { ua: "proxy-agent/1.0, claude-cli/2.1.0" });
   // Claude Code's requests Node answers itself.
   add("warmup", hot({ messages: [user("Warmup")] }));
   add("warmup in blocks", hot({ messages: [user([text("Warmup")])] }));
@@ -93,7 +96,7 @@ function build() {
   add("null block in the first message", hot({ messages: [user([text("x"), null])] }));
   add("null block in a later user message", hot({ messages: [user("hi"), assistant("ok"), user([null])] }));
   add("null block in an assistant message", hot({ messages: [user("hi"), assistant([null]), user("again")] }));
-  add("non-string text", hot({ messages: [user([{ type: "text", text: 5 }])] }), { conservative: "a text block whose text is not a string" });
+  add("non-string text", hot({ messages: [user([{ type: "text", text: 5 }])] }), { conservative: "text is not a string" });
   add("text block without text", hot({ messages: [user([{ type: "text" }]), user("Warmup")] }));
   return cases;
 }
@@ -121,7 +124,15 @@ async function apiV1Sources() {
   return rewrites.filter((r) => r.destination === "/api/v1/:path*").map((r) => r.source);
 }
 
+const TABLES_FILE = fileURLToPath(new URL("../../gateway/internal/route/tables.json", import.meta.url));
+const tablesText = () => JSON.stringify({ skipPatterns: SKIP_PATTERNS }, null, 2) + "\n";
+
 describe("/v1/messages entry fixtures for the Go gateway", () => {
+  it("keeps the table export the Go port embeds", () => {
+    if (RECORD) writeFileSync(TABLES_FILE, tablesText());
+    expect(readFileSync(TABLES_FILE, "utf8"), "regenerate with ROUTE_RECORD=1").toBe(tablesText());
+  });
+
   it("answers every body as the committed fixture says", async () => {
     await initTranslators();
     const cases = build();

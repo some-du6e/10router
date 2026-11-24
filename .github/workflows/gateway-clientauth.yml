@@ -1,10 +1,11 @@
 name: Gateway clientauth parity
 
 # The Go port of Node's client checks for /v1 (gateway/internal/clientauth,
-# docs/GO_GATEWAY.md "Parity testing"):
+# docs/GO_GATEWAY.md "Phase 2c"):
 #   parity           this PR's Node still makes the committed fixtures (the
 #                    key's sources, the public-LLM gate, requireApiKey, expiry,
-#                    allowlist and budget), and the Go tests match them
+#                    allowlist and budget, over a real Node database), and the
+#                    Go tests match them through the gateway's own readers
 #   no-new-failures  the whole vitest suite, base vs this branch
 on:
   pull_request:
@@ -12,10 +13,20 @@ on:
       - "gateway/internal/clientauth/**"
       - "gateway/internal/clientip/**"
       - "gateway/internal/combo/**"
+      - "gateway/internal/db/**"
+      - "gateway/internal/decline/**"
       - "gateway/node-map.json"
       - "tests/unit/gateway-clientauth-parity.test.js"
+      - "tests/helpers/nodeDb.js"
       - ".github/workflows/gateway-clientauth.yml"
       - "custom-server.js"
+      - "src/lib/management/auth.js"
+      - "src/lib/auth/authMode.ts"
+      - "src/lib/auth/setupState.js"
+      - "src/lib/db/repos/settingsRepo.js"
+      - "src/lib/db/repos/aliasRepo.js"
+      - "src/lib/db/repos/combosRepo.js"
+      - "open-sse/config/runtimeConfig.js"
       - "src/shared/utils/clientApiKey.js"
       - "src/dashboardGuard.js"
       - "src/lib/auth/trustedPeer.js"

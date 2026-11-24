@@ -25,7 +25,7 @@ const tokenWrites = () => update.mock.calls.filter(([, data]) => "accessToken" i
 const statusWrites = () => update.mock.calls.filter(([, data]) => "testStatus" in data);
 // A token save goes through updateProviderCredentials: its metadata patch and
 // lastRefreshAt options, plus the compare-and-set on the refresh token.
-const tokenSaveOptions = (refreshTokenUsed) => ({ patchProviderSpecificData: true, stampLastRefreshAt: true, refreshTokenUsed });
+const tokenSaveOptions = (refreshTokenUsed) => ({ patchProviderSpecificData: true, stampLastRefreshAt: true, tokenRefresh: true, refreshTokenUsed });
 const expectTokensSaved = () => {
   expect(tokenWrites()).toEqual([["account-a", expect.objectContaining({ accessToken: "new-access", refreshToken: "new-refresh" }),
     tokenSaveOptions(["old-refresh", "new-refresh"])]]);

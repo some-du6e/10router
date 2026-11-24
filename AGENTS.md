@@ -61,7 +61,7 @@ After touching the provider registry, aliases, or OAuth URLs, also run the match
 One file per provider, starting from `open-sse/providers/REGISTRY_TEMPLATE.js`, with models in `open-sse/config/providerModels.js`. `index.js` is generated: rerun `scripts/generate-registry-index.mjs` after adding a file. Write an executor only for an upstream that is not OpenAI-compatible.
 
 ### Persistence
-State lives in SQLite under `src/lib/db/` (the old `db.json` is gone). `driver.js` picks an adapter: on Bun, `bun:sqlite` then `sql.js`; on Node, `better-sqlite3` then `node:sqlite` then `sql.js`. `better-sqlite3` is in `optionalDependencies` so installs succeed without build tools.
+State lives in SQLite under `src/lib/db/` (the old `db.json` is gone). `driver.js` picks an adapter: on Bun, `bun:sqlite` then `sql.js`; on Node, `better-sqlite3` then `node:sqlite` then `sql.js`. With `GATEWAY_MODE=native` it never falls back to `sql.js`, which would overwrite the Go gateway's writes. `better-sqlite3` is in `optionalDependencies` so installs succeed without build tools.
 - Import from `@/lib/db/index.js`. `src/lib/localDb.js` is a compatibility shim. Per-entity logic lives in `src/lib/db/repos/`, migrations in `src/lib/db/migrations/`.
 - The DB path comes from `src/lib/db/paths.js`: `DATA_DIR`, else `~/.9router/`. The directory keeps that name for existing installs.
 - Before changing init, legacy import, backups, adapters or pending counts, read [`src/lib/db/AGENTS.md`](src/lib/db/AGENTS.md): its rules and the test guarding each.

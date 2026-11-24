@@ -5,6 +5,10 @@
 // A package listed in GATEWAY_PROXY_ONLY has a Node change its port hasn't
 // caught up with. Every mapped package sits on the native /v1/messages path,
 // so any listed one keeps that whole route proxied to Node.
+//
+// It sits at the module root, under a name other than the directory's,
+// because //go:embed reads only files in or below a package's directory and
+// both files belong at the root, where the drift check reads them.
 package gatewayfiles
 
 import (
@@ -54,7 +58,10 @@ func MappedPackages() []string {
 
 // NativeOff is why the native route stays proxied, or "" when nothing keeps
 // it so. A name that isn't a mapped package counts too: when in doubt, proxy.
-func NativeOff() string { return nativeOff(ProxyOnly(), MappedPackages()) }
+// Both files are embedded, so the answer is worked out once.
+func NativeOff() string { return nativeOffReason }
+
+var nativeOffReason = nativeOff(ProxyOnly(), MappedPackages())
 
 func nativeOff(listed, mapped []string) string {
 	if len(listed) == 0 {

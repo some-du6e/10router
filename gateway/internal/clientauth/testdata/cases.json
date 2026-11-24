@@ -1,174 +1,726 @@
 {
- "db": {
-  "keys": [
+ "rows": {
+  "apiKeys": [
    {
+    "id": "id-sk-active",
     "key": "sk-active",
-    "isActive": 1
+    "name": "sk-active",
+    "machineId": null,
+    "isActive": 1,
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": null,
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-inactive",
     "key": "sk-inactive",
-    "isActive": 0
+    "name": "sk-inactive",
+    "machineId": null,
+    "isActive": 0,
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": null,
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-expired",
     "key": "sk-expired",
+    "name": "sk-expired",
+    "machineId": null,
     "isActive": 1,
-    "expiresAt": "2001-01-01T00:00:00.000Z"
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": null,
+    "expiresAt": "2001-01-01T00:00:00.000Z",
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-future",
     "key": "sk-future",
+    "name": "sk-future",
+    "machineId": null,
     "isActive": 1,
-    "expiresAt": "2999-01-01T00:00:00.000Z"
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": null,
+    "expiresAt": "2999-01-01T00:00:00.000Z",
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-spent",
     "key": "sk-spent",
+    "name": "sk-spent",
+    "machineId": null,
     "isActive": 1,
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
     "budgetUsd": 5,
-    "spentUsd": 5
+    "allowedModels": null,
+    "expiresAt": null,
+    "spentUsd": 5,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-budget",
     "key": "sk-budget",
+    "name": "sk-budget",
+    "machineId": null,
     "isActive": 1,
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
     "budgetUsd": 5,
-    "spentUsd": 1.25
+    "allowedModels": null,
+    "expiresAt": null,
+    "spentUsd": 1.25,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-reset",
     "key": "sk-reset",
+    "name": "sk-reset",
+    "machineId": null,
     "isActive": 1,
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
     "budgetUsd": 5,
+    "allowedModels": null,
+    "expiresAt": null,
     "spentUsd": 9,
-    "spendOffsetUsd": 6
+    "spendOffsetUsd": 6,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-zero-budget",
     "key": "sk-zero-budget",
+    "name": "sk-zero-budget",
+    "machineId": null,
     "isActive": 1,
-    "budgetUsd": 0
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": 0,
+    "allowedModels": null,
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-allow-combo",
     "key": "sk-allow-combo",
+    "name": "sk-allow-combo",
+    "machineId": null,
     "isActive": 1,
-    "allowedModels": "[\"main\"]"
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[\"main\"]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-allow-members",
     "key": "sk-allow-members",
+    "name": "sk-allow-members",
+    "machineId": null,
     "isActive": 1,
-    "allowedModels": "[\"hot/model-a\",\"hot/model-b\"]"
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[\"hot/model-a\",\"hot/model-b\"]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-allow-partial",
     "key": "sk-allow-partial",
+    "name": "sk-allow-partial",
+    "machineId": null,
     "isActive": 1,
-    "allowedModels": "[\"hot/model-a\"]"
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[\"hot/model-a\"]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-allow-bare",
     "key": "sk-allow-bare",
+    "name": "sk-allow-bare",
+    "machineId": null,
     "isActive": 1,
-    "allowedModels": "[\"model-a\",\"model-b\"]"
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[\"model-a\",\"model-b\"]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-allow-alias",
     "key": "sk-allow-alias",
+    "name": "sk-allow-alias",
+    "machineId": null,
     "isActive": 1,
-    "allowedModels": "[\"fast\"]"
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[\"fast\"]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-allow-alias-target",
     "key": "sk-allow-alias-target",
+    "name": "sk-allow-alias-target",
+    "machineId": null,
     "isActive": 1,
-    "allowedModels": "[\"hot/model-a\"]"
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[\"hot/model-a\"]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-allow-ctx",
     "key": "sk-allow-ctx",
+    "name": "sk-allow-ctx",
+    "machineId": null,
     "isActive": 1,
-    "allowedModels": "[\"main[1m]\"]"
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[\"main[1m]\"]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-allow-nested",
     "key": "sk-allow-nested",
+    "name": "sk-allow-nested",
+    "machineId": null,
     "isActive": 1,
-    "allowedModels": "[\"nested\"]"
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[\"nested\"]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-allow-nested-members",
     "key": "sk-allow-nested-members",
+    "name": "sk-allow-nested-members",
+    "machineId": null,
     "isActive": 1,
-    "allowedModels": "[\"main\",\"hot/model-d\"]"
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[\"main\",\"hot/model-d\"]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-allow-case",
     "key": "sk-allow-case",
+    "name": "sk-allow-case",
+    "machineId": null,
     "isActive": 1,
-    "allowedModels": "[\"MAIN\"]"
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[\"MAIN\"]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-allow-upper-members",
     "key": "sk-allow-upper-members",
+    "name": "sk-allow-upper-members",
+    "machineId": null,
     "isActive": 1,
-    "allowedModels": "[\"HOT/Model-A\",\"hot/MODEL-B[1m]\"]"
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[\"HOT/Model-A\",\"hot/MODEL-B[1m]\"]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-allow-deep",
     "key": "sk-allow-deep",
+    "name": "sk-allow-deep",
+    "machineId": null,
     "isActive": 1,
-    "allowedModels": "[\"hot/model-z\"]"
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[\"hot/model-z\"]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-allow-fusion",
     "key": "sk-allow-fusion",
+    "name": "sk-allow-fusion",
+    "machineId": null,
     "isActive": 1,
-    "allowedModels": "[\"hot/model-a\",\"hot/judge\"]"
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[\"hot/model-a\",\"hot/judge\"]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-allow-unicode",
     "key": "sk-allow-unicode",
+    "name": "sk-allow-unicode",
+    "machineId": null,
     "isActive": 1,
-    "allowedModels": "[\"mäin\"]"
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[\"mäin\"]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-allow-empty",
     "key": "sk-allow-empty",
+    "name": "sk-allow-empty",
+    "machineId": null,
     "isActive": 1,
-    "allowedModels": "[]"
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-budget-allow",
     "key": "sk-budget-allow",
+    "name": "sk-budget-allow",
+    "machineId": null,
     "isActive": 1,
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
     "budgetUsd": 10,
+    "allowedModels": "[\"main\"]",
+    "expiresAt": null,
     "spentUsd": 2,
-    "allowedModels": "[\"main\"]"
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    },
    {
+    "id": "id-sk-padded",
     "key": " sk-padded",
-    "isActive": 1
+    "name": "sk-padded",
+    "machineId": null,
+    "isActive": 1,
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": null,
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
+   },
+   {
+    "id": "id-sk-disabled-by-owner",
+    "key": "sk-disabled-by-owner",
+    "name": "sk-disabled-by-owner",
+    "machineId": null,
+    "isActive": 1,
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": null,
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": "dashboard",
+    "expiresAtSetBy": null
+   },
+   {
+    "id": "id-sk-allow-object-alias",
+    "key": "sk-allow-object-alias",
+    "name": "sk-allow-object-alias",
+    "machineId": null,
+    "isActive": 1,
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[\"hot/model-b\"]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
+   },
+   {
+    "id": "id-sk-allow-object-alias-name",
+    "key": "sk-allow-object-alias-name",
+    "name": "sk-allow-object-alias-name",
+    "machineId": null,
+    "isActive": 1,
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[\"objectAlias\"]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
+   },
+   {
+    "id": "id-sk-allow-suffix-member",
+    "key": "sk-allow-suffix-member",
+    "name": "sk-allow-suffix-member",
+    "machineId": null,
+    "isActive": 1,
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[\"hot/model-c(high)\"]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
+   },
+   {
+    "id": "id-sk-allowlist-not-array",
+    "key": "sk-allowlist-not-array",
+    "name": "sk-allowlist-not-array",
+    "machineId": null,
+    "isActive": 1,
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "{\"main\":true}",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
+   },
+   {
+    "id": "id-sk-allowlist-non-strings",
+    "key": "sk-allowlist-non-strings",
+    "name": "sk-allowlist-non-strings",
+    "machineId": null,
+    "isActive": 1,
+    "limitHold": null,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "budgetUsd": null,
+    "allowedModels": "[7,null]",
+    "expiresAt": null,
+    "spentUsd": 0,
+    "spendOffsetUsd": 0,
+    "spendResetAt": null,
+    "requestCount": 0,
+    "lastUsedAt": null,
+    "ownerManagementKeyId": null,
+    "disabledBy": null,
+    "expiresAtSetBy": null
    }
   ],
-  "combos": {
-   "main": [
-    "hot/model-a",
-    "hot/model-b"
-   ],
-   "nested": [
-    "main",
-    "hot/model-d"
-   ],
-   "d1": [
-    "d2"
-   ],
-   "d2": [
-    "d3"
-   ],
-   "d3": [
-    "d4"
-   ],
-   "d4": [
-    "d5"
-   ],
-   "d5": [
-    "hot/model-z"
-   ],
-   "loop": [
-    "loop"
-   ],
-   "fusey": [
-    "hot/model-a"
-   ]
-  },
-  "aliases": {
-   "fast": "hot/model-a"
-  },
-  "comboStrategies": {
-   "fusey": {
-    "fallbackStrategy": "fusion",
-    "judgeModel": " hot/judge "
+  "combos": [
+   {
+    "id": "combo-main",
+    "name": "main",
+    "kind": null,
+    "models": "[\"hot/model-a\",\"hot/model-b\"]",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+   },
+   {
+    "id": "combo-nested",
+    "name": "nested",
+    "kind": null,
+    "models": "[\"main\",\"hot/model-d\"]",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+   },
+   {
+    "id": "combo-d1",
+    "name": "d1",
+    "kind": null,
+    "models": "[\"d2\"]",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+   },
+   {
+    "id": "combo-d2",
+    "name": "d2",
+    "kind": null,
+    "models": "[\"d3\"]",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+   },
+   {
+    "id": "combo-d3",
+    "name": "d3",
+    "kind": null,
+    "models": "[\"d4\"]",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+   },
+   {
+    "id": "combo-d4",
+    "name": "d4",
+    "kind": null,
+    "models": "[\"d5\"]",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+   },
+   {
+    "id": "combo-d5",
+    "name": "d5",
+    "kind": null,
+    "models": "[\"hot/model-z\"]",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+   },
+   {
+    "id": "combo-loop",
+    "name": "loop",
+    "kind": null,
+    "models": "[\"loop\"]",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+   },
+   {
+    "id": "combo-fusey",
+    "name": "fusey",
+    "kind": null,
+    "models": "[\"hot/model-a\"]",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+   },
+   {
+    "id": "combo-suffixed",
+    "name": "suffixed",
+    "kind": null,
+    "models": "[\"hot/model-c(high)\"]",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
    }
+  ],
+  "kv": [
+   {
+    "scope": "modelAliases",
+    "key": "fast",
+    "value": "\"hot/model-a\""
+   },
+   {
+    "scope": "modelAliases",
+    "key": "objectAlias",
+    "value": "{\"provider\":\"hot\",\"model\":\"model-b\"}"
+   }
+  ]
+ },
+ "comboStrategies": {
+  "fusey": {
+   "fallbackStrategy": "fusion",
+   "judgeModel": " hot/judge "
   }
  },
  "cases": [
@@ -182,6 +734,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -200,6 +753,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -218,6 +772,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -236,6 +791,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -254,6 +810,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -270,6 +827,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -288,6 +846,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
@@ -303,6 +862,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
@@ -318,6 +878,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -334,6 +895,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -350,6 +912,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -366,6 +929,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -382,6 +946,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -400,6 +965,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -418,6 +984,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -436,6 +1003,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -454,6 +1022,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -470,6 +1039,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -486,6 +1056,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -502,6 +1073,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -518,6 +1090,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -536,6 +1109,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -554,6 +1128,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -572,6 +1147,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -590,6 +1166,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -608,6 +1185,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -626,6 +1204,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -644,6 +1223,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -662,6 +1242,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -678,6 +1259,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -694,6 +1276,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -710,6 +1293,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -726,6 +1310,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -744,6 +1329,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -762,6 +1348,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -780,6 +1367,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -798,6 +1386,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -816,6 +1405,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -834,6 +1424,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -852,6 +1443,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -870,6 +1462,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -886,6 +1479,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -902,6 +1496,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -918,6 +1513,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -934,6 +1530,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -952,6 +1549,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -970,6 +1568,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -988,6 +1587,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1006,6 +1606,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1022,6 +1623,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1038,6 +1640,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1054,6 +1657,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1070,6 +1674,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1086,6 +1691,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1102,6 +1708,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1118,6 +1725,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1134,6 +1742,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1152,6 +1761,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1170,6 +1780,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1188,6 +1799,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1206,6 +1818,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1222,6 +1835,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1238,6 +1852,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1254,6 +1869,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1270,6 +1886,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1288,6 +1905,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1306,6 +1924,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1324,6 +1943,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1342,6 +1962,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1358,6 +1979,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1374,6 +1996,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1390,6 +2013,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1406,6 +2030,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1424,6 +2049,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1442,6 +2068,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1460,6 +2087,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1478,6 +2106,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1494,6 +2123,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1510,6 +2140,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1526,6 +2157,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1542,6 +2174,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1558,6 +2191,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1574,6 +2208,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1590,6 +2225,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1606,7 +2242,8 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
-   "conservative": "a non-ASCII allowlist entry",
+   "comboStrategy": "fallback",
+   "conservative": "not printable ASCII",
    "node": {
     "gate": "next",
     "chat": 403
@@ -1622,7 +2259,8 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
-   "conservative": "a non-ASCII allowlist entry",
+   "comboStrategy": "fallback",
+   "conservative": "not printable ASCII",
    "node": {
     "gate": "next",
     "chat": 403
@@ -1638,7 +2276,8 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
-   "conservative": "a non-ASCII allowlist entry",
+   "comboStrategy": "fallback",
+   "conservative": "not printable ASCII",
    "node": {
     "gate": "next",
     "chat": 403
@@ -1654,7 +2293,8 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
-   "conservative": "a non-ASCII allowlist entry",
+   "comboStrategy": "fallback",
+   "conservative": "not printable ASCII",
    "node": {
     "gate": "next",
     "chat": 403
@@ -1670,6 +2310,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1688,6 +2329,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1706,6 +2348,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1724,6 +2367,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1742,6 +2386,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1760,6 +2405,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1778,6 +2424,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1796,6 +2443,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1814,6 +2462,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1830,6 +2479,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1848,6 +2498,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
@@ -1863,9 +2514,585 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
+   }
+  },
+  {
+   "name": "sk-disabled-by-owner local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-disabled-by-owner"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-disabled-by-owner",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-disabled-by-owner local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-disabled-by-owner"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-disabled-by-owner",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-disabled-by-owner remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-disabled-by-owner"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-disabled-by-owner",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-disabled-by-owner remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-disabled-by-owner"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-disabled-by-owner",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allow-object-alias local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-object-alias"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-object-alias local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-object-alias"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-object-alias remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-object-alias"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-object-alias remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-object-alias"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-object-alias-name local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-object-alias-name"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-object-alias-name local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-object-alias-name"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-object-alias-name remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-object-alias-name"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-object-alias-name remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-object-alias-name"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-suffix-member local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-suffix-member"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-suffix-member local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allow-suffix-member"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-suffix-member remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-suffix-member"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allow-suffix-member remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-suffix-member"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "sk-allowlist-not-array local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allowlist-not-array"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allowlist-not-array",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allowlist-not-array local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allowlist-not-array"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allowlist-not-array",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allowlist-not-array remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allowlist-not-array"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allowlist-not-array",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allowlist-not-array remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allowlist-not-array"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allowlist-not-array",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allowlist-non-strings local requireApiKey=true",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allowlist-non-strings"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allowlist-non-strings",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allowlist-non-strings local requireApiKey=false",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "sk-allowlist-non-strings"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allowlist-non-strings",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allowlist-non-strings remote requireApiKey=true",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allowlist-non-strings"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allowlist-non-strings",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "sk-allowlist-non-strings remote requireApiKey=false",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allowlist-non-strings"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allowlist-non-strings",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "no key local requireApiKey=1",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": 1,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 401
+   }
+  },
+  {
+   "name": "no key local requireApiKey=\"yes\"",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": "yes",
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 401
+   }
+  },
+  {
+   "name": "no key local requireApiKey=0",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": 0,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": null,
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "no key local requireApiKey=\"\"",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": "",
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": null,
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "no key local requireApiKey=null",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": null,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": null,
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "global fusion, no allowlist",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-active"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fusion",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-active",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "global fusion, allowlist walks the combo",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-members"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fusion",
+   "conservative": "fusion",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-members",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "global fusion, combo named",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-combo"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fusion",
+   "conservative": "fusion",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-combo",
+    "hasBudget": false
    }
   },
   {
@@ -1877,6 +3104,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1892,6 +3120,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
@@ -1907,6 +3136,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1923,6 +3153,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
@@ -1937,6 +3168,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1954,6 +3186,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
@@ -1969,6 +3202,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -1987,6 +3221,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
@@ -2002,6 +3237,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2020,6 +3256,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
@@ -2036,6 +3273,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
@@ -2052,6 +3290,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2071,6 +3310,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2089,6 +3329,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2108,6 +3349,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
@@ -2122,7 +3364,8 @@
    "query": "key=sk-active",
    "model": "main",
    "requireApiKey": true,
-   "conservative": "the key in the query string",
+   "comboStrategy": "fallback",
+   "conservative": "query string",
    "node": {
     "gate": "next",
     "chat": "pass",
@@ -2140,6 +3383,7 @@
    "query": "beta=true",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2157,7 +3401,8 @@
    "query": "beta=true",
    "model": "main",
    "requireApiKey": false,
-   "conservative": "a query string with no key header",
+   "comboStrategy": "fallback",
+   "conservative": "query string",
    "node": {
     "gate": "next",
     "chat": "pass",
@@ -2175,6 +3420,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2193,6 +3439,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
@@ -2208,6 +3455,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
@@ -2223,6 +3471,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
@@ -2238,6 +3487,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
@@ -2253,7 +3503,8 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
-   "conservative": "an Origin header",
+   "comboStrategy": "fallback",
+   "conservative": "not on this machine",
    "node": {
     "gate": "next",
     "chat": "pass",
@@ -2272,6 +3523,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2290,6 +3542,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
@@ -2305,6 +3558,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
@@ -2320,6 +3574,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
@@ -2335,6 +3590,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2353,6 +3609,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2370,6 +3627,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": 401
@@ -2382,6 +3640,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2399,6 +3658,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": false,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2417,6 +3677,7 @@
    "query": "",
    "model": "",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2433,6 +3694,7 @@
    "query": "",
    "model": "   ",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2449,6 +3711,7 @@
    "query": "",
    "model": "main[1m]",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2467,6 +3730,7 @@
    "query": "",
    "model": "main[1M]",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2485,6 +3749,7 @@
    "query": "",
    "model": " main ",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2503,6 +3768,7 @@
    "query": "",
    "model": "fast",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2521,6 +3787,7 @@
    "query": "",
    "model": "fast",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2539,6 +3806,7 @@
    "query": "",
    "model": "fast",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2557,6 +3825,7 @@
    "query": "",
    "model": "nested",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2575,6 +3844,7 @@
    "query": "",
    "model": "nested",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2593,6 +3863,7 @@
    "query": "",
    "model": "nested",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2609,6 +3880,7 @@
    "query": "",
    "model": "d1",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2627,6 +3899,7 @@
    "query": "",
    "model": "d1",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2645,6 +3918,7 @@
    "query": "",
    "model": "loop",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2663,7 +3937,8 @@
    "query": "",
    "model": "fusey",
    "requireApiKey": true,
-   "conservative": "a fusion combo in the allowlist walk",
+   "comboStrategy": "fallback",
+   "conservative": "fusion",
    "node": {
     "gate": "next",
     "chat": "pass",
@@ -2681,7 +3956,8 @@
    "query": "",
    "model": "fusey",
    "requireApiKey": true,
-   "conservative": "a fusion combo in the allowlist walk",
+   "comboStrategy": "fallback",
+   "conservative": "fusion",
    "node": {
     "gate": "next",
     "chat": 403
@@ -2697,6 +3973,7 @@
    "query": "",
    "model": "hot/model-a",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2715,6 +3992,7 @@
    "query": "",
    "model": "other/model-a",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2733,6 +4011,7 @@
    "query": "",
    "model": "hot/x/model-a",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2749,6 +4028,7 @@
    "query": "",
    "model": "HOT/MODEL-A",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2767,6 +4047,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2785,6 +4066,7 @@
    "query": "",
    "model": "cc/claude-x",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2801,6 +4083,7 @@
    "query": "",
    "model": "main",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
@@ -2819,10 +4102,102 @@
    "query": "",
    "model": "nested",
    "requireApiKey": true,
+   "comboStrategy": "fallback",
    "conservative": "",
    "node": {
     "gate": "next",
     "chat": 403
+   }
+  },
+  {
+   "name": "model \"objectAlias\" with sk-allow-object-alias",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-object-alias"
+   },
+   "query": "",
+   "model": "objectAlias",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "model \"objectAlias\" with sk-allow-object-alias-name",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-object-alias-name"
+   },
+   "query": "",
+   "model": "objectAlias",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-object-alias-name",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \"suffixed\" with sk-allow-suffix-member",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-suffix-member"
+   },
+   "query": "",
+   "model": "suffixed",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-suffix-member",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "model \"suffixed\" with sk-allow-members",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-members"
+   },
+   "query": "",
+   "model": "suffixed",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 403
+   }
+  },
+  {
+   "name": "model \"hot/model-c(high)\" with sk-allow-suffix-member",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-allow-suffix-member"
+   },
+   "query": "",
+   "model": "hot/model-c(high)",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-allow-suffix-member",
+    "hasBudget": false
    }
   }
  ]

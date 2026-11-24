@@ -1,9 +1,9 @@
 package clientauth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
-	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -13,25 +13,25 @@ import (
 	"github.com/some-du6e/10router/gateway/internal/clientip"
 	"github.com/some-du6e/10router/gateway/internal/combo"
 	"github.com/some-du6e/10router/gateway/internal/db"
+	"github.com/some-du6e/10router/gateway/internal/db/dbtest"
 	"github.com/some-du6e/10router/gateway/internal/db/jsjson"
+	"github.com/some-du6e/10router/gateway/internal/decline"
 )
 
 // fixture is testdata/cases.json, recorded from Node by
 // tests/unit/gateway-clientauth-parity.test.js.
 type fixture struct {
-	DB struct {
-		Keys            []map[string]any `json:"keys"`
-		Combos          map[string][]any `json:"combos"`
-		Aliases         json.RawMessage  `json:"aliases"`
-		ComboStrategies json.RawMessage  `json:"comboStrategies"`
-	} `json:"db"`
-	Cases []struct {
+	// Rows are the tables as Node stored them.
+	Rows            map[string][]map[string]any `json:"rows"`
+	ComboStrategies json.RawMessage             `json:"comboStrategies"`
+	Cases           []struct {
 		Name          string            `json:"name"`
 		SocketIP      string            `json:"socketIp"`
 		Headers       map[string]string `json:"headers"`
 		Query         string            `json:"query"`
 		Model         string            `json:"model"`
-		RequireAPIKey bool              `json:"requireApiKey"`
+		RequireAPIKey json.RawMessage   `json:"requireApiKey"`
+		ComboStrategy string            `json:"comboStrategy"`
 		Conservative  string            `json:"conservative"`
 		Node          struct {
 			Gate      any     `json:"gate"`
@@ -42,32 +42,10 @@ type fixture struct {
 	} `json:"cases"`
 }
 
-// keyFromRow is apiKeysRepo.js's rowToKey for the fields the checks read.
-func keyFromRow(row map[string]any) *db.APIKey {
-	k := &db.APIKey{Key: row["key"].(string)}
-	if n, _ := row["isActive"].(float64); n == 1 {
-		k.IsActive = true
-	}
-	if b, ok := row["budgetUsd"].(float64); ok {
-		k.BudgetUsd = &b
-	}
-	spent, _ := row["spentUsd"].(float64)
-	offset, _ := row["spendOffsetUsd"].(float64)
-	k.SpentUsd = math.Max(0, math.Round((spent-offset)*1e6)/1e6)
-	if s, ok := row["allowedModels"].(string); ok {
-		var list []any
-		_ = json.Unmarshal([]byte(s), &list)
-		for _, m := range list {
-			if str, ok := m.(string); ok {
-				k.AllowedModels = append(k.AllowedModels, str)
-			}
-		}
-	}
-	k.ExpiresAt, _ = row["expiresAt"].(string)
-	return k
-}
-
-func load(t *testing.T) (*fixture, func(key string) (*db.APIKey, error), *Lookup) {
+// load reads the fixture and puts its rows in a database shaped like Node's,
+// read back through the gateway's readers: keys by APIKeyByKey (scanAPIKey),
+// combos and aliases by the snapshot.
+func load(t *testing.T) (*fixture, *db.DB, *combo.Config) {
 	t.Helper()
 	raw, err := os.ReadFile("testdata/cases.json")
 	if err != nil {
@@ -77,28 +55,18 @@ func load(t *testing.T) (*fixture, func(key string) (*db.APIKey, error), *Lookup
 	if err := json.Unmarshal(raw, &f); err != nil {
 		t.Fatal(err)
 	}
-	keys := map[string]*db.APIKey{}
-	for _, row := range f.DB.Keys {
-		k := keyFromRow(row)
-		keys[k.Key] = k
-	}
-	policy := func(key string) (*db.APIKey, error) { return keys[key], nil }
-	aliases, err := jsjson.ParseObject(f.DB.Aliases)
+	path, node := dbtest.New(t, dbtest.Options{})
+	dbtest.InsertRows(t, node, f.Rows)
+	d, err := db.Open(path, db.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	strategies, err := jsjson.Parse(f.DB.ComboStrategies)
+	t.Cleanup(func() { _ = d.Close() })
+	s, err := d.LoadSnapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings, _ := jsjson.ParseObject([]byte(`{"comboStrategy":"fallback"}`))
-	settings.Set("comboStrategies", strategies)
-	lookup := &Lookup{
-		Combos:   &combo.Config{Combos: f.DB.Combos, Aliases: aliases},
-		Settings: db.Settings{Merged: settings},
-		Aliases:  aliases,
-	}
-	return &f, policy, lookup
+	return &f, d, combo.FromSnapshot(s)
 }
 
 // wireHeader is the header as net/http parses it off the wire: values have
@@ -118,27 +86,44 @@ func wireHeader(m map[string]string) (http.Header, string) {
 }
 
 func TestChecksParityWithNode(t *testing.T) {
-	f, policy, lookup := load(t)
+	f, d, combos := load(t)
 	if len(f.Cases) < 150 {
 		t.Fatalf("only %d cases", len(f.Cases))
 	}
+	strategies, err := jsjson.Parse(f.ComboStrategies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := func(key string) (*db.APIKey, error) { return d.APIKeyByKey(context.Background(), key) }
 	rule := clientip.NewRule("")
 	for _, tc := range f.Cases {
 		t.Run(tc.Name, func(t *testing.T) {
+			settings := jsjson.NewObject()
+			settings.Set("comboStrategy", tc.ComboStrategy)
+			settings.Set("comboStrategies", strategies)
+			require, err := jsjson.Parse(tc.RequireAPIKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			settings.Set("requireApiKey", require)
+			s := db.Settings{Merged: settings}
+
 			h, host := wireHeader(tc.Headers)
 			model, _ := combo.StripContextMarker(tc.Model)
-			d, err := Check(
+			dec, err := Check(
 				Request{Header: h, Host: host, RawQuery: tc.Query, PeerIP: tc.SocketIP, Model: model},
-				Config{Rule: rule, RequireAPIKey: tc.RequireAPIKey, Policy: policy, Lookup: lookup, Now: time.Now()},
+				Config{Rule: rule, RequireAPIKey: s.Truthy("requireApiKey"), Policy: policy, Lookup: &Lookup{Combos: combos, Settings: s}, Now: time.Now()},
 			)
 			nodePass := tc.Node.Gate == "next" && tc.Node.Chat == "pass"
 			if err != nil {
-				var dec *DeclineError
-				if !errors.As(err, &dec) {
+				if !decline.Is(err) {
 					t.Fatalf("not a decline: %v", err)
 				}
 				if nodePass && tc.Conservative == "" {
 					t.Fatalf("Go declined a request Node serves: %v", err)
+				}
+				if tc.Conservative != "" && !strings.Contains(err.Error(), tc.Conservative) {
+					t.Fatalf("declined for another reason than %q: %v", tc.Conservative, err)
 				}
 				return
 			}
@@ -152,8 +137,8 @@ func TestChecksParityWithNode(t *testing.T) {
 			if tc.Node.Key != nil {
 				want = *tc.Node.Key
 			}
-			if d.Key != want || d.HasBudget != tc.Node.HasBudget {
-				t.Errorf("decision key=%q budget=%v, Node key=%q budget=%v", d.Key, d.HasBudget, want, tc.Node.HasBudget)
+			if dec.Key != want || dec.HasBudget != tc.Node.HasBudget {
+				t.Errorf("decision key=%q budget=%v, Node key=%q budget=%v", dec.Key, dec.HasBudget, want, tc.Node.HasBudget)
 			}
 		})
 	}
@@ -163,23 +148,32 @@ func TestDeclinesRepeatedKeyHeaders(t *testing.T) {
 	h := http.Header{}
 	h.Add("X-Api-Key", "sk-a")
 	h.Add("X-Api-Key", "sk-b")
-	if _, err := ExtractKey(h, ""); err == nil {
+	if _, err := ExtractKey(h, ""); !decline.Is(err) {
 		t.Fatal("a repeated x-api-key must go to Node")
 	}
 	h = http.Header{"X-Api-Key": {"sk-é"}}
-	if _, err := ExtractKey(h, ""); err == nil {
+	if _, err := ExtractKey(h, ""); !decline.Is(err) {
 		t.Fatal("a non-ASCII key must go to Node")
 	}
 }
 
 func TestDeclinesExpiryNodeParsesItsOwnWay(t *testing.T) {
-	_, _, lookup := load(t)
 	for _, at := range []string{"2999-01-01", "Jan 1 2999", "2999-01-01T00:00:00Z"} {
 		k := &db.APIKey{Key: "sk", IsActive: true, ExpiresAt: at}
 		_, err := Check(Request{Header: http.Header{"X-Api-Key": {"sk"}}, PeerIP: "203.0.113.7", Host: "x.test", Model: "main"},
-			Config{Rule: clientip.NewRule(""), RequireAPIKey: true, Policy: func(string) (*db.APIKey, error) { return k, nil }, Lookup: lookup, Now: time.Now()})
-		if err == nil {
-			t.Errorf("expiresAt %q was read; it must go to Node", at)
+			Config{Rule: clientip.NewRule(""), RequireAPIKey: true, Policy: func(string) (*db.APIKey, error) { return k, nil }, Now: time.Now()})
+		if !decline.Is(err) {
+			t.Errorf("expiresAt %q was read; it must go to Node: %v", at, err)
 		}
+	}
+}
+
+// A failed key read is an error, not a decline: the caller decides.
+func TestPolicyReadFailure(t *testing.T) {
+	boom := errors.New("disk I/O error")
+	_, err := Check(Request{Header: http.Header{"X-Api-Key": {"sk"}}, PeerIP: "203.0.113.7", Host: "x.test", Model: "main"},
+		Config{Rule: clientip.NewRule(""), Policy: func(string) (*db.APIKey, error) { return nil, boom }, Now: time.Now()})
+	if !errors.Is(err, boom) || decline.Is(err) {
+		t.Fatalf("got %v", err)
 	}
 }
