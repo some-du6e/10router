@@ -241,9 +241,11 @@ func (g *Gateway) health(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, _ := json.Marshal(body)
 	if r.ContentLength != 0 {
-		// A health check has no body; one that says it does is not drained
-		// (net/http would wait on it with no deadline), the connection ends.
+		// A health check has no body. net/http would wait for one that is
+		// declared but never sent, with no deadline, when the handler returns;
+		// a deadline already past ends that wait and the connection.
 		w.Header().Set("Connection", "close")
+		_ = http.NewResponseController(w).SetReadDeadline(time.Now())
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")

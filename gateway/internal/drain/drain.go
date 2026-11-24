@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 )
 
@@ -234,6 +235,11 @@ func Reject(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("Retry-After", strconv.Itoa(RetryAfterSeconds))
 	h.Set("Connection", "close")
+	if r.ContentLength != 0 {
+		// The body is never read; without a deadline net/http would wait for
+		// all of it once the handler returns. One already past ends that wait.
+		_ = http.NewResponseController(w).SetReadDeadline(time.Now())
+	}
 	if r.Header.Get("Upgrade") != "" {
 		h.Set("Content-Length", "0")
 		w.WriteHeader(http.StatusServiceUnavailable)

@@ -306,6 +306,33 @@ func TestOptionsStarReachesTheApp(t *testing.T) {
 	g.waitExit(t, 3*time.Second)
 }
 
+func TestHealthWithAnUnsentBodyEndsTheConnection(t *testing.T) {
+	app, _, release := heldApp(t)
+	defer close(release)
+	g := startUnsupervised(t, baseConfig(portOf(t, app.URL)))
+	conn, err := net.Dial("tcp", strings.TrimPrefix(g.url, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	// Declares a body, never sends it.
+	fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1000\r\n\r\n", HealthPath)
+	br := bufio.NewReader(conn)
+	res, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, res.Body)
+	res.Body.Close()
+	// The server hangs up rather than waiting for the body.
+	if _, err := br.ReadByte(); err != io.EOF {
+		t.Fatalf("connection still open after the health reply: %v", err)
+	}
+	g.signals <- syscall.SIGTERM
+	g.waitExit(t, 3*time.Second)
+}
+
 func TestRefusesAShortPeerToken(t *testing.T) {
 	cfg := baseConfig(freePort(t))
 	cfg.PeerToken = "short"
