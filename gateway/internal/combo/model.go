@@ -111,8 +111,10 @@ func CheckID(pkg, what, s string) error {
 	return decline.ASCII(pkg, what, s)
 }
 
-// contextWindowSuffix is /\[(\d+[km])\]$/i.
-var contextWindowSuffix = regexp.MustCompile(`(?i)\[[0-9]+[km]\]$`)
+// contextWindowSuffix is /\[(\d+[km])\]$/i. The letters are spelled out:
+// Go's (?i) folds the Kelvin sign into k, and JavaScript's /i without the u
+// flag doesn't.
+var contextWindowSuffix = regexp.MustCompile(`\[[0-9]+[kKmM]\]$`)
 
 // StripContextWindowSuffix is stripContextWindowSuffix's model:
 // "claude-opus-5[1m]" → "claude-opus-5".
@@ -128,7 +130,7 @@ func StripContextWindowSuffix(model string) string {
 // as it was. For an ASCII id (JavaScript's trim also removes Unicode spaces).
 func StripContextMarker(model string) (string, bool) {
 	t := strings.Trim(model, " \t\n\v\f\r")
-	if len(t) >= 4 && strings.EqualFold(t[len(t)-4:], "[1m]") {
+	if end := len(t) - 4; end >= 0 && (t[end:] == "[1m]" || t[end:] == "[1M]") {
 		return t[:len(t)-4], true
 	}
 	return model, false

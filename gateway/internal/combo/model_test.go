@@ -140,6 +140,18 @@ func TestDeclinesIDsNodeReadsDifferently(t *testing.T) {
 	}
 }
 
+// /\[(\d+[km])\]$/i without the u flag matches only ASCII letters.
+func TestContextWindowSuffixIsASCII(t *testing.T) {
+	for in, want := range map[string]string{
+		"main[1m]": "main", "main[200K]": "main", "main[1M]": "main",
+		"main[1K]": "main[1K]", "main[1g]": "main[1g]", "main[m]": "main[m]",
+	} {
+		if got := StripContextWindowSuffix(in); got != want {
+			t.Errorf("StripContextWindowSuffix(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // Stored shapes Node reads through JavaScript's object rules.
 func TestDeclinesStoredShapesNodeReadsItsOwnWay(t *testing.T) {
 	aliases, err := jsjson.ParseObject([]byte(`{"__proto__":{"inherited":"hot/model-a"},"plain":"constructor/x","objModel":{"provider":"hot","model":"toString"}}`))
