@@ -53,7 +53,7 @@ describe("DELETE /api/proxy-pools/[id]", () => {
 });
 
 describe("background token refresh", () => {
-  it("leaves an account whose proxy is blocked alone, before loading the refresh engine", async () => {
+  it("leaves an account whose proxy is blocked alone", async () => {
     m.getSettings.mockResolvedValue({});
     // Bound to a pool that's off, so the real resolver blocks it.
     const blocked = { id: "blocked", provider: "grok-cli", authType: "oauth", refreshToken: "rt", providerSpecificData: { proxyPoolId: "off" } };

@@ -748,7 +748,8 @@ export default function ProxyPoolsPage() {
                     <Badge variant="default" size="sm">
                       {pool.boundConnectionCount || 0} bound
                     </Badge>
-                    {pool.strictProxy !== true && (
+                    {/* Relays have no direct fallback, so only proxies can leak. */}
+                    {pool.strictProxy !== true && !["vercel", "cloudflare", "deno"].includes(pool.type) && (
                       <Badge variant="warning" size="sm">falls back to direct</Badge>
                     )}
                   </div>

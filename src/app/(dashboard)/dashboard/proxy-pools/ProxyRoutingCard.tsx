@@ -321,6 +321,8 @@ export default function ProxyRoutingCard({ proxyPools, poolsLoaded, poolsError =
     if (blocked) mode = <Note icon="block" tone={TONE.error}>{route.blockedReason}, so requests from this account are blocked instead of going direct.</Note>;
     else if (route.source === "direct") mode = <Note icon="language" tone={TONE.muted}>Sent from this machine&apos;s IP.</Note>;
     else if (route.layer === "system") mode = <Note icon="language" tone={TONE.muted}>{settings?.outboundProxyEnabled && settings?.outboundProxyUrl ? "Uses the outbound proxy from Settings." : "No proxy is set anywhere, so requests leave from this machine's IP."}</Note>;
+    // A relay only rewrites the request to its own URL, so it can't fall back to direct.
+    else if (route.vercelRelayUrl) mode = <Note icon="lock" tone={TONE.ok}>Fails closed. If the relay is down, the request errors.</Note>;
     else if (route.strictProxy) mode = <Note icon="lock" tone={TONE.ok}>Fails closed. If the proxy is down, the request errors instead of going direct.</Note>;
     else mode = (
       <div className="flex flex-col gap-2">
