@@ -26,7 +26,19 @@ function gate(overrides = {}) {
     retryAfterSec: 7,
     recheckMs: 5,
     rss: () => 0,
+    heapHighWaterPct: 0,
+    heapStats: () => ({ used_heap_size: 0, heap_size_limit: 0 }),
     logger: quietLog(),
+    ...overrides,
+  });
+}
+
+// A gate with only the heap check: 85% of a 1000 MB heap is 850 MB.
+function heapGate(heap, overrides = {}) {
+  return gate({
+    budgetBytes: 0,
+    heapHighWaterPct: 85,
+    heapStats: () => ({ used_heap_size: heap.used, heap_size_limit: 1000 * MB }),
     ...overrides,
   });
 }
@@ -159,8 +171,9 @@ describe("resident-memory backstop", () => {
     expect(await g.acquire({ bodyLength: 1 * MB })).toEqual({ refused: "memory", retryAfterSec: 7 });
   });
 
-  it("is off when neither limit is set", () => {
+  it("is off when no limit is set", () => {
     expect(gate({ budgetBytes: 0, highWaterBytes: 0 }).enabled).toBe(false);
+    expect(gate({ budgetBytes: 0, highWaterBytes: 0, heapHighWaterPct: 85 }).enabled).toBe(true);
   });
 
   it("reads the container limit from cgroup v2, then v1, and ignores 'max'", () => {
@@ -180,6 +193,143 @@ describe("resident-memory backstop", () => {
     expect(resolveHighWater({ highWaterMb: -1, fraction: 0.8, limit: () => null })).toBe(0);
     expect(resolveHighWater({ highWaterMb: 1200, fraction: 0.8, limit: () => 2000 * MB })).toBe(1200 * MB);
     expect(resolveHighWater({ highWaterMb: 0, fraction: 0.8, limit: () => 2000 * MB })).toBe(0);
+  });
+});
+
+// V8 aborts the process when its heap fills ("JavaScript heap out of memory"),
+// long before resident memory reaches the container's limit.
+describe("heap backstop", () => {
+  it("holds new requests while the heap is over its high-water mark, and lets them in when it drops", async () => {
+    const heap = { used: 900 * MB };
+    const g = heapGate(heap);
+    // Nothing else in flight: in, whatever the heap says.
+    expect((await g.acquire({ bodyLength: 1 * MB })).ticket).toBeTruthy();
+    const waiting = g.acquire({ bodyLength: 1 * MB });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(g.stats().waiting).toBe(1);
+    // Garbage collection brings the heap down with no request ending: in at
+    // the next recheck, well before its wait (1 s) runs out.
+    heap.used = 500 * MB;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(g.stats().waiting).toBe(0);
+    expect((await waiting).ticket).toBeTruthy();
+    expect(g.stats()).toMatchObject({ inflight: 2, waiting: 0 });
+  });
+
+  it("refuses with reason heap when the heap stays high for the whole wait, and logs it", async () => {
+    const logger = quietLog();
+    const g = heapGate({ used: 900 * MB }, { maxWaitMs: 20, logger });
+    await g.acquire({ bodyLength: 1 * MB });
+    expect(await g.acquire({ bodyLength: 1 * MB })).toEqual({ refused: "heap", retryAfterSec: 7 });
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][0]).toBe("MEMORY");
+    expect(logger.warn.mock.calls[0][1]).toMatch(/refusing new requests \(heap\): 1 in flight .*heap 900MB \+ 1MB not yet replying \(high water 850MB of 1000MB\)/);
+  });
+
+  it("counts admitted requests that haven't started replying, which the heap doesn't show yet", async () => {
+    // A burst all arrives before any of it has been parsed: the heap still reads 100 MB.
+    const g = heapGate({ used: 100 * MB }, { maxWaitMs: 50 });
+    const a = await g.acquire({ bodyLength: 300 * MB });
+    const b = await g.acquire({ bodyLength: 300 * MB });
+    expect(a.ticket && b.ticket).toBeTruthy();
+    expect(g.stats().pendingBytes).toBe(600 * MB);
+    // 100 + 600 + 300 > 850.
+    const c = g.acquire({ bodyLength: 300 * MB });
+    await tick();
+    expect(g.stats().waiting).toBe(1);
+    // a's reply started: what it still holds is in the heap reading from now on.
+    a.ticket.replied();
+    a.ticket.replied(); // idempotent
+    // At once, not at the next recheck.
+    expect(g.stats().waiting).toBe(0);
+    expect((await c).ticket).toBeTruthy();
+    expect(g.stats()).toMatchObject({ inflight: 3, pendingBytes: 600 * MB, heldBytes: 900 * MB });
+    b.ticket.release();
+    expect(g.stats()).toMatchObject({ inflight: 2, pendingBytes: 300 * MB, heldBytes: 600 * MB });
+    // A ticket released after its reply started doesn't count twice.
+    a.ticket.release();
+    expect(g.stats()).toMatchObject({ inflight: 1, pendingBytes: 300 * MB, heldBytes: 300 * MB });
+  });
+
+  it("counts the new request's own body copies against the heap", async () => {
+    const g = heapGate({ used: 700 * MB }, { bodyCopies: 3, maxWaitMs: 20 });
+    const first = await g.acquire({ bodyLength: 10 * MB });
+    first.ticket.replied();
+    // 700 + 3 × 60 > 850, though the heap alone is under it.
+    expect((await g.acquire({ bodyLength: 60 * MB })).refused).toBe("heap");
+    expect((await g.acquire({ bodyLength: 40 * MB })).ticket).toBeTruthy();
+  });
+
+  it("checks nothing when MEMORY_HEAP_HIGH_WATER_PCT is 0", async () => {
+    const heapStats = vi.fn(() => ({ used_heap_size: 990 * MB, heap_size_limit: 1000 * MB }));
+    const g = heapGate({}, { heapHighWaterPct: 0, budgetBytes: 100 * MB, heapStats });
+    await g.acquire({ bodyLength: 1 * MB });
+    expect((await g.acquire({ bodyLength: 1 * MB })).ticket).toBeTruthy();
+    expect(heapStats).not.toHaveBeenCalled();
+  });
+
+  it("reads the real heap by default", async () => {
+    const g = createMemoryGate({ budgetBytes: 0, highWaterBytes: 0, heapHighWaterPct: 85, logger: quietLog() });
+    expect(g.enabled).toBe(true);
+    await g.acquire({ bodyLength: 1 });
+    expect((await g.acquire({ bodyLength: 1 })).ticket).toBeTruthy();
+  });
+});
+
+describe("a body without Content-Length", () => {
+  it("counts as unknownBodyBytes until it is read, then as its real length", async () => {
+    const g = gate({ budgetBytes: 200 * MB, bodyCopies: 3, unknownBodyBytes: 20 * MB });
+    const held = await g.acquire({ bodyLength: 40 * MB });
+    const { ticket } = await g.acquire({ bodyLength: null });
+    expect(ticket.bytes).toBe(60 * MB);
+    // Waits: 120 + 60 + 30 > 200.
+    const next = g.acquire({ bodyLength: 10 * MB });
+    await tick();
+    expect(g.stats().waiting).toBe(1);
+    // The body was short: the guess gives way, which lets the next one in.
+    ticket.noteBodyLength(1 * MB);
+    expect(ticket.bytes).toBe(3 * MB);
+    // At once, not when its wait runs out.
+    expect(g.stats()).toMatchObject({ waiting: 0, inflight: 3 });
+    expect((await next).ticket).toBeTruthy();
+    // From then on it only grows, like a stated length.
+    ticket.noteBodyLength(1);
+    expect(ticket.bytes).toBe(3 * MB);
+    expect(g.stats()).toMatchObject({ heldBytes: (120 + 3 + 30) * MB, pendingBytes: (120 + 3 + 30) * MB });
+    held.ticket.release();
+  });
+
+  it("is admitted through withMemoryAdmission at the guess, and counted as not yet replying until its reply starts", async () => {
+    const g = gate({ budgetBytes: 1000 * MB, bodyCopies: 3, unknownBodyBytes: 4 * MB });
+    const { response, controller } = openStream();
+    const chunked = new Request("http://localhost/v1/messages", { method: "POST", body: "{}", headers: { "content-type": "application/json" } });
+    expect(chunked.headers.get("content-length")).toBeNull();
+    let during;
+    const res = await withMemoryAdmission(chunked, async (ticket) => {
+      during = { bytes: ticket.bytes, ...g.stats() };
+      return response;
+    }, { gate: g });
+    expect(during).toMatchObject({ bytes: 12 * MB, pendingBytes: 12 * MB });
+    // Replying: still held until the reply ends, no longer pending.
+    expect(g.stats()).toMatchObject({ inflight: 1, heldBytes: 12 * MB, pendingBytes: 0 });
+    const reading = res.text();
+    controller.close();
+    await reading;
+    expect(g.stats()).toMatchObject({ inflight: 0, heldBytes: 0, pendingBytes: 0 });
+  });
+
+  it("an empty stated body counts as 0, not the guess", async () => {
+    const g = gate({ unknownBodyBytes: 20 * MB });
+    const res = await withMemoryAdmission(request("/v1/messages"), async (ticket) => {
+      expect(ticket.bytes).toBe(20 * MB);
+      return new Response("ok");
+    }, { gate: g });
+    await res.text();
+    const empty = new Request("http://localhost/v1/messages", { method: "POST", headers: { "content-length": "0" } });
+    await withMemoryAdmission(empty, async (ticket) => {
+      expect(ticket.bytes).toBe(0);
+      return new Response(null, { status: 204 });
+    }, { gate: g });
   });
 });
 

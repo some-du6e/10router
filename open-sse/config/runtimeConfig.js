@@ -123,7 +123,7 @@ export const SAME_REQUEST_ERROR_STATUSES = new Set([HTTP_STATUS.BAD_REQUEST, HTT
 // (a non-streamed one: until it ends), so a burst of big prompts can take the
 // process past its memory limit. A request that would push the held total over
 // the budget, or that arrives while the process is above its high-water mark,
-// waits in a FIFO queue; if it still can't go after maxWaitMs it gets a 503 with
+// or while the V8 heap would go past its own high-water mark, waits in a FIFO queue; if it still can't go after maxWaitMs it gets a 503 with
 // Retry-After, which agents retry. With nothing in flight a request is always
 // admitted, however big.
 const MB = 1024 * 1024;
@@ -144,8 +144,18 @@ export const MEMORY_ADMISSION = {
   // off when there is none. Env: MEMORY_HIGH_WATER_MB (0 turns the check off).
   highWaterMb: envInt("MEMORY_HIGH_WATER_MB", -1),
   highWaterFraction: 0.8,
-  // How often waiting requests recheck resident memory, which drops without
-  // any request ending (garbage collection).
+  // Percent of the V8 heap limit (heap_size_limit) that the heap in use plus
+  // the counted bytes of admitted requests that haven't started replying (and
+  // the new one) may reach. Those requests are still parsing, translating and
+  // serializing their bodies, so the heap doesn't show them yet. Over it, new
+  // requests wait. Env: MEMORY_HEAP_HIGH_WATER_PCT (0 turns the check off).
+  heapHighWaterPct: envInt("MEMORY_HEAP_HIGH_WATER_PCT", 85, { max: 100 }),
+  // A request without Content-Length counts as a body this long until it has
+  // been read, so a burst of them can't all go in at 0 bytes.
+  // Env: INFLIGHT_UNKNOWN_BODY_MB.
+  unknownBodyBytes: envInt("INFLIGHT_UNKNOWN_BODY_MB", 4) * MB,
+  // How often waiting requests recheck resident memory and the heap, which
+  // drop without any request ending (garbage collection).
   recheckMs: 250,
 };
 

@@ -1,0 +1,79 @@
+name: Admission herd
+
+# A restart herd (tests/bench/admission-herd-benchmark.test.js): 300 Claude
+# Code conversations of about 2 MB each sent at once through the real
+# /v1/messages route to a slow upstream, under the V8 heap limit production
+# runs with by default (--max-old-space-size=1048). The branch leg must answer
+# every request with a reply or a 503 and keep the heap under its limit. The
+# base leg runs the same harness with the base branch's source files and only
+# reports what happened (it is expected to crash with "JavaScript heap out of
+# memory" when the requests carry no Content-Length).
+on:
+  pull_request:
+    paths:
+      - "src/sse/services/memoryAdmission.js"
+      - "src/sse/handlers/chat.ts"
+      - "src/sse/utils/requestBody.js"
+      - "open-sse/handlers/chatCore.js"
+      - "open-sse/config/runtimeConfig.js"
+      - "tests/bench/admission-herd-benchmark.test.js"
+      - "tests/helpers/claudeCodeBody.js"
+      - "tests/helpers/warmWait.js"
+      - "tests/package.json"
+      - "tests/vitest.benchmark.config.js"
+      - "tests/vitest.shared.js"
+      - ".github/workflows/admission-herd.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  herd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [base, branch]
+        length: [stated, none]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          # What production runs.
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: The base branch's source files
+        if: matrix.leg == 'base'
+        run: git checkout "origin/${{ github.base_ref || 'master' }}" -- open-sse src
+      - name: Herd (${{ matrix.leg }}, Content-Length ${{ matrix.length }})
+        working-directory: tests
+        shell: bash
+        env:
+          NODE_OPTIONS: --max-old-space-size=1048
+          HERD_N: "300"
+          HERD_NO_LENGTH: ${{ matrix.length == 'none' && '1' || '0' }}
+        run: |
+          set +e
+          ./node_modules/.bin/vitest run --config vitest.benchmark.config.js bench/admission-herd-benchmark.test.js > "$RUNNER_TEMP/herd.txt" 2>&1
+          code=$?
+          set -e
+          grep -E '^(herd|heap|replies|gate):|FATAL ERROR|Tests ' "$RUNNER_TEMP/herd.txt" || tail -40 "$RUNNER_TEMP/herd.txt"
+          {
+            echo "### ${{ matrix.leg }}, Content-Length ${{ matrix.length }}"
+            echo '```'
+            grep -E '^(herd|heap|replies|gate):|FATAL ERROR' "$RUNNER_TEMP/herd.txt" || echo "(no result line)"
+            echo "exit $code"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ matrix.leg }}" = branch ] && [ "$code" -ne 0 ]; then
+            tail -80 "$RUNNER_TEMP/herd.txt"
+            exit 1
+          fi
