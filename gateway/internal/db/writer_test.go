@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -268,6 +269,188 @@ func TestUsageWriterDropsARowThatCanNeverBeWritten(t *testing.T) {
 	}
 	if w.Rejected() != 1 || len(reported) != 1 {
 		t.Fatalf("rejected %d, reported %v", w.Rejected(), reported)
+	}
+}
+
+func TestAnIsolateCutShortWritesNoRowTwice(t *testing.T) {
+	d, node, _ := open(t, dbtest.Options{})
+	ctx, cancel := context.WithCancel(context.Background())
+	// The first bad row's report cancels the flush: the rows after it are
+	// still queued, and the bad one is not.
+	w := d.NewUsageWriter(UsageWriterOptions{Interval: time.Hour, OnError: func(error) { cancel() }})
+	bad := jsjson.NewObject()
+	bad.Set("input_tokens", map[string]any{})
+	for i := 0; i < 5; i++ {
+		e := UsageEntry{Timestamp: ISOTime(fixedNow), Model: "m"}
+		if i == 0 {
+			e.Tokens = bad
+		}
+		w.Add(e)
+	}
+	if err := w.Flush(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("flush: %v", err)
+	}
+	if _, _, queued := w.Stats(); queued != 4 {
+		t.Fatalf("queued %d, want the 4 good rows", queued)
+	}
+	if err := w.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := dbtest.QueryString(t, node, `SELECT COUNT(*) FROM usageHistory`); n != "4" {
+		t.Fatalf("rows %s", n)
+	}
+	if n := dbtest.QueryString(t, node, `SELECT value FROM _meta WHERE key = 'totalRequestsLifetime'`); n != "4" {
+		t.Fatalf("lifetime %s", n)
+	}
+	if written, _, _ := w.Stats(); written != 4 || w.Rejected() != 1 {
+		t.Fatalf("written %d rejected %d", written, w.Rejected())
+	}
+}
+
+func TestAWriteWhoseCallerHasGoneIsSkipped(t *testing.T) {
+	d, node, _ := open(t, dbtest.Options{})
+	hold := make(chan struct{})
+	first := submitAsync(d, insertMeta("w_a", hold))
+	time.Sleep(20 * time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	gone := make(chan error, 1)
+	go func() { gone <- d.writeTx(ctx, insertMeta("w_b", nil)) }()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	close(hold)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-gone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("gone: %v", err)
+	}
+	if got := metaKeys(t, node); got != "w_a" {
+		t.Fatalf("rows %q", got)
+	}
+}
+
+func TestABusyBeginFailsEveryQueuedWriteAtOnce(t *testing.T) {
+	d, node, _ := open(t, dbtest.Options{})
+	conn, err := node.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	defer conn.ExecContext(context.Background(), "ROLLBACK")
+	start := time.Now()
+	var results []<-chan error
+	for i := 0; i < 5; i++ {
+		results = append(results, submitAsync(d, insertMeta(fmt.Sprintf("w_%d", i), nil)))
+		time.Sleep(5 * time.Millisecond)
+	}
+	for _, r := range results {
+		if err := <-r; !IsBusy(err) {
+			t.Fatalf("got %v, want SQLITE_BUSY", err)
+		}
+	}
+	// One busy_timeout for all of them, not five.
+	if took := time.Since(start); took > BusyTimeout+3*time.Second {
+		t.Fatalf("five queued writes took %v to fail", took)
+	}
+}
+
+func TestCloseStopsTheWatcher(t *testing.T) {
+	path, _ := dbtest.New(t, dbtest.Options{})
+	d, err := Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Watch(context.Background(), WatchOptions{PollInterval: 10 * time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- d.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close hung on the watcher")
+	}
+	polls := d.Stats().Polls
+	time.Sleep(50 * time.Millisecond)
+	if d.Stats().Polls != polls {
+		t.Fatal("the watcher kept polling after Close")
+	}
+}
+
+func TestASnapshotOlderThanTwoTTLsIsNotServed(t *testing.T) {
+	d, _, _ := open(t, dbtest.Options{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := d.Watch(ctx, WatchOptions{PollInterval: time.Hour, TTL: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	if d.Snapshot() == nil {
+		t.Fatal("no first snapshot")
+	}
+	d.loadedAt.Store(time.Now().Add(-3 * time.Minute).UnixNano())
+	if d.Snapshot() != nil {
+		t.Fatal("a snapshot no reload has refreshed for 3 TTLs was served")
+	}
+}
+
+func TestRequestDetailDefaultsAreNodes(t *testing.T) {
+	d, node, _ := open(t, dbtest.Options{})
+	rows := []RequestDetail{{Model: "vendor/model-3.5:x", Status: "success"}}
+	if err := d.SaveRequestDetails(context.Background(), rows, 10); err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`^2026-03-01T12:00:00\.123Z-[0-9a-z]{6}-vendor-model-3-5-x$`).MatchString(rows[0].ID) || rows[0].Timestamp != fixedISO {
+		t.Fatalf("id %q timestamp %q", rows[0].ID, rows[0].Timestamp)
+	}
+	// The ids stay in the caller's rows, so saving them again upserts.
+	if err := d.SaveRequestDetails(context.Background(), rows, 10); err != nil {
+		t.Fatal(err)
+	}
+	if n := dbtest.QueryString(t, node, `SELECT COUNT(*) FROM requestDetails`); n != "1" {
+		t.Fatalf("rows %s", n)
+	}
+}
+
+func TestACounterWithoutAFieldGetsNullThenCounts(t *testing.T) {
+	saved := localZone
+	localZone = func() *time.Location { return time.UTC }
+	t.Cleanup(func() { localZone = saved })
+	d, node, _ := open(t, dbtest.Options{})
+	// A row from before cachedTokens existed.
+	dbtest.Exec(t, node, `INSERT INTO usageDaily(dateKey, data) VALUES('2026-03-01', '{"requests":1,"byProvider":{"p":{"requests":1,"promptTokens":1,"completionTokens":0,"cost":0}}}')`)
+	e := UsageEntry{Timestamp: fixedISO, Provider: "p", Model: "m", Tokens: obj(t, `{"input_tokens":1,"cache_read_input_tokens":3}`)}
+	if err := d.WriteUsage(context.Background(), []UsageEntry{e}); err != nil {
+		t.Fatal(err)
+	}
+	day := dbtest.QueryString(t, node, `SELECT data FROM usageDaily`)
+	// undefined + 3 is NaN, which JSON.stringify writes as null.
+	if !strings.Contains(day, `"p":{"requests":2,"promptTokens":2,"completionTokens":0,"cost":0,"cachedTokens":null}`) {
+		t.Fatalf("day %s", day)
+	}
+	if err := d.WriteUsage(context.Background(), []UsageEntry{e}); err != nil {
+		t.Fatal(err)
+	}
+	// null + 3 is 3.
+	if day = dbtest.QueryString(t, node, `SELECT data FROM usageDaily`); !strings.Contains(day, `"cachedTokens":3}`) {
+		t.Fatalf("day %s", day)
+	}
+}
+
+func TestUsageWriterStampsARowWhenItIsAdded(t *testing.T) {
+	d, node, _ := open(t, dbtest.Options{})
+	w := d.NewUsageWriter(UsageWriterOptions{Interval: time.Hour})
+	w.Add(UsageEntry{Model: "m"})
+	if err := w.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if ts := dbtest.QueryString(t, node, `SELECT timestamp FROM usageHistory`); ts != fixedISO {
+		t.Fatalf("timestamp %s", ts)
 	}
 }
 

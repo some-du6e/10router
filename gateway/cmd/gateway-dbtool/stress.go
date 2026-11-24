@@ -250,6 +250,8 @@ func runStress(args []string) error {
 
 	<-ctx.Done()
 	wg.Wait()
+	// Before Close flushes the backlog: what the writer kept up with.
+	inWindow, _, _ := usage.Stats()
 	errs.add(usage.Close(context.Background()))
 	written, dropped, _ := usage.Stats()
 
@@ -264,6 +266,7 @@ func runStress(args []string) error {
 		"firstErrors":             errs.first,
 		"usageRows":               written,
 		"usageDropped":            dropped,
+		"usageRowsInWindow":       inWindow,
 		"connectionWrites":        patches.Load(),
 		"connectionWritesSkipped": skipped.Load(),
 		"detailRows":              details.Load(),

@@ -156,6 +156,7 @@ type watcher struct {
 	generation    int64
 	loadedAt      time.Time
 	checkedAt     time.Time
+	reloadPending bool
 	lastStatus    *Status
 }
 
@@ -197,7 +198,8 @@ func (w *watcher) poll(ctx context.Context, first bool) error {
 	w.dataVersion = dv
 	// Wall time, not Options.Now (which only stamps what the gateway writes).
 	stale := time.Since(w.loadedAt) >= w.o.TTL
-	if !changed && !stale {
+	// A reload that failed is tried again on the next poll, even with nothing new.
+	if !changed && !stale && !w.reloadPending {
 		return nil
 	}
 	if changed {
@@ -231,9 +233,10 @@ func (w *watcher) poll(ctx context.Context, first bool) error {
 	if !d.Status().Ready {
 		return nil
 	}
-	if !first && !stale && generation == w.generation && d.snapshot.Load() != nil {
+	if !first && !stale && !w.reloadPending && generation == w.generation && d.snapshot.Load() != nil {
 		return nil
 	}
+	w.reloadPending = true
 	snap, err := d.LoadSnapshot(ctx)
 	if err != nil {
 		return err
@@ -241,7 +244,7 @@ func (w *watcher) poll(ctx context.Context, first bool) error {
 	d.snapshot.Store(snap)
 	d.loadedAt.Store(time.Now().UnixNano())
 	d.stats.reloads.Add(1)
-	w.generation, w.loadedAt = snap.Generation, time.Now()
+	w.generation, w.loadedAt, w.reloadPending = snap.Generation, time.Now(), false
 	if w.o.OnReload != nil {
 		w.o.OnReload(snap)
 	}

@@ -420,9 +420,12 @@ func (w *UsageWriter) Flush(ctx context.Context) error {
 			}
 			// A row that can never be written would hold every row behind it:
 			// write them one by one and drop (and count) the ones that fail so.
-			if err := w.isolate(ctx, batch); err != nil {
+			done, err := w.isolate(ctx, n)
+			remaining -= done
+			if err != nil {
 				return err
 			}
+			continue
 		}
 		w.mu.Lock()
 		// Add only appends, or drops from the front past MaxQueued: what it
@@ -448,23 +451,43 @@ func rowError(err error) bool {
 	return strings.Contains(s, "write panicked") || strings.Contains(s, "constraint")
 }
 
-func (w *UsageWriter) isolate(ctx context.Context, batch []UsageEntry) error {
-	for i := range batch {
-		err := w.d.WriteUsage(ctx, batch[i:i+1])
-		if err == nil {
-			continue
+// isolate writes the first n queued rows one at a time, dropping (and
+// counting) any that fails with a row error. Each row leaves the queue as it
+// lands or is dropped, so an error part way (the lock not coming, a closed
+// database) leaves only rows that didn't land queued: none is written twice.
+// It returns how many rows it got through.
+func (w *UsageWriter) isolate(ctx context.Context, n int) (int, error) {
+	for i := 0; i < n; i++ {
+		w.mu.Lock()
+		if len(w.queue) == 0 {
+			w.mu.Unlock()
+			return i, nil
 		}
-		if !rowError(err) {
-			return err
+		row := w.queue[0]
+		droppedBefore := w.dropped
+		w.mu.Unlock()
+		err := w.d.WriteUsage(ctx, []UsageEntry{row})
+		if err != nil && !rowError(err) {
+			return i, err
 		}
 		w.mu.Lock()
-		w.rejected++
+		if w.dropped > droppedBefore {
+			// Add dropped from the front meanwhile, this row first: it is gone already.
+			w.dropped--
+		} else {
+			w.queue = w.queue[1:]
+		}
+		if err == nil {
+			w.written++
+		} else {
+			w.rejected++
+		}
 		w.mu.Unlock()
-		if w.opts.OnError != nil {
+		if err != nil && w.opts.OnError != nil {
 			w.opts.OnError(fmt.Errorf("db: a usage row was dropped: %w", err))
 		}
 	}
-	return nil
+	return n, nil
 }
 
 // Rejected is how many rows were dropped because they could never be written.

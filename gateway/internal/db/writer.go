@@ -125,6 +125,11 @@ func (w *writer) loop() {
 				}
 			}
 		}
+		// A write whose caller has gone costs no gap: it takes no lock.
+		if err := first.ctx.Err(); err != nil {
+			first.done <- err
+			continue
+		}
 		if wait := w.gap - time.Since(lastEnd); wait > 0 && !lastEnd.IsZero() {
 			time.Sleep(wait)
 		}

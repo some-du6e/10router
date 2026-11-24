@@ -552,6 +552,16 @@ func TestNativeHealthReportsTheSchemaGuard(t *testing.T) {
 			if lines := strings.Count(logs.String(), "[Gateway] native"); lines != 1 {
 				t.Fatalf("want one native log line, got:\n%s", logs.String())
 			}
+			// The reason can carry SQLite's error text: a remote client sees only the state.
+			r := httptest.NewRequest("GET", HealthPath, nil)
+			r.RemoteAddr = "203.0.113.7:5000"
+			w := httptest.NewRecorder()
+			g.ServeHTTP(w, r)
+			var remote map[string]any
+			_ = json.Unmarshal(w.Body.Bytes(), &remote)
+			if remote["native"] != c.native || remote["nativeReason"] != nil {
+				t.Fatalf("remote health %v", remote)
+			}
 		})
 	}
 	// Node creates the file on its first use of it, which can come after it

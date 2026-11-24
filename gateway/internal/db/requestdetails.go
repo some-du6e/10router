@@ -59,8 +59,10 @@ func orEmptyPayload(v any) any {
 var notIDChar = regexp.MustCompile(`[^a-zA-Z0-9-]`)
 
 // detailID is requestDetailsRepo.js's generateDetailId:
-// `${timestamp}-${6 random base-36 chars}-${model with other chars as "-"}`.
-func detailID(timestamp, model string) string {
+// `${now}-${6 random base-36 chars}-${model with other chars as "-"}`, now
+// being the time the id is made (not the row's timestamp), as there.
+func detailID(now, model string) string {
+	timestamp := now
 	const digits = "0123456789abcdefghijklmnopqrstuvwxyz"
 	random := make([]byte, 6)
 	for i := range random {
@@ -104,20 +106,24 @@ func (d *DB) SaveRequestDetails(ctx context.Context, rows []RequestDetail, maxRe
 	if maxRecords <= 0 {
 		maxRecords = DefaultMaxRecords
 	}
+	// buildSave's defaults, set in the caller's rows: rows over 200 go in
+	// several transactions, and a caller retrying after an error that came
+	// after some landed upserts the same ids instead of adding new rows.
+	for i := range rows {
+		if rows[i].Timestamp == "" {
+			rows[i].Timestamp = ISOTime(d.now())
+		}
+		if rows[i].ID == "" {
+			rows[i].ID = detailID(ISOTime(d.now()), rows[i].Model)
+		}
+	}
 	for len(rows) > 0 {
 		n := min(len(rows), maxRowsPerWrite)
 		batch := rows[:n]
 		rows = rows[n:]
 		err := d.writeTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			for i := range batch {
-				r := batch[i]
-				// buildSave's defaults.
-				if r.Timestamp == "" {
-					r.Timestamp = ISOTime(d.now())
-				}
-				if r.ID == "" {
-					r.ID = detailID(r.Timestamp, r.Model)
-				}
+				r := &batch[i]
 				var full any
 				if r.FullData != nil {
 					full = r.FullData

@@ -212,7 +212,8 @@ for (const driver of ["better-sqlite3", "node:sqlite"]) {
       // And it kept up with its load (500 usage rows/s, 100 connection writes/s):
       // a gateway that wrote little would leave Node nothing to wait for.
       const seconds = SHARED_MS / 1000;
-      expect(gateway.usageRows).toBeGreaterThan(0.9 * 500 * seconds);
+      // Rows written while the window ran, not the backlog Close flushes after it.
+      expect(gateway.usageRowsInWindow).toBeGreaterThan(0.9 * 500 * seconds);
       expect(gateway.connectionWrites).toBeGreaterThan(0.8 * 100 * seconds);
       expect(gateway.connectionWritesSkipped).toBeLessThan(0.05 * 100 * seconds);
 
