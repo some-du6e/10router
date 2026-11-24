@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { settings, pools, getProviderConnectionById } = vi.hoisted(() => ({
   settings: { current: {} },
@@ -15,7 +15,6 @@ vi.mock("@/lib/localDb", () => ({ getProviderConnectionById }));
 
 import { getSettings } from "@/lib/db/index.js";
 import { resolveConnectionProxyConfig } from "../../src/lib/network/connectionProxy.ts";
-import { toProxyOptions } from "../../src/lib/network/proxyRouting.ts";
 import { checkAndRefreshToken } from "../../src/sse/services/tokenRefresh.js";
 
 const eu = { id: "eu", name: "Residential EU", proxyUrl: "http://eu.proxy.test:3128", isActive: true, strictProxy: true };
@@ -44,25 +43,6 @@ describe("resolveConnectionProxyConfig", () => {
     const r = await resolveConnectionProxyConfig({ proxyPoolId: "eu" }, "claude");
     expect(r).toMatchObject({ source: "error", strictProxy: true, connectionProxyEnabled: false });
     expect(r.blockedReason).toBeTruthy();
-  });
-});
-
-describe("credentials carry the proxy under the names proxyAwareFetch reads", () => {
-  const realFetch = globalThis.fetch;
-  afterEach(() => {
-    globalThis.fetch = realFetch;
-    vi.resetModules();
-  });
-
-  // auth.js spreads toProxyOptions() into providerSpecificData; handlers such as
-  // systemone pass that object straight to proxyAwareFetch.
-  it("blocks a request sent with the account's providerSpecificData as proxy options", async () => {
-    const calls = [];
-    globalThis.fetch = vi.fn(async (...args) => { calls.push(args); return new Response("ok"); });
-    const { proxyAwareFetch } = await import("../../open-sse/utils/proxyFetch.js");
-    const psd = { ...toProxyOptions(await resolveConnectionProxyConfig({}, "codex")), connectionProxyPoolId: "off" };
-    await expect(proxyAwareFetch("https://api.test/v1", {}, psd)).rejects.toThrow(/Request blocked/);
-    expect(calls).toHaveLength(0);
   });
 });
 

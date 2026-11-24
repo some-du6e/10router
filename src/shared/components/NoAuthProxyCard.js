@@ -71,6 +71,8 @@ export default function NoAuthProxyCard({ providerId }) {
     }
   };
 
+  const isMissingPool = loaded && proxyPoolId !== NONE_PROXY_POOL_VALUE && proxyPoolId !== PROXY_DIRECT
+    && !proxyPools.some((pool) => pool.id === proxyPoolId);
   const canRotate = proxyPools.length >= 2;
   const isRotation = rotateStrategy !== "none";
 
@@ -96,6 +98,8 @@ export default function NoAuthProxyCard({ providerId }) {
           { value: NONE_PROXY_POOL_VALUE, label: "Inherit (Global)" },
           { value: PROXY_DIRECT, label: "Direct (no proxy)" },
           ...proxyPools.map((pool) => ({ value: pool.id, label: pool.name })),
+          // Only active pools are listed; a bound pool that's off or gone blocks requests.
+          ...(isMissingPool ? [{ value: proxyPoolId, label: "Pool off or missing: requests blocked" }] : []),
         ]}
         hint={isRotation ? "Pool selector is ignored when rotation is active — all active pools are used." : undefined}
       />

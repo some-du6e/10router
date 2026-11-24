@@ -79,6 +79,10 @@ async function loadActiveConnections() {
 
 async function refreshOne(connection) {
   const { checkAndRefreshToken } = await import("./tokenRefresh.js");
+  // The DB row doesn't carry the resolved proxy; a blocked account skips the refresh.
+  const { resolveConnectionProxyConfig } = await import("../../lib/network/connectionProxy.js");
+  const { blockedReason } = await resolveConnectionProxyConfig(connection.providerSpecificData, connection.provider);
+  if (blockedReason) return connection;
   return checkAndRefreshToken(connection.provider, connection, { force: true });
 }
 

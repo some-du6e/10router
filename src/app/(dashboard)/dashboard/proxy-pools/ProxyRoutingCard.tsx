@@ -56,6 +56,16 @@ const delay = (ms: number): CSSProperties => ({ animationDelay: `${ms}ms` });
 const providerName = (id: string, conns: Connection[]) =>
   (AI_PROVIDERS as Record<string, { name?: string } | undefined>)[id]?.name ||
   String(conns.find((c) => c.provider === id)?.providerSpecificData?.nodeName || id);
+// Protocol, host and port only: a proxy URL can carry user:pass.
+function maskProxyUrl(raw: string): string {
+  if (!raw) return "";
+  try {
+    const u = new URL(raw);
+    return `${u.protocol}//${u.hostname}${u.port ? `:${u.port}` : ""}`;
+  } catch {
+    return "";
+  }
+}
 const accountName = (c: Connection) => c.displayName || c.name || c.email || c.id;
 
 function Note({ icon, tone, children }: { icon: string; tone: string; children: ReactNode }) {
@@ -128,7 +138,7 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
     [connections],
   );
 
-  const sel: Selection | null = selected || (connections[0] ? { type: "account", id: connections[0].id } : null);
+  const sel: Selection = selected || (connections[0] ? { type: "account", id: connections[0].id } : { type: "global" });
   const selAccount = sel?.type === "account" ? connections.find((c) => c.id === sel.id) || null : null;
   const selRoute = selAccount ? resolveAccount(selAccount) : null;
 
@@ -286,7 +296,7 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
     const sep = <span className="material-symbols-outlined text-[16px] text-text-muted">arrow_forward</span>;
     const blocked = route.source === "blocked";
     const usesProxy = route.connectionProxyEnabled || !!route.vercelRelayUrl;
-    const url = route.connectionProxyUrl || route.vercelRelayUrl;
+    const url = maskProxyUrl(route.connectionProxyUrl || route.vercelRelayUrl);
 
     let mode: ReactNode;
     if (blocked) mode = <Note icon="block" tone={TONE.error}>{route.blockedReason}, so requests from this account are blocked instead of going direct.</Note>;
@@ -388,7 +398,7 @@ export default function ProxyRoutingCard({ proxyPools, onPoolsChanged }: { proxy
     );
   }
 
-  if (!settings || connections.length === 0 || !sel) return null;
+  if (!settings) return null;
 
   return (
     <Card title="Proxy routing" subtitle="Accounts inherit from their provider, and providers from Global. Click any block to change it." icon="layers">

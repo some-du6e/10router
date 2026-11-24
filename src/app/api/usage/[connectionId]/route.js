@@ -25,6 +25,8 @@ function isAuthExpiredMessage(usage) {
  * @returns Promise<{ connection, refreshed: boolean }>
  */
 export async function refreshAndUpdateCredentials(connection, force = false, proxyOptions = null) {
+  // A blocked account's refresh would reach the provider from this machine's IP.
+  if (proxyOptions?.blockedReason) throw new Error(proxyOptions.blockedReason);
   // Re-read latest tokens: OpenAI rotates the refresh token on every refresh, and
   // refreshing with a stale snapshot (reuse) revokes the whole session → account logout.
   let latest;

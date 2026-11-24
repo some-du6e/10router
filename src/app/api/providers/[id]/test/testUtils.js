@@ -521,6 +521,12 @@ async function fetchWithConnectionProxy(url, options = {}, effectiveProxy = null
     });
   }
 
+  // Direct skips the system proxy too, the way real requests do.
+  if (effectiveProxy?.direct) {
+    const { proxyAwareFetch } = await import("open-sse/utils/proxyFetch.js");
+    return proxyAwareFetch(url, options, { direct: true });
+  }
+
   if (!effectiveProxy?.connectionProxyEnabled || !effectiveProxy?.connectionProxyUrl) {
     return fetch(url, options);
   }

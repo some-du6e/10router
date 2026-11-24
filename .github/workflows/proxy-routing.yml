@@ -6,6 +6,7 @@ on:
       - "src/lib/network/**"
       - "src/lib/db/repos/settingsRepo.js"
       - "src/shared/components/NoAuthProxyCard.js"
+      - "src/sse/services/backgroundTokenRefresh.js"
       - "open-sse/utils/proxyFetch.js"
       - "open-sse/handlers/chatCore.js"
       - "open-sse/executors/cursor.js"
@@ -45,6 +46,8 @@ jobs:
           ./node_modules/.bin/vitest run
           unit/proxy-routing.test.js
           unit/proxy-routing-wiring.test.js
+          unit/proxy-routing-auth.test.js
+          unit/background-token-refresh.test.js
           unit/oauth-probe-refresh-persistence.test.js
           unit/soonest-reset.test.js
           unit/quota-notification-scheduler.test.js

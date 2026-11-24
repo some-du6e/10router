@@ -43,6 +43,7 @@ const state = globalThis[Symbol.for("10router.codexPooledUsage")] ||= {
 async function usageForConnection(connection) {
   const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData, connection.provider);
   const proxyOptions = toProxyOptions(proxyConfig);
+  if (proxyOptions.blockedReason) return null;
 
   let accessToken = connection.accessToken;
   const expiresAt = connection.expiresAt || connection.tokenExpiresAt;
