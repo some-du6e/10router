@@ -209,6 +209,10 @@ type Gate struct {
 	recheck  *time.Ticker
 	stop     chan struct{}
 
+	// The last memory reading and when it was taken (memory()).
+	memAt  time.Time
+	memVal int64
+
 	refusingSince time.Time
 	refused       int
 	stats         Stats
@@ -248,6 +252,21 @@ func New(o Options) *Gate {
 // Enabled: the gate checks anything at all.
 func (g *Gate) Enabled() bool { return g.o.BudgetBytes > 0 || g.o.HighWaterBytes > 0 }
 
+// memoryCacheFor is how long one memory reading stands. Reading memory.stat
+// is a file read, and blocker runs on every request while any is in flight
+// and once per waiter in pump; the recheck that waits for memory to drop
+// runs far less often than this goes stale.
+const memoryCacheFor = 10 * time.Millisecond
+
+// memory is the container's memory, read at most once per memoryCacheFor.
+// Callers hold mu.
+func (g *Gate) memory() int64 {
+	if now := time.Now(); g.memAt.IsZero() || now.Sub(g.memAt) >= memoryCacheFor {
+		g.memVal, g.memAt = g.o.Memory(), now
+	}
+	return g.memVal
+}
+
 // blocker is why a body of length can't go in now, or "". Callers hold mu.
 func (g *Gate) blocker(length int64) string {
 	if g.inflight == 0 {
@@ -256,7 +275,7 @@ func (g *Gate) blocker(length int64) string {
 	if g.o.BudgetBytes > 0 && g.held+length*g.o.Copies > g.o.BudgetBytes {
 		return "budget"
 	}
-	if g.o.HighWaterBytes > 0 && g.o.Memory()+(g.pending+length)*g.o.PendingCopies > g.o.HighWaterBytes {
+	if g.o.HighWaterBytes > 0 && g.memory()+(g.pending+length)*g.o.PendingCopies > g.o.HighWaterBytes {
 		return "memory"
 	}
 	return ""
@@ -372,7 +391,7 @@ func (g *Gate) describe(length int64) string {
 	parts = append(parts, fmt.Sprintf("%dMB of bodies not yet replying", g.pending/mib))
 	if g.o.HighWaterBytes > 0 {
 		parts = append(parts, fmt.Sprintf("container %dMB + %dMB coming (high water %dMB)",
-			g.o.Memory()/mib, (g.pending+length)*g.o.PendingCopies/mib, g.o.HighWaterBytes/mib))
+			g.memory()/mib, (g.pending+length)*g.o.PendingCopies/mib, g.o.HighWaterBytes/mib))
 	}
 	parts = append(parts, fmt.Sprintf("%d waiting", len(g.queue)))
 	return strings.Join(parts, ", ")

@@ -2,11 +2,12 @@
 // (gateway/internal/combo, docs/GO_GATEWAY.md "Phase 2c").
 //
 // One synthetic database (custom nodes with prefixes, combos nested, empty and
-// with non-string members, aliases of every stored shape) is written to a real
-// Node database, and each model id goes through Node's real getModelInfo and
-// getComboModels (src/sse/services/model.js) over it. The fixture holds the
-// rows as Node stored them, which the Go test loads into its own SQLite file
-// and reads through the gateway's snapshot, and the answers it must give.
+// with non-string members, aliases of every stored shape) is inserted as rows
+// of a real Node database, and each model id goes through Node's real
+// getModelInfo and getComboModels (src/sse/services/model.js), which read them
+// through Node's repos. The fixture holds the rows, which the Go test loads
+// into its own SQLite file and reads through the gateway's snapshot, and the
+// answers it must give.
 //
 // Without COMBO_RECORD this checks that Node still gives the committed answers
 // and table export, so a Node change the Go port would miss fails here too.

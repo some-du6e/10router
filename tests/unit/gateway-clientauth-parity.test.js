@@ -5,9 +5,10 @@
 // one, with its key in one of the places Node reads it from. It goes through
 // Node's real public-LLM gate (dashboardGuard.js's proxy) and then chat.ts's
 // checks as it runs them (requireApiKey, missingModel, checkApiKeyLimits,
-// keyHasBudget) over one synthetic key table in a real Node database. The
-// fixture holds those rows as Node stored them; the Go test loads them into
-// its own SQLite file and reads them through the gateway's readers. The Go
+// keyHasBudget) over one synthetic key table inserted as rows of a real Node
+// database and read by Node's repos. The fixture holds those rows; the Go
+// test loads them into its own SQLite file and reads them through the
+// gateway's readers (settings are set per case on both sides). The Go
 // port must let a request
 // through exactly when Node does; where it is stricter on purpose, the case
 // says why ("conservative"), and the request goes to Node.

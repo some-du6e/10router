@@ -8,6 +8,7 @@ import (
 
 	"github.com/some-du6e/10router/gateway/internal/db"
 	"github.com/some-du6e/10router/gateway/internal/db/dbtest"
+	"github.com/some-du6e/10router/gateway/internal/db/jsjson"
 	"github.com/some-du6e/10router/gateway/internal/decline"
 )
 
@@ -135,6 +136,31 @@ func TestDeclinesIDsNodeReadsDifferently(t *testing.T) {
 	for _, id := range []string{"constructor", "café"} {
 		if _, err := c.ComboModels(id); !decline.Is(err) {
 			t.Errorf("ComboModels(%q) did not decline: %v", id, err)
+		}
+	}
+}
+
+// Stored shapes Node reads through JavaScript's object rules.
+func TestDeclinesStoredShapesNodeReadsItsOwnWay(t *testing.T) {
+	aliases, err := jsjson.ParseObject([]byte(`{"__proto__":{"inherited":"hot/model-a"},"plain":"constructor/x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Config{Aliases: aliases, Combos: map[string]any{"lengthy": jsjson.NewObject(), "empty": "", "num": 5.0}}
+	// kvStore.getAll's assignment makes "__proto__" the alias map's prototype.
+	if _, err := c.ModelInfo("inherited"); !decline.Is(err) {
+		t.Errorf("an alias Node would inherit was resolved: %v", err)
+	}
+	c.Aliases.Delete("__proto__")
+	if _, err := c.ModelInfo("plain"); !decline.Is(err) {
+		t.Errorf("an alias naming Object.prototype was resolved: %v", err)
+	}
+	if _, err := c.ComboModels("lengthy"); !decline.Is(err) {
+		t.Errorf("object-shaped members: %v", err)
+	}
+	for _, name := range []string{"empty", "num"} {
+		if m, err := c.ComboModels(name); m != nil || err != nil {
+			t.Errorf("%s: Node finds no members; got %v %v", name, m, err)
 		}
 	}
 }

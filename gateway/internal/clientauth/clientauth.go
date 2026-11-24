@@ -234,6 +234,10 @@ func (l *Lookup) comboMembers(name string) ([]string, error) {
 		return nil, err
 	}
 	strategies := l.Settings.Object("comboStrategies")
+	if raw, _ := l.Settings.Get("comboStrategies"); strategies == nil && jsjson.Truthy(raw) {
+		// An array or string: Node would index it by the combo's name.
+		return nil, declined("comboStrategies is not an object")
+	}
 	key := combo.ComboLookupName(name)
 	var strategy *jsjson.Object
 	if v, ok := strategies.Get(key); ok {

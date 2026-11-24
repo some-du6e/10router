@@ -245,6 +245,44 @@ func TestOutOfTurnAdmitWhenTheWaitEnds(t *testing.T) {
 	t2.Release()
 }
 
+// The front waiter whose wait runs out is decided before the queue moves:
+// room for one goes to it, not to the waiter behind it.
+func TestTimedOutFrontWaiterKeepsItsTurn(t *testing.T) {
+	var mem atomic.Int64
+	mem.Store(2000)
+	g := gate(Options{HighWaterBytes: 1000, PendingCopies: 1, MaxWait: 60 * time.Millisecond, Recheck: time.Hour, Memory: mem.Load})
+	a, _, _ := g.Acquire(context.Background(), 10)
+	defer a.Release()
+	front := make(chan *Ticket, 1)
+	go func() {
+		tk, _, _ := g.Acquire(context.Background(), 300)
+		front <- tk
+	}()
+	for g.Snapshot().Waiting < 1 {
+		time.Sleep(time.Millisecond)
+	}
+	behind := make(chan *Ticket, 1)
+	go func() {
+		tk, _, _ := g.Acquire(context.Background(), 300)
+		behind <- tk
+	}()
+	for g.Snapshot().Waiting < 2 {
+		time.Sleep(time.Millisecond)
+	}
+	// Room for one 300-byte body now (500 + 10 + 300 fits, a second doesn't),
+	// with no recheck to notice before the front waiter's timer.
+	mem.Store(500)
+	if tk := <-front; tk == nil {
+		t.Fatal("the front waiter was refused; the one behind it took its room")
+	} else {
+		defer tk.Release()
+	}
+	if tk := <-behind; tk != nil {
+		tk.Release()
+		t.Fatal("both got in over the high water")
+	}
+}
+
 func TestMemoryRefusalAndNoWait(t *testing.T) {
 	g := gate(Options{HighWaterBytes: 10, MaxWait: 0, Memory: func() int64 { return 100 }})
 	tk, _, _ := g.Acquire(context.Background(), 1)

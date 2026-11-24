@@ -168,6 +168,19 @@ func TestDeclinesExpiryNodeParsesItsOwnWay(t *testing.T) {
 	}
 }
 
+// Node indexes a comboStrategies array or string by the combo's name.
+func TestDeclinesComboStrategiesThatIsNotAnObject(t *testing.T) {
+	_, _, combos := load(t)
+	settings, err := jsjson.ParseObject([]byte(`{"comboStrategies":[{"fallbackStrategy":"fusion"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = IsModelAllowed("main", []string{"hot/model-a", "hot/model-b"}, &Lookup{Combos: combos, Settings: db.Settings{Merged: settings}})
+	if !decline.Is(err) {
+		t.Fatalf("got %v", err)
+	}
+}
+
 // A failed key read is an error, not a decline: the caller decides.
 func TestPolicyReadFailure(t *testing.T) {
 	boom := errors.New("disk I/O error")

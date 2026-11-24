@@ -77,8 +77,9 @@ type Request struct {
 }
 
 // Inspect parses the body as readJsonObject does and checks its shape.
-// header is the client's; Node reads its User-Agent as Headers.get does,
-// every value joined with ", ". ccFilterNaming is that setting's truthiness
+// header is the client's. Node's HTTP parser keeps only the first of several
+// User-Agent headers; the bypass check here reads them all joined, so it
+// declines whenever any of them would. ccFilterNaming is that setting's truthiness
 // (chat.ts passes !!settings.ccFilterNaming): db.Settings.Truthy, not Bool.
 func Inspect(raw []byte, header http.Header, ccFilterNaming bool) (*Request, error) {
 	body, err := claudeprep.Parse(raw)

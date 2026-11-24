@@ -91,7 +91,8 @@ func TestInspectParityWithNode(t *testing.T) {
 	}
 }
 
-// Node reads User-Agent as Headers.get does: every value, joined.
+// Node keeps only the first User-Agent; Go reads them all, so a warmup behind
+// any of them goes to Node (stricter, never looser).
 func TestUserAgentValuesAreJoined(t *testing.T) {
 	h := http.Header{}
 	h.Add("User-Agent", "proxy-agent/1.0")

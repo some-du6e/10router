@@ -209,7 +209,10 @@ func (c *Config) ModelInfo(modelStr string) (Info, error) {
 		return Info{}, err
 	}
 	if modelStr == "" {
-		// parseModel's nulls: no prefix to match, not even an empty one.
+		// parseModel's nulls. Node can still match a node stored with
+		// "prefix": null (null === null), but its model stays null and the
+		// request is refused later; here it resolves to nothing, which no
+		// served provider is.
 		return Info{}, nil
 	}
 	p := ParseModel(modelStr)
@@ -235,6 +238,15 @@ func (c *Config) ModelInfo(modelStr string) (Info, error) {
 // modelInfoCore is getModelInfoCore for an alias-shaped id.
 func (c *Config) modelInfoCore(modelStr string) (Info, error) {
 	p := ParseModel(modelStr)
+	// kvStore.getAll builds the aliases by assignment, and assigning a
+	// "__proto__" object replaces the map's prototype: Node then finds the
+	// aliases in it by inheritance, which a plain lookup here wouldn't.
+	if v, ok := c.Aliases.Get("__proto__"); ok {
+		switch v.(type) {
+		case *jsjson.Object, []any:
+			return Info{}, declined("a stored __proto__ alias Node's alias map inherits from")
+		}
+	}
 	if info, ok, err := resolveAliasFrom(p.Model, c.Aliases); err != nil || ok {
 		return info, err
 	}
@@ -254,6 +266,9 @@ func resolveAliasFrom(alias string, aliases *jsjson.Object) (Info, bool, error) 
 	}
 	switch t := v.(type) {
 	case string:
+		if HasProtoKey(t) {
+			return Info{}, false, declined("alias %q names an Object.prototype member", alias)
+		}
 		info, ok := splitAlias(t)
 		return info, ok, nil
 	case *jsjson.Object:
@@ -326,8 +341,15 @@ func (c *Config) ComboModels(modelStr string) ([]string, error) {
 	// would iterate by character.
 	models, isArray := stored.([]any)
 	if !isArray {
-		if s, isString := stored.(string); isString && s != "" {
-			return nil, declined("combo %q stores its members as a string", name)
+		// A non-empty string, or an object with a length, passes that check in
+		// Node and is iterated however its loops read it.
+		switch t := stored.(type) {
+		case string:
+			if t != "" {
+				return nil, declined("combo %q stores its members as a string", name)
+			}
+		case *jsjson.Object:
+			return nil, declined("combo %q stores its members as an object", name)
 		}
 		return nil, nil
 	}
