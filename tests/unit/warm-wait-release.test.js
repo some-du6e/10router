@@ -10,12 +10,11 @@
 // warm key (served the conversation, then answers 429 once) and a cold one.
 // chatCore is wrapped only to take weak references to the attempt cache.
 import fs from "node:fs";
-import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { claudeCodeBody } from "../helpers/claudeCodeBody.js";
 import { settle, socketBody } from "../helpers/heldStreams.js";
+import { claudeCodeHeaders, conversation, countWaitLines, seedWarmCold, startWarmUpstream } from "../helpers/warmWait.js";
 
 const failed = [];
 vi.mock("open-sse/handlers/chatCore.js", async (importOriginal) => {
@@ -39,43 +38,8 @@ vi.mock("open-sse/handlers/chatCore.js", async (importOriginal) => {
   };
 });
 
-const MODEL = "kimi-k3";
-const NODE_ID = "openai-compatible-chat-warmwait";
 const WARM_KEY = "sk-warmwait-warm-not-a-real-key-00";
 const COLD_KEY = "sk-warmwait-cold-not-a-real-key-00";
-const WAIT_LINE = "for a key holding this conversation's prompt cache";
-
-const base = { id: "chatcmpl-ww", object: "chat.completion.chunk", created: 1700000000, model: MODEL };
-const chunk = (obj) => `data: ${JSON.stringify({ ...base, ...obj })}\n\n`;
-
-// Warm-key requests: the first `limit` get a 429, the rest a short reply. Each body is kept.
-const up = { limit: 0, warm: [], cold: 0 };
-
-function startUpstream() {
-  const server = http.createServer((req, res) => {
-    const parts = [];
-    req.on("data", (part) => parts.push(part));
-    req.on("end", () => {
-      const body = Buffer.concat(parts);
-      if (!(req.headers.authorization || "").includes(WARM_KEY)) up.cold++;
-      else {
-        up.warm.push(body);
-        if (up.limit > 0) {
-          up.limit--;
-          res.writeHead(429, { "content-type": "application/json" });
-          res.end(JSON.stringify({ error: { message: "Too many requests", type: "requests", code: "429" } }));
-          return;
-        }
-      }
-      res.writeHead(200, { "content-type": "text/event-stream" });
-      res.write(chunk({ choices: [{ index: 0, delta: { role: "assistant", content: "Hi" }, finish_reason: null }] }));
-      res.write(chunk({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }));
-      res.write(chunk({ choices: [], usage: { prompt_tokens: 70000, completion_tokens: 1, total_tokens: 70001 } }));
-      res.end("data: [DONE]\n\n");
-    });
-  });
-  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));
-}
 
 let tempDir;
 let upstream;
@@ -83,19 +47,14 @@ let routerKey;
 let POST;
 let db;
 let repo;
-let waitLines = 0;
+let waits;
 const originalDataDir = process.env.DATA_DIR;
-const quiet = {};
 
 beforeAll(async () => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "10router-warm-wait-release-"));
   process.env.DATA_DIR = tempDir;
-  for (const k of ["log", "info", "warn", "debug", "error"]) {
-    quiet[k] = console[k];
-    console[k] = (...args) => { if (String(args[0]).includes(WAIT_LINE)) waitLines++; };
-  }
-  upstream = await startUpstream();
-  const baseUrl = `http://127.0.0.1:${upstream.address().port}/v1`;
+  waits = countWaitLines();
+  upstream = await startWarmUpstream(WARM_KEY, { keepBodies: true });
 
   vi.resetModules();
   db = await import("@/lib/db/index.js");
@@ -106,77 +65,44 @@ beforeAll(async () => {
     comboStrategies: { kimi: { fallbackStrategy: "fallback" } },
   });
   routerKey = (await db.createApiKey("warm-wait", "warm-wait-machine")).key;
-  await db.createProviderNode({ id: NODE_ID, type: "openai-compatible", name: "WarmWait", prefix: "ww", apiType: "chat", baseUrl });
-  // Fill-first ranks the warm key first, so the cold key is the pick while it is locked.
-  for (const [name, apiKey] of [["ww-warm", WARM_KEY], ["ww-cold", COLD_KEY]]) {
-    await db.createProviderConnection({
-      provider: NODE_ID, authType: "apikey", name, apiKey, isActive: true, testStatus: "active",
-      providerSpecificData: { prefix: "ww", apiType: "chat", baseUrl, nodeName: "WarmWait" },
-    });
-  }
-  await db.createCombo({ name: "kimi", models: [`ww/${MODEL}`] });
+  await seedWarmCold(db, { baseUrl: `http://127.0.0.1:${upstream.port}/v1`, prefix: "ww", warmKey: WARM_KEY, coldKey: COLD_KEY });
   ({ POST } = await import("../../src/app/api/v1/messages/route.js"));
   repo = await import("@/lib/db/repos/requestDetailsRepo.js");
 }, 60_000);
 
 afterAll(async () => {
-  for (const [k, fn] of Object.entries(quiet)) console[k] = fn;
-  await new Promise((r) => upstream?.close(r));
+  waits?.restore();
+  await new Promise((r) => (upstream ? upstream.server.close(r) : r()));
   if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
   if (originalDataDir === undefined) delete process.env.DATA_DIR;
   else process.env.DATA_DIR = originalDataDir;
 });
 
 const post = (text) => POST(new Request("http://localhost/v1/messages", {
-  method: "POST",
-  headers: {
-    "content-type": "application/json",
-    "user-agent": "claude-cli/2.1.0 (external, cli)",
-    "x-api-key": routerKey,
-    "anthropic-version": "2023-06-01",
-    "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14",
-    "x-app": "cli",
-  },
-  body: socketBody(text),
-  duplex: "half",
+  method: "POST", headers: claudeCodeHeaders(routerKey), body: socketBody(text), duplex: "half",
 }));
 
 // Big enough to wait for a warm key (over CACHE_AFFINITY.minPromptTokens).
-function conversation(i, messages) {
-  const body = claudeCodeBody("kimi", { messages, toolResultChars: 13000 });
-  body.messages[0].content[1].text = `Fix the bug in the stream handler, conversation ${i}.`;
-  body.metadata = { user_id: `user_ww_account__session_${String(i).padStart(8, "0")}-0000-0000-0000-000000000000` };
-  return JSON.stringify(body);
-}
-
-async function until(check, ms = 15_000) {
-  const end = Date.now() + ms;
-  while (!check()) {
-    if (Date.now() > end) throw new Error("timed out");
-    await new Promise((r) => setTimeout(r, 5));
-  }
-}
-
-const drain = async (res) => {
-  const reader = res.body.getReader();
-  for (;;) if ((await reader.read()).done) break;
-};
+const turn = (i, messages) => conversation(i, { messages, tools: 17, toolResultChars: 13000 });
 
 // One conversation's waited turn: its first turn (small) makes the warm key
 // warm, then the big one is limited there once, waits, and resumes there.
 async function waitedTurn(i, whileWaiting) {
-  await drain(await post(conversation(i, 3)));
-  Object.assign(up, { limit: 1, warm: [], cold: 0 });
+  await (await post(turn(i, 3))).text();
+  const up = upstream.state;
+  up.arm(0);
+  up.limitNext = 1;
   failed.length = 0;
-  waitLines = 0;
-  const pending = post(conversation(i, 40));
-  await until(() => waitLines >= 1);
+  waits.reset();
+  const pending = post(turn(i, 40));
+  await vi.waitFor(() => expect(waits.count()).toBeGreaterThanOrEqual(1), { timeout: 15_000, interval: 5 });
   const during = await whileWaiting?.();
   const res = await pending;
-  await drain(res);
+  await res.text();
   expect(res.status).toBe(200);
   // Limited once, then served by the same warm key; the cold key was never asked.
-  expect(up.warm).toHaveLength(2);
+  expect(up.bodies).toHaveLength(2);
+  expect(up.resumed).toHaveLength(1);
   expect(up.cold).toBe(0);
   return during;
 }
@@ -188,7 +114,7 @@ describe("a request waiting for a warm key", () => {
     const during = await waitedTurn(1, async () => {
       await settle();
       return {
-        resumed: up.warm.length > 1,
+        resumed: upstream.state.resumed.length > 0,
         attempts: failed.length,
         cache: failed[0]?.cache.deref() !== undefined,
         bytes: failed[0]?.bytes.deref() !== undefined,
@@ -212,7 +138,7 @@ describe("a request waiting for a warm key", () => {
     await db.clearRequestDetailFullData();
     await repo.__test__.flush();
     await waitedTurn(2);
-    const [limited, resumed] = up.warm;
+    const [limited, resumed] = upstream.state.bodies;
     expect(limited.length).toBeGreaterThan(100_000);
     expect(resumed.equals(limited)).toBe(true);
 

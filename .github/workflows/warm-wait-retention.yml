@@ -18,8 +18,12 @@ on:
       - "tests/bench/warm-wait-retention-benchmark.test.js"
       - "tests/helpers/claudeCodeBody.js"
       - "tests/helpers/heldStreams.js"
+      - "tests/helpers/warmWait.js"
+      # The proxy fix depends on how Next clones a body; no lockfile pins it.
+      - "package.json"
       - "tests/package.json"
       - "tests/vitest.config.js"
+      - "tests/vitest.benchmark.config.js"
       - "tests/vitest.shared.js"
       - ".github/e2e/warm-wait/**"
       - ".github/workflows/warm-wait-retention.yml"
@@ -65,6 +69,7 @@ jobs:
           tests/unit/warm-wait-release.test.js
           tests/unit/proxy-body-copy.test.js
           tests/bench/warm-wait-retention-benchmark.test.js
+          tests/helpers/warmWait.js
           .github/e2e/warm-wait
 
   # Informational, for the PR's "Before" and "After": what each request keeps
@@ -109,6 +114,9 @@ jobs:
 
   # The production build and entry point (custom-server.js), measured from
   # inside the server: this is where Next's proxy copy of each body shows.
+  # Both legs fail on wrong behavior (a request not answered, sent to the cold
+  # key, or resumed with other bytes); the pr leg also when the waiting
+  # requests still hold their bodies outside the heap.
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -144,7 +152,7 @@ jobs:
           OUT_DIR: ${{ github.workspace }}/e2e-out
         run: |
           set -o pipefail
-          bash ../harness/.github/e2e/warm-wait/run.sh ${{ matrix.leg }} ../harness/tests 2>&1 | tee ../e2e-${{ matrix.leg }}.txt
+          bash ../harness/.github/e2e/warm-wait/run.sh ${{ matrix.leg }} 2>&1 | tee ../e2e-${{ matrix.leg }}.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

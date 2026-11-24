@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { getCloneableBody } from "next/dist/server/body-streams.js";
 import { adapter } from "next/dist/server/web/adapter.js";
 import { NextResponse } from "next/server";
-import { gc } from "../helpers/heldStreams.js";
+import { settle } from "../helpers/heldStreams.js";
 
 vi.mock("../../src/dashboardGuard.js", () => ({ proxy: async () => NextResponse.next() }));
 
@@ -75,13 +75,6 @@ function send(port, { method = "POST", payload = null, path = "/v1/messages" } =
   });
 }
 
-async function fullGc() {
-  for (let i = 0; i < 4; i++) {
-    gc();
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-}
-
 const payloadOf = (n) => Buffer.from(JSON.stringify({ model: "m", messages: [{ role: "user", content: "x".repeat(n) }] }));
 
 describe("the proxy's copy of a request body", () => {
@@ -100,7 +93,7 @@ describe("the proxy's copy of a request body", () => {
     const payload = payloadOf(SIZE);
     const done = send(port, { payload });
     await read;
-    await fullGc();
+    await settle();
     expect(open[0].length).toBe(payload.length);
     expect(chunks.length).toBeGreaterThan(1);
     // The request and its response are still open, as for one waiting or streaming.
@@ -121,27 +114,40 @@ describe("the proxy's copy of a request body", () => {
     expect(got.equals(payload)).toBe(true);
   });
 
-  it("returns before the upload ends, and doesn't wait on one that is cut off", async () => {
+  // The proxy doesn't wait on its copy: an upload that is never finished (here
+  // a tenth of it, then cut off) would keep it waiting forever.
+  it("lets the proxy return while the upload is still under way", async () => {
     const seen = {};
     let routed = false;
     const port = await serve(({ res }) => {
       routed = true;
       res.end("ok");
     }, { seen });
-    const started = Date.now();
     const req = http.request({ port, method: "POST", path: "/v1/messages", headers: { "content-type": "application/json", "content-length": 10 * SIZE } });
     req.on("error", () => {});
     req.write(Buffer.alloc(256 * 1024, 120));
     await vi.waitFor(() => expect(seen.proxiedAt).toBeTypeOf("number"), { timeout: 3000 });
     req.destroy();
-    // finalize() waits for the body and fails on the cut-off upload, so the route never runs.
+    // Next's finalize() fails on the cut-off upload, so the route never runs.
     await vi.waitFor(() => expect(seen.error).toBeDefined(), { timeout: 3000 });
-    expect(seen.proxiedAt - started).toBeLessThan(3000);
     expect(routed).toBe(false);
   });
 
-  it("is left alone on a request without a body", async () => {
-    const port = await serve(({ res, proxied }) => res.end(proxied ? "ok" : "no"));
+  it("is left alone on a request without a body, which still goes through the guard", async () => {
+    const port = await serve(({ res, proxied }) => {
+      res.statusCode = proxied?.response?.headers?.get("x-middleware-next") ? 200 : 500;
+      res.end();
+    });
     expect(await send(port, { method: "GET", path: "/dashboard" })).toBe(200);
+  });
+
+  it("never throws, whatever the request", async () => {
+    const { releaseBodyCopy } = await import("../../src/lib/proxyBodyCopy.js");
+    const locked = new Request("http://localhost/", { method: "POST", body: "x" });
+    const reader = locked.body.getReader();
+    expect(() => releaseBodyCopy(locked)).not.toThrow();
+    expect((await reader.read()).value).toBeDefined();
+    expect(() => releaseBodyCopy(null)).not.toThrow();
+    expect(() => releaseBodyCopy({ get body() { throw new Error("no body"); } })).not.toThrow();
   });
 });

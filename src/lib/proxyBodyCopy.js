@@ -14,14 +14,9 @@
  * @param {Request} request - the proxy's request
  */
 export function releaseBodyCopy(request) {
-  let body;
   try {
-    body = request?.body;
-    if (!body || body.locked) return;
-    const reader = body.getReader();
-    (async () => {
-      while (!(await reader.read()).done);
-    })().catch(() => {});
+    const body = request?.body;
+    if (body && !body.locked) body.pipeTo(new WritableStream()).catch(() => {});
   } catch {
     // A body that can't be read here is left to Next.
   }

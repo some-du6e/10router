@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Warm-key wait memory E2E. Run from a built app checkout:
-#   run.sh <leg> <harness tests dir>
+#   run.sh <leg>   leg = base | pr
 # Starts the mock upstream and a seeded 10router (`node custom-server.js`, the
 # production entry, with probe.cjs preloaded), then drive.mjs puts WAITING
-# requests into a warm-key wait and reports what each holds in the server.
+# requests into a warm-key wait and reports what each holds in the server. The
+# pr leg also fails if they still hold their bodies outside the heap.
 set -euo pipefail
 
 LEG="$1"
-HELPERS="$2"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="${OUT_DIR:-$PWD/e2e-out}"
 mkdir -p "$OUT"
@@ -32,4 +32,5 @@ done
 curl -sf -o /dev/null http://127.0.0.1:20128/v1/models || { echo "server did not start"; tail -50 "$OUT/server.log"; exit 1; }
 
 echo "leg: $LEG"
-node "$HERE/drive.mjs" "$SERVER_PID" "$OUT/server.log" "$OUT/probe.json" "$HELPERS/helpers/claudeCodeBody.js" "$OUT/result-$LEG.json"
+EXPECT_RELEASED="$([ "$LEG" = pr ] && echo 1 || echo 0)" \
+  node "$HERE/drive.mjs" "$SERVER_PID" "$OUT/server.log" "$OUT/probe.json" "$OUT/result-$LEG.json"
