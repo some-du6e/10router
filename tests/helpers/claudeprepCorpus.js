@@ -527,13 +527,33 @@ const SCENARIOS = [
     body.messages.push(last);
     return { model, headers: CC_HEADERS, body };
   }),
-  scenario("odd-tool-calls", (rng) => {
+  scenario("odd-tool-calls", (rng, i) => {
     const model = "claude-opus-4-8";
     const body = ccBody(rng, model, { messages: SMALL ? 8 : 50, toolCount: SMALL ? 4 : undefined });
     // OpenAI-shaped tool_calls inside a Claude body: an array entry Node sets an
-    // id on (and JSON.stringify ignores), ids that need repair.
-    body.messages.splice(2, 0, { role: "assistant", content: "calling", tool_calls: [[], { id: "bad id!", function: { name: "Read", arguments: { path: "/x" } } }, { function: { name: "a b" } }] });
+    // id on (and JSON.stringify ignores), ids that need repair, arguments as an
+    // object. In a longer history fixToolUseOrdering drops tool_calls; a
+    // one-message history keeps them, so the repaired ids show.
+    const turn = { role: "assistant", content: "calling", tool_calls: [[], { id: "bad id!", function: { name: "Read", arguments: { path: "/x" } } }, { function: { name: "a b" } }] };
+    if (i === 0) body.messages.splice(2, 0, turn);
+    else body.messages = [turn];
     return { model, headers: CC_HEADERS, body };
+  }),
+  // One case per edge a review found, each checked against Node.
+  scenario("edge-probes", (rng, i) => {
+    const small = { messages: SMALL ? 6 : 50, toolCount: SMALL ? 3 : undefined };
+    switch (i % 5) {
+      case 0: // an empty thinkingLevel: output_config.effort "" (not null)
+        return { model: "claude-opus-4-7", headers: CC_HEADERS, body: ccBody(rng, "claude-opus-4-7", { ...small, thinking: null, extra: { thinkingConfig: { thinkingLevel: "" } } }) };
+      case 1: // a query override with no pairs leaves the base query as written
+        return { model: "claude-opus-4-8", headers: CC_HEADERS, psd: { baseUrl: "https://gateway.example.test/v1?key=a%20b&flag", overrides: { query: "&" } }, body: ccBody(rng, "claude-opus-4-8", small) };
+      case 2: // a __proto__ header line sets nothing
+        return { model: "claude-opus-4-8", headers: CC_HEADERS, psd: { overrides: { headers: "__proto__: x\nx-real: 1" } }, body: ccBody(rng, "claude-opus-4-8", small) };
+      case 3: // a hex string budget above 2^53 rounds once
+        return { model: "qwen3-max", headers: CC_HEADERS, body: ccBody(rng, "qwen3-max", { ...small, thinking: { type: "enabled", budget_tokens: "0x20000000000001" } }) };
+      default: // a percent-encoded BOM in a query parameter stays
+        return { model: "claude-opus-4-8", headers: CC_HEADERS, psd: { overrides: { query: "%EF%BB%BFk=1" } }, body: ccBody(rng, "claude-opus-4-8", small) };
+    }
   }),
   scenario("translator-fields", (rng) => {
     const model = "claude-opus-4-8";
@@ -595,6 +615,23 @@ const SCENARIOS = [
     const body = ccBody(rng, model, { messages: SMALL ? 8 : 50, toolCount: SMALL ? 4 : undefined, thinking: null, extra: { reasoning_effort: "constructor" } });
     return { model, headers: CC_HEADERS, body, expectDecline: "Object.prototype" };
   }),
+  scenario("decline-schemeless-base", (rng) => {
+    const model = "claude-opus-4-8";
+    return { model, headers: CC_HEADERS, psd: { baseUrl: "gateway.example.test/v1" }, body: ccBody(rng, model, { messages: SMALL ? 6 : 50, toolCount: SMALL ? 3 : undefined }), expectDecline: "WHATWG parser" };
+  }),
+  scenario("decline-deep-json", (rng) => {
+    const model = "claude-opus-4-8";
+    const body = ccBody(rng, model, { messages: SMALL ? 6 : 50, toolCount: SMALL ? 3 : undefined });
+    let deep = 0;
+    for (let d = 0; d < 600; d++) deep = [deep];
+    body.messages.splice(1, 0, { role: "assistant", content: [{ type: "tool_use", id: "toolu_deep", name: "Read", input: { deep } }] });
+    return { model, headers: CC_HEADERS, body, expectDecline: "nested deeper" };
+  }),
+  scenario("decline-padded-prototype-effort", (rng) => {
+    const model = "gemini-3-pro";
+    const body = ccBody(rng, model, { messages: SMALL ? 6 : 50, toolCount: SMALL ? 3 : undefined, thinking: null, extra: { reasoning_effort: " constructor" } });
+    return { model, headers: CC_HEADERS, body, expectDecline: "Object.prototype" };
+  }),
   scenario("decline-blocked-connection", (rng) => {
     const model = "claude-opus-4-8";
     return { model, headers: CC_HEADERS, psd: { blockedReason: "proxy pool unavailable" }, body: ccBody(rng, model, { messages: SMALL ? 8 : 50, toolCount: SMALL ? 4 : undefined }), expectDecline: "blocked" };
@@ -608,7 +645,7 @@ const SCENARIOS = [
 const smallCount = {
   "thinking-matrix": 40, "endpoint-overrides": 22, "tool-choice": 6, "max-tokens": 6, "cc-basic": 3, "empty-blocks": 4, params: 6,
   "stream-shapes": 12, "cc-dedupe": 4, "cc-images-tool-errors": 4, "broken-ids": 2, "numbers-and-keys": 3, "limit-hold-banner": 3,
-  "oauth-token-key": 3, "base-urls": 9, "provider-thinking": 12, "prefill-repair": 4,
+  "oauth-token-key": 3, "base-urls": 9, "provider-thinking": 12, "prefill-repair": 4, "odd-tool-calls": 2, "edge-probes": 5,
 };
 
 function toFixture(name, spec, seed) {

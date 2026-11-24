@@ -49,6 +49,8 @@ const { DEFAULT_MAX_TOKENS } = await import("../../open-sse/config/runtimeConfig
 const { ANTHROPIC_API_VERSION, ANTHROPIC_API_HOST } = await import("../../open-sse/providers/shared.js");
 const { CLAUDE_SYSTEM_PROMPT } = await import("../../open-sse/config/appConstants.js");
 const { LIMIT_HOLD_SENTINEL } = await import("../../open-sse/utils/limitHold.js");
+const { LEVEL_TO_BUDGET } = await import("../../open-sse/translator/concerns/thinking.js");
+const { CLAUDE_BLOCK } = await import("../../open-sse/translator/schema/index.js");
 const { buildCorpus } = await import("../helpers/claudeprepCorpus.js");
 
 const GATEWAY_DIR = fileURLToPath(new URL("../../gateway/internal/claudeprep/", import.meta.url));
@@ -76,7 +78,10 @@ function tablesText() {
     betaBodyFields: compat.CLAUDE_BETA_BODY_FIELDS,
     firstPartyBetaFields: compat.CLAUDE_FIRST_PARTY_BETA_FIELDS,
     toolChangeBetas: compat.CLAUDE_TOOL_CHANGE_BETAS,
+    levelToBudget: LEVEL_TO_BUDGET,
+    gaThinkingDisplays: [...compat.CLAUDE_GA_THINKING_DISPLAYS],
     constants: {
+      webSearchToolType: CLAUDE_BLOCK.WEB_SEARCH_TOOL,
       defaultMaxTokens: DEFAULT_MAX_TOKENS,
       anthropicApiVersion: ANTHROPIC_API_VERSION,
       anthropicApiHost: ANTHROPIC_API_HOST,

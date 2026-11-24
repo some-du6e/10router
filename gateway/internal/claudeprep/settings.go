@@ -26,6 +26,12 @@ func ParseNodeSettings(data []byte) (NodeSettings, error) {
 		if !ok || string(v) == "null" {
 			return
 		}
+		if s, isString := dst.(*string); isString {
+			// Through Parse, not encoding/json, which would turn a lone
+			// surrogate escape into U+FFFD where Node keeps it.
+			*s, err = jsonString(v, key)
+			return
+		}
 		if e := json.Unmarshal(v, dst); e != nil {
 			err = fmt.Errorf("claudeprep: providerSpecificData.%s: %w", key, e)
 		}
@@ -61,19 +67,24 @@ func ParseNodeSettings(data []byte) (NodeSettings, error) {
 			"proxy": &n.Overrides.Proxy,
 		} {
 			if s, ok := o[key]; ok && string(s) != "null" {
-				if e := json.Unmarshal(s, dst); e != nil {
-					return NodeSettings{}, fmt.Errorf("claudeprep: providerSpecificData.overrides.%s: %w", key, e)
+				v, e := jsonString(s, "overrides."+key)
+				if e != nil {
+					return NodeSettings{}, e
 				}
+				*dst = v
 			}
 		}
-	}
-	// chatCore refuses a connection with a truthy blockedReason before any send.
-	if v, ok := raw["blockedReason"]; ok {
-		b, perr := Parse(v)
-		n.Blocked = perr != nil || b.Truthy()
 	}
 	if err != nil {
 		return NodeSettings{}, err
 	}
 	return n, nil
+}
+
+func jsonString(raw json.RawMessage, key string) (string, error) {
+	v, err := Parse(raw)
+	if err != nil || !v.IsString() {
+		return "", fmt.Errorf("claudeprep: providerSpecificData.%s is not a string", key)
+	}
+	return v.Str(), nil
 }

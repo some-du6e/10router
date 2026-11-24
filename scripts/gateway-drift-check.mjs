@@ -28,6 +28,7 @@ const problems = [];
 for (const [pkg, files] of Object.entries(map)) {
   if (pkg.startsWith("_")) continue;
   const paths = workflowPaths(pkg);
+  if (!paths) problems.push(`.github/workflows/gateway-${pkg}.yml is missing: every mapped package has a parity workflow`);
   for (const file of files) {
     if (!existsSync(new URL(file, root))) problems.push(`gateway/node-map.json: ${file} (${pkg}) doesn't exist; a renamed or deleted file must leave the map`);
     else if (paths && !covered(file, paths)) problems.push(`.github/workflows/gateway-${pkg}.yml: its paths filter misses ${file}, so the parity job wouldn't run when it changes`);

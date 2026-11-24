@@ -36,6 +36,9 @@ on:
       - "open-sse/config/runtimeConfig.js"
       - "open-sse/config/appConstants.js"
       - "open-sse/config/providers.js"
+      - "open-sse/providers/index.js"
+      - "open-sse/providers/pricing.js"
+      - "open-sse/executors/index.js"
   workflow_dispatch:
 
 permissions:

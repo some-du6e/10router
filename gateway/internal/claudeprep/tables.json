@@ -1969,7 +1969,21 @@
       "inline-tools-2026-09-15"
     ]
   },
+  "levelToBudget": {
+    "none": 0,
+    "minimal": 512,
+    "low": 1024,
+    "medium": 8192,
+    "high": 24576,
+    "xhigh": 32768,
+    "max": 128000
+  },
+  "gaThinkingDisplays": [
+    "summarized",
+    "omitted"
+  ],
   "constants": {
+    "webSearchToolType": "web_search_20250305",
     "defaultMaxTokens": 64000,
     "anthropicApiVersion": "2023-06-01",
     "anthropicApiHost": "api.anthropic.com",

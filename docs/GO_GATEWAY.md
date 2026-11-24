@@ -265,7 +265,8 @@ Whatever the port doesn't model it hands back with a `*DeclineError` (`claudepre
 | `KeyHasBudget` | `apiKeys` policy (`internal/clientauth`) |
 | `ProviderThinking` | `settings.providerThinking[provider].mode` |
 | `Connection.APIKey`, `.AccessToken` | the picked `providerConnections` row |
-| `Connection.Node` | that row's `providerSpecificData`, decoded with `claudeprep.ParseNodeSettings`. It matches keys exactly and refuses types Node's sanitizer never writes (a null `droppedBetas` makes Node throw), and it sets `Blocked` from `blockedReason` |
+| `Connection.Node` | that row's `providerSpecificData`, decoded with `claudeprep.ParseNodeSettings`. It matches keys exactly and refuses types Node's sanitizer never writes (a null `droppedBetas` makes Node throw) |
+| `Connection.Blocked` | the connection's resolved proxy rule refuses it (Node's `blockedReason`, which `getProviderCredentials` works out when it picks the account; never the stored row) |
 | `Models` | `claudeprep.NewModels(catalog)`. `catalog` implements `claudeprep.Catalog` (`Modalities(model)`, `Limits(provider, model)`) over the models.dev catalog Node syncs. `nil` means none, as in a Node with no catalog installed |
 
 Phase 2c's `internal/upstream` sends `Request` as given. For the beta retries it calls `Prepare` again with the learned flags in `Connection.Node.DroppedBetas`, or with `StripBeta`, the way DefaultExecutor re-runs `execute`. `Overrides.Timeout`, `.Retries` and `.Proxy`, and the connection's `strictProxy` and `direct`, are also left to it. A `DeclineError` from any call means Node serves the request, as long as no byte has gone to the client yet.

@@ -3,6 +3,7 @@ package claudeprep
 import (
 	"errors"
 	"math"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -334,7 +335,10 @@ func (v *Value) Clone() *Value {
 // ErrSyntax is a body JSON.parse would reject.
 var ErrSyntax = errors.New("claudeprep: invalid JSON")
 
-const maxDepth = 5000
+// maxDepth: Node's own recursion (translation, structuredClone,
+// JSON.stringify) overflows its stack a few thousand levels down and fails
+// the request; well below that the port parses, beyond it Node decides.
+const maxDepth = 512
 
 // Parse reads a request body the way Node's readJsonObject does:
 // request.text() (UTF-8 with replacement characters, a leading BOM dropped),
@@ -361,6 +365,12 @@ func decodeUTF8(data []byte) string {
 	if len(data) >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
 		data = data[3:]
 	}
+	return decodeUTF8KeepBOM(data)
+}
+
+// decodeUTF8KeepBOM is UTF-8 decode without BOM sniffing (the URL
+// standard's percent-decoded strings).
+func decodeUTF8KeepBOM(data []byte) string {
 	if utf8.Valid(data) {
 		return string(data)
 	}
@@ -439,8 +449,7 @@ func (p *parser) ws() {
 	}
 }
 
-// errTooDeep: V8's JSON.parse takes any depth; past maxDepth the port gives
-// the body to Node rather than recurse further.
+// errTooDeep: past maxDepth the port gives the body to Node.
 var errTooDeep = &DeclineError{"JSON nested deeper than the port parses"}
 
 func (p *parser) value(depth int) (*Value, error) {
@@ -1007,15 +1016,15 @@ func jsStringToNumber(s string) float64 {
 			base = 2
 		}
 		if base != 0 {
-			var n float64
 			for i := 2; i < len(t); i++ {
-				d := hexVal(t[i])
-				if d < 0 || d >= base {
+				if d := hexVal(t[i]); d < 0 || d >= base {
 					return math.NaN()
 				}
-				n = n*float64(base) + float64(d)
 			}
-			return n
+			// The exact integer, then rounded once to the nearest double.
+			n, _ := new(big.Int).SetString(t[2:], base)
+			f, _ := new(big.Float).SetInt(n).Float64()
+			return f
 		}
 	}
 	if !isDecimalLiteral(t) {

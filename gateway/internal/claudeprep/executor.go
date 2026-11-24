@@ -329,6 +329,10 @@ func getHeader(h *Value, name string) (string, bool) {
 
 func setHeader(h *Value, name, value string) {
 	deleteHeader(h, name)
+	// headers["__proto__"] = "x" is the prototype setter, which ignores a string.
+	if name == "__proto__" {
+		return
+	}
 	h.Set(name, String(value))
 }
 

@@ -98,7 +98,10 @@ type tables struct {
 	BetaBodyFields        map[string][]string `json:"betaBodyFields"`
 	FirstPartyBetaFields  map[string][]string `json:"firstPartyBetaFields"`
 	ToolChangeBetas       map[string][]string `json:"toolChangeBetas"`
+	LevelToBudget         map[string]float64  `json:"levelToBudget"`
+	GAThinkingDisplays    []string            `json:"gaThinkingDisplays"`
 	Constants             struct {
+		WebSearchToolType         string  `json:"webSearchToolType"`
 		DefaultMaxTokens          float64 `json:"defaultMaxTokens"`
 		AnthropicAPIVersion       string  `json:"anthropicApiVersion"`
 		AnthropicAPIHost          string  `json:"anthropicApiHost"`
@@ -124,7 +127,7 @@ func init() {
 	k := tbl.Constants
 	defaultMaxTokens, anthropicAPIVersion, anthropicAPIHost = k.DefaultMaxTokens, k.AnthropicAPIVersion, k.AnthropicAPIHost
 	claudeSystemPrompt, interruptedToolResultText, prefillContinuationText = k.ClaudeSystemPrompt, k.InterruptedToolResultText, k.PrefillContinuationText
-	limitHoldSentinel = k.LimitHoldSentinel
+	limitHoldSentinel, webSearchToolType = k.LimitHoldSentinel, k.WebSearchToolType
 	limitHoldNotice = `Some assistant messages in this conversation contain a status line marked ` +
 		`"` + limitHoldSentinel + `". Those lines were inserted by the 10router gateway to report ` +
 		`an upstream rate limit while the request waited ` + "—" + ` they are not your output and not ` +
@@ -137,8 +140,14 @@ func init() {
 	for _, flags := range tbl.ToolChangeBetas {
 		firstPartyBetas = union(firstPartyBetas, flags)
 	}
-	if defaultMaxTokens <= 0 || claudeSystemPrompt == "" || limitHoldSentinel == "" || len(tbl.BetaBodyFields) == 0 || len(firstPartyBetas) == 0 {
-		panic("claudeprep: tables.json is missing constants")
+	for _, s := range []string{anthropicAPIVersion, anthropicAPIHost, claudeSystemPrompt, interruptedToolResultText, prefillContinuationText, limitHoldSentinel, webSearchToolType} {
+		if s == "" {
+			panic("claudeprep: tables.json is missing a constant")
+		}
+	}
+	if defaultMaxTokens <= 0 || len(tbl.BetaBodyFields) == 0 || len(tbl.FirstPartyBetaFields) == 0 || len(tbl.ToolChangeBetas) == 0 ||
+		len(tbl.LevelToBudget) == 0 || len(tbl.GAThinkingDisplays) == 0 || len(tbl.ModelCapabilities) == 0 || len(tbl.PatternCapabilities) == 0 {
+		panic("claudeprep: tables.json is missing a table")
 	}
 }
 
@@ -151,6 +160,7 @@ var (
 	interruptedToolResultText string
 	prefillContinuationText   string
 	limitHoldSentinel         string
+	webSearchToolType         string
 	// limitHoldNotice is limitHoldNotice.js NOTICE (not exported there; the
 	// limit-hold fixtures hold it to Node's text).
 	limitHoldNotice string
@@ -208,9 +218,6 @@ func (m tableModels) Capabilities(provider, model string) Caps {
 	if model == "" {
 		return defaultCaps()
 	}
-	if isProtoName(model) || isProtoName(lastSegment(model)) {
-		decline("a model id that names an Object.prototype member")
-	}
 	base := lastSegment(model)
 	// PROVIDER_CAPABILITIES[provider || resolveProviderAlias(provider)]: an
 	// openai-compatible node id is neither a table key nor an alias.
@@ -226,15 +233,23 @@ func (m tableModels) Capabilities(provider, model string) Caps {
 			return c
 		}
 	}
+	// MODEL_CAPABILITIES[id] for an Object.prototype name finds a function
+	// (or the prototype), whose spread adds nothing: the defaults, unrefined.
 	if p, ok := tbl.ModelCapabilities[base]; ok {
 		c := defaultCaps()
 		p.apply(&c)
 		return c
 	}
+	if isProtoName(base) {
+		return defaultCaps()
+	}
 	if p, ok := tbl.ModelCapabilities[model]; ok {
 		c := defaultCaps()
 		p.apply(&c)
 		return c
+	}
+	if isProtoName(model) {
+		return defaultCaps()
 	}
 	for _, e := range tbl.PatternCapabilities {
 		if matchPattern(e.Pattern, base) || matchPattern(e.Pattern, model) {

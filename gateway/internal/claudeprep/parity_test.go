@@ -94,6 +94,16 @@ func (f *fixture) inputs(t *testing.T) Inputs {
 		KeyHasBudget:  f.Inputs.KeyHasBudget,
 		Connection:    Connection{APIKey: f.Inputs.APIKey, AccessToken: f.Inputs.AccessToken, Node: node},
 	}
+	// The recorder hands Node a resolved blockedReason in providerSpecificData,
+	// as getProviderCredentials would.
+	var resolved struct {
+		BlockedReason json.RawMessage `json:"blockedReason"`
+	}
+	_ = json.Unmarshal(f.Inputs.ProviderSpecificData, &resolved)
+	if len(resolved.BlockedReason) > 0 {
+		v, err := Parse(resolved.BlockedReason)
+		in.Connection.Blocked = err == nil && v.Truthy()
+	}
 	if f.Inputs.ProviderThinking != nil {
 		in.ProviderThinking = f.Inputs.ProviderThinking.Mode
 	}

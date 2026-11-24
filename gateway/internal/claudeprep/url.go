@@ -213,7 +213,7 @@ func parseURLEncoded(s string) []param {
 		}
 		name, value, _ := strings.Cut(seq, "=")
 		dec := func(x string) string {
-			return decodeUTF8(percentDecode(strings.ReplaceAll(x, "+", " ")))
+			return decodeUTF8KeepBOM(percentDecode(strings.ReplaceAll(x, "+", " ")))
 		}
 		out = append(out, param{dec(name), dec(value)})
 	}
@@ -224,7 +224,7 @@ func serializeURLEncoded(params []param) string {
 	var b strings.Builder
 	enc := func(s string) {
 		if !utf8.ValidString(s) {
-			s = decodeUTF8([]byte(s))
+			s = decodeUTF8KeepBOM([]byte(s))
 		}
 		for i := 0; i < len(s); i++ {
 			c := s[i]
@@ -261,13 +261,14 @@ func applyURLOverrides(url string, o *Overrides) string {
 	if !ok {
 		decline("a URL the WHATWG parser would rewrite beyond this port")
 	}
-	if o.Query != "" {
+	// Only searchParams.set rewrites the query: an override that parses to no
+	// pairs ("&") leaves it exactly as the URL parser wrote it.
+	if sets := parseURLEncoded(strings.TrimPrefix(o.Query, "?")); len(sets) > 0 {
 		params := []param{}
 		if u.query != nil {
 			params = parseURLEncoded(*u.query)
 		}
-		q := strings.TrimPrefix(o.Query, "?")
-		for _, set := range parseURLEncoded(q) {
+		for _, set := range sets {
 			found := false
 			kept := params[:0:0]
 			for _, p := range params {

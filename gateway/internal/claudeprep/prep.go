@@ -53,6 +53,12 @@ type Connection struct {
 	APIKey      string
 	AccessToken string
 	Node        NodeSettings
+	// Blocked: the connection's proxy rule refuses it. Node resolves that when
+	// it picks the account (getProviderCredentials puts blockedReason over the
+	// stored data), then fails the attempt before sending. It is never read
+	// from the stored row. strictProxy and direct, resolved the same way, only
+	// change how a request is sent: internal/upstream's.
+	Blocked bool
 }
 
 // NodeSettings is providerSpecificData as the executor reads it: the node's
@@ -74,10 +80,6 @@ type NodeSettings struct {
 	Overrides         *Overrides
 	BlockForeignTools bool
 	StripReasoning    bool
-	// Blocked: blockedReason is set (the connection's proxy rule refuses it),
-	// so Node fails the attempt before sending. strictProxy and direct only
-	// change how a request is sent: internal/upstream's.
-	Blocked bool
 }
 
 // Overrides is RawOverrides: the user's text, as saved.
@@ -136,7 +138,7 @@ func Prepare(body []byte, in Inputs) (req *Request, err error) {
 	if in.Connection.APIKey == "" && in.Connection.AccessToken == "" {
 		decline("connection has no key")
 	}
-	if in.Connection.Node.Blocked {
+	if in.Connection.Blocked {
 		decline("connection blocked by its proxy rule (Node fails it)")
 	}
 	if in.Models == nil {
@@ -283,6 +285,12 @@ func (p *prep) resolveRoute() {
 	u := appendURLPath(n.BaseURL, "/messages", true)
 	if u == "" {
 		decline("no base URL")
+	}
+	// Node's fetch parses the URL (and throws on one it can't). Only a URL
+	// that parser leaves as written goes native: no scheme-less base, bad
+	// port, dot segment, backslash or character it would percent-encode.
+	if _, ok := parseURL(u); !ok {
+		decline("a base URL the WHATWG parser would reject or rewrite")
 	}
 	p.routeURL = u
 }

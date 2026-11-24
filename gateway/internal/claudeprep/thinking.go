@@ -8,10 +8,6 @@ import (
 
 // Port of open-sse/translator/concerns/thinkingUnified.js and thinking.js.
 
-var levelToBudget = map[string]float64{
-	"none": 0, "minimal": 512, "low": 1024, "medium": 8192, "high": 24576, "xhigh": 32768, "max": 128000,
-}
-
 // thinkingCfg is the unified intent: mode none | auto | level | budget.
 type thinkingCfg struct {
 	mode   string
@@ -50,7 +46,7 @@ func parseSuffix(model string) (string, *thinkingCfg) {
 	case digitsRe.MatchString(raw):
 		return clean, &thinkingCfg{mode: "budget", budget: jsStringToNumber(raw)}
 	}
-	if _, ok := levelToBudget[raw]; ok {
+	if _, ok := tbl.LevelToBudget[raw]; ok {
 		return clean, &thinkingCfg{mode: "level", level: raw}
 	}
 	return clean, nil
@@ -213,7 +209,7 @@ func effortToBudget(level string) (float64, bool) {
 	if level == "" {
 		return 0, false
 	}
-	b, ok := levelToBudget[jsLower(level)]
+	b, ok := tbl.LevelToBudget[jsLower(level)]
 	return b, ok
 }
 
@@ -304,7 +300,9 @@ func normalizeOpenAILevel(level string, supported []string) string {
 }
 
 func effortToThinkingLevel(e string) string {
-	e = jsTrim(jsLower(e))
+	// Trimmed here (not where the level was read), so " constructor" only
+	// becomes a prototype name now.
+	e = levelName(jsTrim(e))
 	if e == "none" || e == "off" {
 		return "minimal"
 	}
@@ -469,11 +467,9 @@ func applyThinkingFormat(fmt string, body *Value, cfg *thinkingCfg, caps Caps, s
 		case level == "xhigh":
 			effort = "high"
 		}
-		if effort == "" {
-			body.Set("output_config", obj("effort", Null()))
-		} else {
-			body.Set("output_config", obj("effort", effort))
-		}
+		// toLevel's null is unreachable here (mode none returned above or
+		// became minimal), so "" is a real empty level and goes out as "".
+		body.Set("output_config", obj("effort", effort))
 	case "claude-budget", "hunyuan":
 		if none && canDisable {
 			body.Set("thinking", obj("type", "disabled"))
@@ -583,8 +579,6 @@ func applyThinkingFormat(fmt string, body *Value, cfg *thinkingCfg, caps Caps, s
 	}
 }
 
-var gaThinkingDisplays = map[string]bool{"summarized": true, "omitted": true}
-
 // applyThinking is thinkingUnified.applyThinking for a Claude target.
 func applyThinking(targetFormat, model string, body *Value, provider string, intent *thinkingCfg, models Models) {
 	if !body.IsObject() {
@@ -611,7 +605,7 @@ func applyThinking(targetFormat, model string, body *Value, provider string, int
 	display := optional(body.Get("thinking")).Get("display")
 	stripAllThinking(body)
 	applyThinkingFormat(fmt, body, cfg, caps, supported)
-	if fmt == "claude-adaptive" && display.IsString() && gaThinkingDisplays[display.str] && !optional(body.Get("thinking")).Get("type").Is("disabled") {
+	if fmt == "claude-adaptive" && display.IsString() && contains(tbl.GAThinkingDisplays, display.str) && !optional(body.Get("thinking")).Get("type").Is("disabled") {
 		body.Set("thinking", obj("type", "adaptive", "display", display))
 	}
 }

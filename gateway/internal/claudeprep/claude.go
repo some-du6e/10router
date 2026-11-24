@@ -11,9 +11,6 @@ import (
 // claude, anthropic-compatible-* nor deepseek: no thinking-block rewrite, no
 // cloaking.
 
-// CLAUDE_BLOCK.WEB_SEARCH_TOOL (schema/blocks.js).
-const webSearchToolType = "web_search_20250305"
-
 func (p *prep) translate(body *Value) *Value {
 	// stripContentTypes: no strip list for a node's models.
 	normalizeThinkingConfig(body)
@@ -289,11 +286,19 @@ func fixMissingToolResponses(body *Value) {
 		}
 		return nil
 	}
-	for i, msg := range items {
-		j := i + 1
-		for optional(at(j)).Get("role").Is("system") {
-			j++
+	// nextNonSystem[i]: the first index after i whose role isn't "system"
+	// (Node rescans for each message; the same answer in one pass).
+	nextNonSystem := make([]int, len(items)+1)
+	nextNonSystem[len(items)] = len(items)
+	for i := len(items) - 1; i >= 0; i-- {
+		if i+1 < len(items) && optional(items[i+1]).Get("role").Is("system") {
+			nextNonSystem[i] = nextNonSystem[i+1]
+		} else {
+			nextNonSystem[i] = i + 1
 		}
+	}
+	for i, msg := range items {
+		j := nextNonSystem[i]
 		next := at(j)
 		out = append(out, msg)
 		ids := toolCallIDs(msg)
@@ -446,32 +451,42 @@ func fixToolUseOrdering(msgs []*Value) []*Value {
 		}
 		msg.Set("content", Array(kept...))
 	}
+	// Node rebuilds the merged content on every merge: [...results of both,
+	// ...the rest of both]. After the first merge the content is already
+	// results-then-rest, so keeping the two runs and joining them once per
+	// merged message gives the same array in linear time.
 	merged := make([]*Value, 0, len(msgs))
+	var results, rest []*Value
+	open := false // the last merged message has had a merge
+	flush := func() {
+		if open {
+			merged[len(merged)-1].Set("content", Array(append(results, rest...)...))
+		}
+		open, results, rest = false, nil, nil
+	}
+	split := func(list []*Value) {
+		for _, b := range list {
+			if b.Get("type").Is("tool_result") {
+				results = append(results, b)
+			} else {
+				rest = append(rest, b)
+			}
+		}
+	}
 	for _, msg := range msgs {
 		if n := len(merged); n > 0 && strictEquals(merged[n-1].Get("role"), msg.Get("role")) {
-			last := merged[n-1]
-			lastContent, msgContent := asContentArray(last), asContentArray(msg)
-			var results, other []*Value
-			for _, list := range [][]*Value{lastContent, msgContent} {
-				for _, b := range list {
-					if b.Get("type").Is("tool_result") {
-						results = append(results, b)
-					}
-				}
+			if !open {
+				split(merged[n-1].Get("content").Items())
+				open = true
 			}
-			for _, list := range [][]*Value{lastContent, msgContent} {
-				for _, b := range list {
-					if !b.Get("type").Is("tool_result") {
-						other = append(other, b)
-					}
-				}
-			}
-			last.Set("content", Array(append(results, other...)...))
+			split(asContentArray(msg))
 			continue
 		}
+		flush()
 		content := asContentArray(msg)
 		merged = append(merged, obj("role", orUndefined(msg.Get("role")), "content", Array(append([]*Value{}, content...)...)))
 	}
+	flush()
 	return merged
 }
 
