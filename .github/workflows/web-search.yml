@@ -75,6 +75,7 @@ jobs:
         run: >
           ./node_modules/.bin/eslint
           open-sse/handlers/search/exa.ts
+          open-sse/handlers/search/query.ts
           open-sse/handlers/search/callers.js
           open-sse/handlers/search/normalizers.js
           open-sse/handlers/search/index.js

@@ -305,7 +305,7 @@ const NORMALIZERS = {
  * its own id). Results are credited to `providerId`.
  * @returns {{results: Array, totalResults: number|null, pagination?: object}}
  */
-export function normalizeSearchResponse(providerId, data, query, searchType, format = providerId) {
-  const fn = NORMALIZERS[format];
+export function normalizeSearchResponse(providerId, data, query, searchType, format) {
+  const fn = NORMALIZERS[format || providerId];
   return fn ? fn(data, query, searchType, providerId) : { results: [], totalResults: null };
 }

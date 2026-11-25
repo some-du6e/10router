@@ -11,6 +11,7 @@ import { WEBSEARCH_LOCK_PREFIX } from "open-sse/services/accountFallback.js";
 import { getSettings, getCombos } from "@/lib/localDb";
 import { AI_PROVIDERS, resolveProviderId } from "@/shared/constants/providers.js";
 import { handleSearchCore } from "open-sse/handlers/search/index.js";
+import { sanitizeQuery } from "open-sse/handlers/search/query.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
@@ -66,6 +67,13 @@ export async function handleSearch(request) {
   if (!query || typeof query !== "string" || !query.trim()) {
     log.warn("SEARCH", "Missing query");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: query");
+  }
+
+  // No provider can take such a query, so refuse it before any account is picked.
+  const queryError = sanitizeQuery(query).error;
+  if (queryError) {
+    log.warn("SEARCH", queryError);
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, queryError);
   }
 
   const limitDenied = await checkApiKeyLimits(apiKey, { model: providerInput });
@@ -159,6 +167,8 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
+  // An account's refusal to send the search: reported only if no account failed for real.
+  let refusal = null;
 
   // Credential fallback: some search providers reuse the API key of a related
   // chat provider (e.g. ollama-search reuses the `ollama` chat key, zai-search
@@ -200,7 +210,7 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
         return errorResponse(HTTP_STATUS.BAD_REQUEST, `No credentials for provider: ${providerId}`);
       }
       log.warn("SEARCH", "No more accounts available", { provider: providerId });
-      return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
+      return errorResponse(lastStatus || refusal?.status || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || refusal?.error || "All accounts unavailable");
     }
 
     log.info("AUTH", `\x1b[32mUsing ${providerId} account: ${credentials.connectionName}\x1b[0m`);
@@ -228,12 +238,14 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
       return result.response;
     }
 
-    // Refused before anything was sent (a query or option it can't take, or a
-    // setting this account lacks): no lock, but another account may have it.
+    // Refused before anything was sent (an option it can't take, or a setting
+    // this account lacks): no lock, but another account may have the setting.
     if (result.requestError) {
+      // A credential with no id (a no-auth stand-in) can't be excluded.
+      if (!credentials.connectionId) return result.response;
+      log.warn("SEARCH", `[${providerId}] ${credentials.connectionName || credentials.connectionId} can't send this search: ${result.error}`);
       excludeConnectionIds.add(credentials.connectionId);
-      lastError = result.error;
-      lastStatus = result.status;
+      refusal = { status: result.status, error: result.error };
       continue;
     }
 

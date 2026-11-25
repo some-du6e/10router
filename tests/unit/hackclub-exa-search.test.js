@@ -216,6 +216,13 @@ describe("Exa search modes", () => {
     expect(bodyOf(request)).toEqual(fastBody("router news"));
   });
 
+  it("takes the type only from the model's mode", () => {
+    for (const type of ["", "auto", "deep-reasoning"]) {
+      const request = buildSearchRequest(config("exa"), { ...PARAMS, searchMode: "instant", providerOptions: { type } });
+      expect(bodyOf(request).type).toBe("instant");
+    }
+  });
+
   it("keeps domain filters and news searches", () => {
     const request = buildSearchRequest(config("exa"), {
       ...PARAMS, searchType: "news", searchMode: "lite", domainFilter: ["nodejs.org", "-spam.example"],
@@ -272,10 +279,14 @@ describe("/v1/search with a mode", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("locks no account for a query the core refuses", async () => {
-    const response = await handleSearch(searchRequest({ model: "exa", query: "router\u001bnews" }));
-    expect(response.status).toBe(400);
-    expect((await response.json()).error.message).toContain("invalid control characters");
+  it("refuses a query no provider can take before picking an account", async () => {
+    mocks.combos = [{ name: "fast-search", kind: "webSearch", models: ["hackclub-exa/instant", "exa/instant"] }];
+    for (const model of ["exa", "fast-search"]) {
+      const response = await handleSearch(searchRequest({ model, query: "router\u001bnews" }));
+      expect(response.status).toBe(400);
+      expect((await response.json()).error.message).toContain("invalid control characters");
+    }
+    expect(mocks.getProviderCredentials).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
   });
@@ -302,6 +313,35 @@ describe("/v1/search with a mode", () => {
     expect(new URL(sent.url).searchParams.get("cx")).toBe("engine-b");
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
+  });
+
+  it("reports the other accounts' rate limit, not one account's refusal", async () => {
+    const locked = {
+      allRateLimited: true,
+      retryAfter: new Date(Date.now() + 30_000).toISOString(),
+      retryAfterHuman: "reset after 30s",
+      lastError: "Rate limit exceeded",
+      lastErrorCode: 429,
+    };
+    mocks.getProviderCredentials.mockImplementation(async (_provider, excluded) =>
+      excluded.has("pse-a") ? locked : { connectionId: "pse-a", connectionName: "A", apiKey: "pse-key-a", providerSpecificData: {} });
+    const response = await handleSearch(searchRequest({ model: "google-pse", query: "node release" }));
+    expect(response.status).toBe(429);
+    expect((await response.json()).error.message).toContain("Rate limit exceeded");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("answers at once when the refused credential has no id to exclude", async () => {
+    // Like the stand-in a no-auth provider gets: no connectionId, exclusions ignored.
+    mocks.getProviderCredentials.mockImplementation(async () => {
+      if (mocks.getProviderCredentials.mock.calls.length > 3) throw new Error("looped over the same credential");
+      return { connectionName: "stand-in", apiKey: "exa-key" };
+    });
+    const response = await handleSearch(searchRequest({
+      model: "exa", query: "node release", provider_options: { baseUrl: "http://127.0.0.1:8080" },
+    }));
+    expect(response.status).toBe(400);
+    expect(mocks.getProviderCredentials).toHaveBeenCalledOnce();
   });
 });
 

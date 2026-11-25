@@ -10,20 +10,11 @@
 import { buildSearchRequest } from "./callers.js";
 import { normalizeSearchResponse } from "./normalizers.js";
 import { handleChatSearch } from "./chatSearch.js";
+import { sanitizeQuery } from "./query.js";
 import { fetchPublic } from "../../utils/ssrfGuard.js";
 
 const GLOBAL_TIMEOUT_MS = 15000;
 const NON_RETRIABLE = new Set([400, 401, 403, 404]);
-
-const CONTROL_CHAR_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/;
-
-/** Normalize and validate query string. */
-function sanitizeQuery(query) {
-  if (CONTROL_CHAR_RE.test(query)) return { error: "Query contains invalid control characters" };
-  const clean = query.normalize("NFKC").trim().replace(/\s+/g, " ");
-  if (!clean) return { error: "Query is empty after normalization" };
-  return { clean };
-}
 
 // Strip non-ASCII chars from header values (HTTP headers must be ByteString).
 function sanitizeHeaders(headers) {
