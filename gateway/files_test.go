@@ -25,12 +25,32 @@ func TestNativeOff(t *testing.T) {
 	}
 }
 
-// The embedded files are the module root's, and every package the map names
-// has its directory under internal/.
+// A map that can't be read turns native off with a reason; it never panics,
+// since the answer is worked out at start in every mode.
+func TestUnreadableMapTurnsNativeOff(t *testing.T) {
+	for name, data := range map[string]string{
+		"not JSON":      `{"route": [`,
+		"not an object": `["route"]`,
+		"empty":         ``,
+		"no packages":   `{"_comment": "x"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := NativeOffFor("", []byte(data))
+			if !strings.Contains(r, "node-map.json") || !strings.Contains(r, "native routes stay off") {
+				t.Fatalf("reason %q", r)
+			}
+		})
+	}
+	if r := NativeOffFor("", []byte(`{"route": ["a.js"]}`)); r != "" {
+		t.Fatalf("a readable map with nothing listed: %q", r)
+	}
+}
+
+// The embedded files are the module root's.
 func TestEmbeddedFiles(t *testing.T) {
-	mapped := MappedPackages()
-	if len(mapped) < 5 {
-		t.Fatalf("node-map.json maps %v", mapped)
+	mapped, err := MappedPackages()
+	if err != nil || len(mapped) < 5 {
+		t.Fatalf("node-map.json maps %v (%v)", mapped, err)
 	}
 	for _, p := range ProxyOnly() {
 		if strings.ContainsAny(p, " \t") {

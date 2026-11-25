@@ -159,12 +159,16 @@ type Gateway struct {
 	native       *db.DB
 	nativeErr    string
 	nativeClosed bool
+
+	// nativeOff is gatewayfiles.NativeOff (tests replace it).
+	nativeOff func() string
 }
 
 // nativeStatus is what health reports for the native routes: ready, or why not.
 func (g *Gateway) nativeStatus() (ready bool, reason string) {
-	// A port behind its Node code keeps the native route proxied.
-	if off := gatewayfiles.NativeOff(); off != "" {
+	// A port behind its Node code, or a map the gateway can't read, keeps the
+	// native route proxied.
+	if off := g.nativeOff(); off != "" {
 		return false, off
 	}
 	g.nativeMu.Lock()
@@ -302,6 +306,7 @@ func New(cfg config.Config, logger *log.Logger, version string) *Gateway {
 		appAddr:    appAddr,
 		version:    version,
 		startedAt:  time.Now(),
+		nativeOff:  gatewayfiles.NativeOff,
 		proxy: proxy.New(proxy.Options{
 			Upstream:       &url.URL{Scheme: "http", Host: appAddr},
 			PeerToken:      cfg.PeerToken,
