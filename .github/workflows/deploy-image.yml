@@ -11,10 +11,12 @@ name: Deploy image
 # runs no repository code: it pushes the tarball `build` hashed, then moves
 # `deploy`. No layer cache, since any job on master could write one.
 #
-# A master run builds master as it is when the run starts, so re-running an old
-# run or starting one by hand deploys the newest commit (a re-run stops instead
-# if master has changed this file since). Runs go one at a time: a commit that
-# lands mid-run waits, and of several waiting only the newest runs.
+# A master run builds master as it is when the run starts, so starting one by
+# hand, or re-running all jobs of an old one, deploys the newest commit (a
+# re-run stops instead if master has changed this file since). Re-running only
+# the failed jobs publishes that run's own build, while its one-day artifact
+# lasts, and does nothing once deploy is past it. Runs go one at a time: a
+# commit that lands mid-run waits, and of several waiting only the newest runs.
 on:
   push:
     branches: [master]
@@ -175,20 +177,30 @@ jobs:
       COMMIT: ${{ needs.build.outputs.commit }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      # When deploy is already here, pushing would only swap the image under a
-      # tag production already runs.
+      # When deploy already includes this commit (this run's head, or an older
+      # run's on a re-run of its failed jobs), pushing would only swap the
+      # image under a tag production may run. Only a 404 means no deploy yet.
       - name: Where deploy is
         id: deploy
         run: |
-          current="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/deploy" --jq .object.sha 2> /dev/null || true)"
-          [[ "$current" =~ ^[0-9a-f]{40}$ ]] || current=""
-          echo "current=$current" >> "$GITHUB_OUTPUT"
-          if [ "$current" = "$COMMIT" ]; then
-            echo "deploy is already at $COMMIT, so there is nothing to publish"
-            echo "todo=false" >> "$GITHUB_OUTPUT"
+          if current="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/deploy" --jq .object.sha 2> "$RUNNER_TEMP/deploy.err")"; then
+            todo=true
+            status="$(gh api "repos/$GITHUB_REPOSITORY/compare/$COMMIT...$current" --jq .status)"
+            case "$status" in
+              identical | ahead)
+                todo=false
+                echo "deploy ($current) already includes $COMMIT, so there is nothing to publish"
+                ;;
+            esac
+          elif grep -q '(HTTP 404)' "$RUNNER_TEMP/deploy.err"; then
+            current=""
+            todo=true
           else
-            echo "todo=true" >> "$GITHUB_OUTPUT"
+            cat "$RUNNER_TEMP/deploy.err"
+            exit 1
           fi
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "todo=$todo" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         if: steps.deploy.outputs.todo == 'true'
         with:
@@ -213,24 +225,13 @@ jobs:
         run: |
           docker push "$IMAGE"
           echo "Pushed \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
-      # The server builds Dockerfile.deploy with `docker build --pull` and no
-      # registry login, so the package has to be public. Only that file is
-      # checked out; nothing from the repository runs here.
-      - uses: actions/checkout@v5
-        if: steps.deploy.outputs.todo == 'true'
-        with:
-          ref: ${{ env.COMMIT }}
-          persist-credentials: false
-          sparse-checkout: Dockerfile.deploy
-          sparse-checkout-cone-mode: false
+      # The server pulls with no registry login, so the package has to be
+      # public. `docker pull` always resolves the tag at the registry.
       - name: The server can pull it
         if: steps.deploy.outputs.todo == 'true'
         run: |
           docker logout ghcr.io
-          docker buildx build --builder default --pull --load -f Dockerfile.deploy \
-            --build-arg SOURCE_COMMIT="$COMMIT" -t deploy-pulled .
-          got="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' deploy-pulled)"
-          [ "$got" = "$COMMIT" ] || { echo "pulled revision '$got', want $COMMIT"; exit 1; }
+          docker pull "$IMAGE"
       # Through the refs API, so GitHub refuses anything but a fast-forward.
       - name: Move deploy to this commit
         if: steps.deploy.outputs.todo == 'true'
