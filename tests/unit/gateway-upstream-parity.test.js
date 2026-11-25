@@ -272,6 +272,9 @@ const WIRE = [
   { name: "other bytes after a gzip member", script: [{ status: 429, gzipBytes: [...gz(LIMITED), ...Buffer.from("xyz")] }] },
   { name: "two gzip members", script: [{ status: 429, gzipBytes: [...gz(LIMITED.slice(0, 20)), ...gz(LIMITED.slice(20))] }] },
   { name: "only part of a gzip header", script: [{ status: 500, gzipBytes: [0x1f, 0x8b] }] },
+  // FLG's reserved bits: zlib refuses the header.
+  { name: "a gzip header with reserved flags", script: [{ status: 429, gzipBytes: ((b) => [b[0], b[1], b[2], b[3] | 0xe0, ...b.slice(4)])(gz(LIMITED)) }] },
+  { name: "reserved flags, then the body ends", script: [{ status: 429, gzipBytes: [0x1f, 0x8b, 0x08, 0x20] }] },
   // fetch sends new URL(baseUrl): the host lowercased, the port as a number.
   { name: "a base URL's host case and port", baseHost: "LocalHost", portPad: "0", script: ["ok"] },
   { name: "an error body in broken UTF-8", script: [{ status: 500, bodyBytes: [0x7b, 0xff, 0xfe, 0x78, 0xe2, 0x82, 0x7d] }] },

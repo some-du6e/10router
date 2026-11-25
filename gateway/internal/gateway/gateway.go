@@ -15,7 +15,6 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
-	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
@@ -282,10 +281,7 @@ func (g *Gateway) tryOpenNative(ctx context.Context, getenv func(string) string)
 				},
 			})
 			if err == nil {
-				// The synced model catalog sits beside the database's directory
-				// (DATA_DIR/model-catalog.json, catalogOverride.js).
-				catalog := filepath.Join(filepath.Dir(filepath.Dir(path)), "model-catalog.json")
-				nr := native.New(d, g.rule, getenv, catalog)
+				nr := native.New(d, g.rule, getenv, native.CatalogFile(path))
 				nr.Events = nodeevents.New(g.cfg.AppPort, g.cfg.PeerToken)
 				nr.Logger = g.logger
 				g.nativeMu.Lock()
@@ -358,17 +354,21 @@ func New(cfg config.Config, logger *log.Logger, version string) *Gateway {
 }
 
 // ShadowURL is where the Node server reports its sends in shadow mode: the
-// gateway's own port on loopback. "" when the gateway listens on an address
-// that isn't loopback or every address, where loopback can't reach it.
+// gateway's own port on 127.0.0.1 or ::1 (custom-server.js takes no other).
+// "" unless the gateway listens on every address or on that one: a name, or
+// another address, may not be reachable there.
 func ShadowURL(cfg config.Config) string {
-	host := "127.0.0.1"
-	if a, err := netip.ParseAddr(cfg.ListenHost); err == nil && !a.IsUnspecified() {
-		switch {
-		case !a.Unmap().IsLoopback():
-			return ""
-		case a.Is6() && !a.Is4In6():
-			host = "::1"
-		}
+	a, err := netip.ParseAddr(cfg.ListenHost)
+	host := ""
+	switch {
+	case err != nil:
+	case a.IsUnspecified(), a.Unmap() == netip.AddrFrom4([4]byte{127, 0, 0, 1}):
+		host = "127.0.0.1"
+	case a == netip.IPv6Loopback():
+		host = "::1"
+	}
+	if host == "" {
+		return ""
 	}
 	return "http://" + net.JoinHostPort(host, strconv.Itoa(cfg.ListenPort)) + shadow.ReportPath
 }
@@ -401,6 +401,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Deferred: ReverseProxy aborts a broken stream by panicking.
 	defer done()
+	if g.shadow != nil {
+		// Only the shadow tags a request; Node trusts the id on any request
+		// the gateway relays.
+		r2.Header.Del(shadow.IDHeader)
+	}
 	if g.shadow != nil && route.Match(r2.Method, r2.RequestURI) {
 		peer, _ := proxy.PeerOf(r2.RemoteAddr, g.listenIPv6)
 		var finish func()
@@ -449,7 +454,7 @@ func (g *Gateway) health(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if local && g.shadow != nil {
-		body["shadow"] = g.shadow.Health()
+		body["shadow"] = g.shadow.Snapshot()
 	}
 	if local {
 		body["inflight"] = g.tracker.Inflight()
@@ -597,9 +602,13 @@ func Run(o Options) int {
 	}
 	shadowURL := ""
 	if cfg.Shadow {
-		if shadowURL = ShadowURL(cfg); shadowURL == "" {
-			logger.Printf("[Gateway] GATEWAY_SHADOW=1: the app server can't reach HOSTNAME=%s over loopback to report its sends; shadow compare off", cfg.ListenHost)
+		switch shadowURL = ShadowURL(cfg); {
+		case shadowURL == "":
+			logger.Printf("[Gateway] GATEWAY_SHADOW=1: HOSTNAME=%s isn't 0.0.0.0, ::, 127.0.0.1 or ::1, so the app server can't report its sends over loopback; shadow compare off", cfg.ListenHost)
 			cfg.Shadow = false
+		case len(o.Command) == 0:
+			logger.Printf("[Gateway] GATEWAY_SHADOW=1: the gateway didn't start the app server, so it can't tell it where to report; shadow compare off")
+			cfg.Shadow, shadowURL = false, ""
 		}
 	}
 	switch {

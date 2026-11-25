@@ -1,12 +1,8 @@
 package claudeprep
 
 import (
-	"bytes"
-	"encoding/json"
-	"io"
 	"math"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,11 +24,9 @@ type FileCatalog struct {
 	mu      sync.Mutex
 	mtime   time.Time
 	present bool
-	parsed  catalogFile
-}
-
-type catalogFile struct {
-	models, providers any
+	// models and providers are parsed?.models || {} and parsed?.providers
+	// || {}: nil for the {}.
+	models, providers *Value
 }
 
 // NewFileCatalog reads the catalog at path (Node's CATALOG_FILE).
@@ -41,95 +35,103 @@ func NewFileCatalog(path string) *FileCatalog { return &FileCatalog{path: path} 
 // catalogBaseID is catalogOverride.js's baseId: "zai-org/GLM-4.6V:free" is
 // "glm-4.6v". Prepare's model ids are ASCII, where Go's ToLower is JS's.
 func catalogBaseID(model string) string {
-	if model == "" {
-		return ""
-	}
-	if i := strings.LastIndexByte(model, '/'); i >= 0 {
-		model = model[i+1:]
-	}
-	model = strings.ToLower(model)
-	if i := strings.IndexByte(model, ':'); i >= 0 {
-		model = model[:i]
-	}
-	return model
+	base, _, _ := strings.Cut(strings.ToLower(lastSegment(model)), ":")
+	return base
 }
 
-func (c *FileCatalog) load() catalogFile {
+func (c *FileCatalog) load() (models, providers *Value) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	st, err := os.Stat(c.path)
 	if err != nil {
-		c.present, c.parsed = false, catalogFile{}
-		return c.parsed
+		c.present, c.models, c.providers = false, nil, nil
+		return nil, nil
 	}
 	if c.present && st.ModTime().Equal(c.mtime) {
-		return c.parsed
+		return c.models, c.providers
 	}
-	c.present, c.mtime, c.parsed = true, st.ModTime(), catalogFile{}
+	c.present, c.mtime, c.models, c.providers = true, st.ModTime(), nil, nil
 	raw, err := os.ReadFile(c.path)
 	if err != nil {
-		return c.parsed
+		return nil, nil
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	var top any
-	if dec.Decode(&top) != nil {
-		return c.parsed
+	// readFileSync(file, "utf8") keeps a BOM, which JSON.parse refuses.
+	top, err := parseText(decodeUTF8KeepBOM(raw))
+	if err != nil {
+		return nil, nil
 	}
-	if _, err := dec.Token(); err != io.EOF {
-		// Trailing data: JSON.parse throws.
-		return c.parsed
+	// Built here, under the lock: a lookup on a large object would otherwise
+	// build its index lazily, racing with other requests reading it.
+	indexAll(top)
+	if m := top.Get("models"); m.Truthy() {
+		c.models = m
 	}
-	// parsed?.models || {}: a falsy value (or a non-object document) is {}.
-	if obj, ok := top.(map[string]any); ok {
-		c.parsed = catalogFile{models: truthyOrNil(obj["models"]), providers: truthyOrNil(obj["providers"])}
+	if p := top.Get("providers"); p.Truthy() {
+		c.providers = p
 	}
-	return c.parsed
+	return c.models, c.providers
 }
 
-func truthyOrNil(v any) any {
-	if !jsTruthy(v) {
-		return nil
+func indexAll(v *Value) {
+	switch v.Kind() {
+	case KindObject:
+		v.obj.reindex()
+		for _, m := range v.obj.members {
+			indexAll(m.val)
+		}
+	case KindArray:
+		for _, item := range v.arr {
+			indexAll(item)
+		}
 	}
-	return v
 }
+
+// emptyEntry stands for what JS finds under an Object.prototype name that
+// isn't an own key: a function or the prototype, holding no catalog field.
+var emptyEntry = Object()
 
 // catalogMember is container[key] for the shapes sync.js writes: an object's
-// own key. Object.prototype's names, absent as own keys, find a function in
-// JS, which holds no catalog fields (found, empty). An array, where JS would
-// index by key, declines.
-func catalogMember(container any, key string) (v any, found bool) {
-	switch t := container.(type) {
-	case nil:
-		return nil, false
-	case map[string]any:
-		if v, ok := t[key]; ok {
-			return v, true
+// own key, else emptyEntry for an Object.prototype name. An array, where JS
+// would index by key, declines. A string, number or true reads a character or
+// nothing in JS, and neither holds a catalog field.
+func catalogMember(container *Value, key string) *Value {
+	switch container.Kind() {
+	case KindObject:
+		if v := container.Get(key); v != nil {
+			return v
 		}
 		if isProtoName(key) {
-			return map[string]any{}, true
+			return emptyEntry
 		}
-		return nil, false
-	case []any:
+	case KindArray:
 		decline("a model catalog file with an array Node would index")
 	}
-	// A string, number or true: JS reads a character or nothing, and neither
-	// holds a catalog field.
-	return nil, false
+	return nil
+}
+
+// entryObject is a looked-up entry as refine reads its fields: nil when it
+// holds none.
+func entryObject(entry *Value) *Value {
+	if entry.IsArray() {
+		decline("a model catalog file with an array Node would index")
+	}
+	if entry.IsObject() {
+		return entry
+	}
+	return nil
 }
 
 // Modalities is getCatalogModalities: models[baseId(model)], each modality
 // on only when it is exactly true.
 func (c *FileCatalog) Modalities(model string) (Modalities, bool) {
-	entry, _ := catalogMember(c.load().models, catalogBaseID(model))
-	if !jsTruthy(entry) {
+	models, _ := c.load()
+	entry := catalogMember(models, catalogBaseID(model))
+	if !entry.Truthy() {
 		return Modalities{}, false
 	}
-	obj, _ := entry.(map[string]any)
-	if _, isArray := entry.([]any); isArray {
-		decline("a model catalog file with an array Node would index")
-	}
-	return Modalities{Vision: obj["vision"] == true, PDF: obj["pdf"] == true, AudioInput: obj["audioInput"] == true}, true
+	obj := entryObject(entry)
+	isTrue := func(k string) bool { v := obj.Get(k); return v.Kind() == KindBool && v.b }
+	return Modalities{Vision: isTrue("vision"), PDF: isTrue("pdf"), AudioInput: isTrue("audioInput")}, true
 }
 
 // Limits is getCatalogLimits: providers[provider][model], else by baseId,
@@ -138,31 +140,27 @@ func (c *FileCatalog) Limits(provider, model string) (Limits, bool) {
 	if provider == "" {
 		return Limits{}, false
 	}
-	byProvider, _ := catalogMember(c.load().providers, provider)
-	if !jsTruthy(byProvider) {
+	_, providers := c.load()
+	byProvider := catalogMember(providers, provider)
+	if !byProvider.Truthy() {
 		return Limits{}, false
 	}
-	entry, _ := catalogMember(byProvider, model)
-	if !jsTruthy(entry) {
-		entry, _ = catalogMember(byProvider, catalogBaseID(model))
+	entry := catalogMember(byProvider, model)
+	if !entry.Truthy() {
+		entry = catalogMember(byProvider, catalogBaseID(model))
 	}
-	if !jsTruthy(entry) {
+	if !entry.Truthy() {
 		return Limits{}, false
-	}
-	obj, _ := entry.(map[string]any)
-	if _, isArray := entry.([]any); isArray {
-		decline("a model catalog file with an array Node would index")
 	}
 	out := Limits{}
-	switch v := obj["maxOutput"].(type) {
-	case nil:
-	case json.Number:
-		n, err := strconv.ParseFloat(string(v), 64)
-		if err != nil || math.IsInf(n, 0) {
+	switch v := entryObject(entry).Get("maxOutput"); {
+	case v.IsNullish():
+	case v.IsNumber():
+		if math.IsInf(v.f, 0) {
 			decline("a model catalog maxOutput beyond a float64")
 		}
-		if n > 0 {
-			out.MaxOutput = n
+		if v.f > 0 {
+			out.MaxOutput = v.f
 		}
 	default:
 		// JS compares it with > 0 by coercion ("5", true, [5]) and keeps the
@@ -170,20 +168,4 @@ func (c *FileCatalog) Limits(provider, model string) (Limits, bool) {
 		decline("a model catalog maxOutput that isn't a number")
 	}
 	return out, true
-}
-
-// jsTruthy is a decoded JSON value's truthiness (numbers as json.Number).
-func jsTruthy(v any) bool {
-	switch t := v.(type) {
-	case nil:
-		return false
-	case bool:
-		return t
-	case json.Number:
-		n, err := strconv.ParseFloat(string(t), 64)
-		return err != nil || n != 0
-	case string:
-		return t != ""
-	}
-	return true
 }

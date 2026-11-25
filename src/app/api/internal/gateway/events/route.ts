@@ -1,5 +1,5 @@
 // The Go gateway's events (src/lib/gatewayEvents.ts): writes it hands Node.
-import { isLocalRequest } from "@/dashboardGuard";
+import { isLocalRequest } from "@/dashboardGuard.js";
 import { getProviderConnectionById } from "@/lib/db/index.js";
 import { handleGatewayEvent, VERIFY_GATEWAY_TOKEN, type GatewayEventDeps } from "@/lib/gatewayEvents.js";
 import { saveDroppedBetas } from "@/sse/handlers/chat.js";

@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"time"
 )
 
 // Path is Node's events route.
@@ -31,19 +30,20 @@ type Client struct {
 	HTTP  *http.Client
 }
 
-// New is a client for the app server on 127.0.0.1:appPort.
+// New is a client for the app server on 127.0.0.1:appPort. No proxy: the
+// transport's zero value ignores HTTP(S)_PROXY.
 func New(appPort int, token string) *Client {
 	return &Client{
 		Base:  "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(appPort)),
 		Token: token,
-		HTTP:  &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{Proxy: nil, MaxIdleConnsPerHost: 2}},
+		HTTP:  &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 2}},
 	}
 }
 
 // BetasLearned is saveDroppedBetas(credentials, provider, flags): flags is
 // every flag the attempt dropped, which Node unions into the connection's
 // providerSpecificData and, unless the key has its own endpoint URL, the
-// node's.
+// node's. ctx bounds the call.
 func (c *Client) BetasLearned(ctx context.Context, connectionID, provider string, flags []string) error {
 	body, err := json.Marshal(map[string]any{"type": "betas-learned", "connectionId": connectionID, "provider": provider, "droppedBetas": flags})
 	if err != nil {

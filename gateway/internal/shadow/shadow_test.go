@@ -22,7 +22,7 @@ import (
 func conn(id, provider string) map[string]any {
 	return map[string]any{
 		"id": id, "provider": provider, "authType": "apikey", "name": id, "priority": 1, "isActive": 1,
-		"data":      `{"apiKey":"key-` + id + `","providerSpecificData":{"apiType":"chat","baseUrl":"https://gateway.example.test/v1","modelRoutes":{"m1":"anthropic"}}}`,
+		"data":      `{"apiKey":"key-` + id + `","providerSpecificData":{"apiType":"chat","baseUrl":"https://gateway.example.test/v1","modelRoutes":{"m1":"anthropic","m2":"anthropic"}}}`,
 		"createdAt": "2026-03-01T11:00:00.000Z", "updatedAt": "2026-03-01T11:00:00.000Z",
 	}
 }
@@ -36,7 +36,10 @@ func route(t *testing.T) *native.Native {
 			"data":      `{"prefix":"hot","apiType":"chat","baseUrl":"https://gateway.example.test/v1"}`,
 			"createdAt": "2026-03-01T10:00:00.000Z", "updatedAt": "2026-03-01T10:00:00.000Z",
 		}},
-		"combos":              {{"id": "combo-main", "name": "main", "models": `["hot/m1"]`, "createdAt": "2026-03-01T10:00:00.000Z", "updatedAt": "2026-03-01T10:00:00.000Z"}},
+		"combos": {
+			{"id": "combo-main", "name": "main", "models": `["hot/m1"]`, "createdAt": "2026-03-01T10:00:00.000Z", "updatedAt": "2026-03-01T10:00:00.000Z"},
+			{"id": "combo-pair", "name": "pair", "models": `["hot/m1","hot/m2"]`, "createdAt": "2026-03-01T10:00:00.000Z", "updatedAt": "2026-03-01T10:00:00.000Z"},
+		},
 		"providerConnections": {conn("k1", "openai-compatible-chat-hot"), conn("k2", "openai-compatible-chat-hot")},
 	})
 	dbtest.Exec(t, raw, `INSERT INTO settings(id, data) VALUES(1, ?)`, `{"requireApiKey":false}`)
@@ -79,6 +82,11 @@ func asNode(id string, req *claudeprep.Request) Report {
 
 func prepared(t *testing.T, n *native.Native, r *http.Request, raw []byte, key string) *claudeprep.Request {
 	t.Helper()
+	return preparedLeaf(t, n, r, raw, key, 0)
+}
+
+func preparedLeaf(t *testing.T, n *native.Native, r *http.Request, raw []byte, key string, leaf int) *claudeprep.Request {
+	t.Helper()
 	p, err := n.Plan(context.Background(), native.Incoming{Header: r.Header, Host: r.Host, PeerIP: "127.0.0.1"}, raw)
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +95,7 @@ func prepared(t *testing.T, n *native.Native, r *http.Request, raw []byte, key s
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepare, err := n.Prepare(p, p.Leaves[0], c)
+	prepare, err := n.Prepare(p, p.Leaves[leaf], c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,6 +165,33 @@ func TestObserveThenCompare(t *testing.T) {
 	}
 	if st := s.Snapshot(); st.Unknown != 1 || st.NoSend != 0 || st.Sends != 4 {
 		t.Fatalf("at the end: %+v", st)
+	}
+}
+
+// A request's first send matching a later combo member is a match, and
+// counted Reordered: Node tried another member first. A Buffer body ("bytes")
+// compares the same as a string one.
+func TestFirstSendForALaterMemberIsReordered(t *testing.T) {
+	n := route(t)
+	s := &Shadow{Native: func() (*native.Native, string) { return n, "" }, Token: "t", Grace: time.Hour}
+	out, _ := s.Observe(ccRequest(t, "pair"), "127.0.0.1")
+	id := out.Header.Get(IDHeader)
+	raw, _ := io.ReadAll(out.Body)
+	second := asNode(id, preparedLeaf(t, n, ccRequest(t, "pair"), raw, "k1", 1))
+	second.BodyKind = "bytes"
+	s.Compare(context.Background(), second)
+	first := asNode(id, preparedLeaf(t, n, ccRequest(t, "pair"), raw, "k1", 0))
+	s.Compare(context.Background(), first)
+	st := s.Snapshot()
+	if st.Matched != 2 || st.Reordered != 1 || st.Differed != 0 || len(st.Diffs) != 1 || !strings.Contains(st.Diffs[0], "m2") {
+		t.Fatalf("%+v", st)
+	}
+	// Another request whose first send is the first member's isn't.
+	out, _ = s.Observe(ccRequest(t, "pair"), "127.0.0.1")
+	first.ID = out.Header.Get(IDHeader)
+	s.Compare(context.Background(), first)
+	if st := s.Snapshot(); st.Reordered != 1 || st.Matched != 3 {
+		t.Fatalf("%+v", st)
 	}
 }
 
@@ -265,6 +300,16 @@ func TestDiffNeverQuotesCredentials(t *testing.T) {
 		if strings.Contains(d, "secret") || d == "" {
 			t.Fatalf("diff %q", d)
 		}
+	}
+	// The preparation's own non-secret headers are quoted; an endpoint's
+	// header lines, under any name, are not.
+	beta := Diff(&claudeprep.Request{URL: req.URL, Header: []claudeprep.HeaderField{{Name: "anthropic-beta", Value: "flag-a"}}}, Report{URL: req.URL, Headers: [][2]string{{"anthropic-beta", "flag-b"}}}, c)
+	if !strings.Contains(beta, `"flag-a"`) || !strings.Contains(beta, `"flag-b"`) {
+		t.Fatalf("beta diff %q", beta)
+	}
+	custom := Diff(&claudeprep.Request{URL: req.URL, Header: []claudeprep.HeaderField{{Name: "x-portal-key", Value: "pk-one"}}}, Report{URL: req.URL, Headers: [][2]string{{"x-portal-key", "pk-two"}}}, c)
+	if strings.Contains(custom, "pk-") {
+		t.Fatalf("custom header diff %q", custom)
 	}
 	if d := Diff(&claudeprep.Request{URL: "https://gateway.example.test/v1/messages?key=abc"}, Report{URL: "https://gateway.example.test/v1/messages?key=abd"}, nil); strings.Contains(d, "abc") || !strings.Contains(d, "URL") {
 		t.Fatalf("URL diff %q", d)

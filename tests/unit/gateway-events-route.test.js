@@ -3,15 +3,16 @@
 // go through chat.ts's saveDroppedBetas. Only a request from this machine
 // with the gateway's token gets in; everything else is a 404.
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { existsSync, readFileSync } from "node:fs";
 
 const saveDroppedBetas = vi.fn(async () => {});
 const getProviderConnectionById = vi.fn();
 const isLocalRequest = vi.fn(() => true);
 vi.mock("@/sse/handlers/chat.js", () => ({ saveDroppedBetas }));
 vi.mock("@/lib/db/index.js", () => ({ getProviderConnectionById }));
-vi.mock("@/dashboardGuard", () => ({ isLocalRequest }));
+vi.mock("@/dashboardGuard.js", () => ({ isLocalRequest }));
 
-const { handleGatewayEvent, GATEWAY_EVENTS_TOKEN_HEADER, VERIFY_GATEWAY_TOKEN } = await import("../../src/lib/gatewayEvents.ts");
+const { handleGatewayEvent, GATEWAY_EVENTS_TOKEN_HEADER, GATEWAY_EVENTS_PATH, VERIFY_GATEWAY_TOKEN } = await import("../../src/lib/gatewayEvents.ts");
 const { POST } = await import("../../src/app/api/internal/gateway/events/route.ts");
 
 const TOKEN = "g".repeat(64);
@@ -43,6 +44,20 @@ beforeEach(() => {
 });
 
 describe("gateway events", () => {
+  // The Go client (gateway/internal/nodeevents) and this route are one
+  // contract in two languages: the path, the token header, the event's
+  // fields and the 204 it waits for.
+  it("is the route the Go client posts to, with the fields it sends", () => {
+    const go = readFileSync(new URL("../../gateway/internal/nodeevents/nodeevents.go", import.meta.url), "utf8");
+    const constant = (name) => go.match(new RegExp(`const ${name} = "([^"]+)"`))?.[1];
+    expect(constant("Path")).toBe(GATEWAY_EVENTS_PATH);
+    expect(constant("TokenHeader")?.toLowerCase()).toBe(GATEWAY_EVENTS_TOKEN_HEADER);
+    expect(existsSync(new URL(`../../src/app${GATEWAY_EVENTS_PATH}/route.ts`, import.meta.url))).toBe(true);
+    for (const field of Object.keys(event)) expect(go, field).toContain(`"${field}"`);
+    expect(go).toContain(`"type": "betas-learned"`);
+    expect(go).toContain("http.StatusNoContent");
+  });
+
   it("writes learned beta flags through saveDroppedBetas with the stored connection", async () => {
     const res = await handleGatewayEvent(request(event), deps());
     expect(res.status).toBe(204);

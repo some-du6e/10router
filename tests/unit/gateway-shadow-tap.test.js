@@ -56,12 +56,24 @@ beforeAll(async () => {
   const { proxyAwareFetch } = await import("../../open-sse/utils/proxyFetch.js");
   server = http.createServer(async (req, res) => {
     seen = { ...req.headers };
-    // As an executor sends: a plain headers object and a string body.
-    await proxyAwareFetch(`http://127.0.0.1:${upstreamPort}/v1/messages`, {
+    const target = `http://127.0.0.1:${upstreamPort}/v1/messages`;
+    // As the executor sends: a plain headers object and the body's bytes.
+    const send = (body) => proxyAwareFetch(target, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": "key-1", "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: "m1", text: "é" }),
+      body,
     });
+    const mode = req.headers["x-test-mode"];
+    if (mode === "nested") {
+      // A second copy of proxyFetch.js patches fetch over the first, so one
+      // send passes through proxyAwareFetch twice: reported once.
+      await globalThis[SHADOW].around(target, { method: "POST", headers: { a: "outer" }, body: "outer" }, () => send("inner"));
+    } else if (mode === "twice") {
+      await send(Buffer.from("first"));
+      await send(Buffer.from("second"));
+    } else {
+      await send(Buffer.from(JSON.stringify({ model: "m1", text: "é" }), "utf8"));
+    }
     res.end("ok");
   });
   port = await listen(server);
@@ -113,9 +125,25 @@ describe("custom-server's shadow tap", () => {
       method: "POST",
       headersKind: "object",
       headers: [["Content-Type", "application/json"], ["x-api-key", "key-1"], ["anthropic-version", "2023-06-01"]],
-      bodyKind: "string",
+      bodyKind: "bytes",
     });
     expect(Buffer.from(r.body.body, "base64").toString("utf8")).toBe(JSON.stringify({ model: "m1", text: "é" }));
+  });
+
+  it("reports a send that passes through proxyAwareFetch twice once, as the outer call made it", async () => {
+    reports = [];
+    await post({ ...proven, "x-9r-shadow-id": ID, "x-test-mode": "nested" });
+    await settle();
+    expect(reports).toHaveLength(1);
+    expect(reports[0].body).toMatchObject({ headers: [["a", "outer"]], bodyKind: "string" });
+    expect(Buffer.from(reports[0].body.body, "base64").toString()).toBe("outer");
+  });
+
+  it("reports each of a request's sends", async () => {
+    reports = [];
+    await post({ ...proven, "x-9r-shadow-id": ID, "x-test-mode": "twice" });
+    await settle();
+    expect(reports.map((r) => Buffer.from(r.body.body, "base64").toString())).toEqual(["first", "second"]);
   });
 
   it("reports nothing for an id the gateway didn't prove, or one not its shape", async () => {

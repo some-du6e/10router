@@ -849,8 +849,21 @@ func TestShadowModeRouting(t *testing.T) {
 		t.Fatalf("the app saw %q", got)
 	}
 
+	// A client sending its own id on another path doesn't get it through.
+	other := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+	other.RemoteAddr = "203.0.113.7:4000"
+	other.Header.Set("X-9r-Shadow-Id", strings.Repeat("b", 32))
+	g.ServeHTTP(httptest.NewRecorder(), other)
+	mu.Lock()
+	got = strings.Join(seen, "; ")
+	mu.Unlock()
+	if got != "/v1/messages id=; /v1/chat/completions id=" {
+		t.Fatalf("the app saw %q", got)
+	}
+
 	health := httptest.NewRequest(http.MethodGet, HealthPath, nil)
 	health.RemoteAddr = "127.0.0.1:4000"
+	health.Host = "127.0.0.1:20128"
 	w = httptest.NewRecorder()
 	g.ServeHTTP(w, health)
 	var body struct {
@@ -880,7 +893,9 @@ func TestShadowURL(t *testing.T) {
 		"::":          "http://127.0.0.1:20128/_gateway/shadow",
 		"127.0.0.1":   "http://127.0.0.1:20128/_gateway/shadow",
 		"::1":         "http://[::1]:20128/_gateway/shadow",
-		"localhost":   "http://127.0.0.1:20128/_gateway/shadow",
+		"localhost":   "",
+		"router.lan":  "",
+		"127.0.0.2":   "",
 		"192.0.2.10":  "",
 		"2001:db8::1": "",
 	} {

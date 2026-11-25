@@ -28,7 +28,7 @@ http.createServer((req, res) => {
   req.on("end", () => {
     let body = {};
     try { body = JSON.parse(raw); } catch {}
-    console.log(JSON.stringify({ method: req.method, url: req.url, model: body.model, stream: body.stream === true, bytes: raw.length }));
+    console.log(JSON.stringify({ method: req.method, url: req.url, model: body.model, max_tokens: body.max_tokens, stream: body.stream === true, bytes: raw.length }));
     if (req.method !== "POST" || !req.url.endsWith("/messages")) {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ type: "error", error: { type: "not_found_error", message: "not found" } }));

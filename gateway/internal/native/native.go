@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -82,6 +83,12 @@ func New(d *db.DB, rule *clientip.Rule, env upstream.Env, catalogPath string) *N
 		catalog = claudeprep.NewFileCatalog(catalogPath)
 	}
 	return &Native{DB: d, Accounts: a, Rule: rule, Models: claudeprep.NewModels(catalog), Env: env}
+}
+
+// CatalogFile is catalogOverride.js's CATALOG_FILE for the database at
+// dataFile (db.DataFile: DATA_DIR/db/data.sqlite): DATA_DIR/model-catalog.json.
+func CatalogFile(dataFile string) string {
+	return filepath.Join(filepath.Dir(filepath.Dir(dataFile)), "model-catalog.json")
 }
 
 // Ready is nil when every package the route runs loaded its embedded

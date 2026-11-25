@@ -7,7 +7,11 @@
 // this machine (isLocalRequest) carrying the token the gateway started Node
 // with, which custom-server.js checks (verifyGatewayToken) without exposing.
 
+import { readJsonObject } from "@/sse/utils/requestBody.js";
+
 export const GATEWAY_EVENTS_TOKEN_HEADER = "x-9r-gw-events-token";
+// Node's events route; gateway/internal/nodeevents posts here.
+export const GATEWAY_EVENTS_PATH = "/api/internal/gateway/events";
 export const VERIFY_GATEWAY_TOKEN = Symbol.for("10router.verifyGatewayToken");
 
 // Bounds on what is read; saveDroppedBetas itself keeps only flag names, at
@@ -36,14 +40,9 @@ export async function handleGatewayEvent(request: Request, deps: GatewayEventDep
   if (typeof deps.verifyToken !== "function" || !deps.isLocalRequest(request) || !deps.verifyToken(request.headers.get(GATEWAY_EVENTS_TOKEN_HEADER))) {
     return json(404, "Not found");
   }
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return json(400, "Invalid JSON");
-  }
-  if (!body || typeof body !== "object" || Array.isArray(body)) return json(400, "Invalid event");
-  const event = body as Record<string, unknown>;
+  const read = await readJsonObject(request);
+  if (read.error) return read.error;
+  const event = read.body as Record<string, unknown>;
   if (event.type !== "betas-learned") return json(400, "Unknown event type");
   const { connectionId, provider, droppedBetas } = event;
   if (typeof connectionId !== "string" || !connectionId || typeof provider !== "string" || !provider) {

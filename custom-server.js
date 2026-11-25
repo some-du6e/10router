@@ -742,9 +742,7 @@ function gatewayPeer(req, socketIp) {
   for (const name of GATEWAY_HEADERS) delete headers[name];
   if (!isLoopbackHost(socketIp)) return null;
   if (!sent) return mayHaveLostHeaders(req) ? UNPROVEN_PEER : null;
-  if (!GATEWAY_TOKEN || typeof token !== "string" || !net.isIP(ip)) return UNPROVEN_PEER;
-  const given = Buffer.from(token);
-  if (given.length !== GATEWAY_TOKEN.length || !crypto.timingSafeEqual(given, GATEWAY_TOKEN)) return UNPROVEN_PEER;
+  if (!verifyGatewayToken(token) || !net.isIP(ip)) return UNPROVEN_PEER;
   return { ip, port };
 }
 
@@ -763,28 +761,40 @@ if (GATEWAY_ON) globalThis[Symbol.for("10router.verifyGatewayToken")] = verifyGa
 // The gateway tags each /v1/messages it shadows with x-9r-shadow-id
 // (gateway/internal/shadow). A request the gateway proved runs with that id
 // in an AsyncLocalStorage, and proxyFetch.js's proxyAwareFetch hands each
-// upstream send to observe(), which reports the URL, the headers object's
-// entries and the body to the gateway. Reporting never changes or delays the
-// send. The id is removed from every request either way.
+// upstream send to around(), which reports the URL, the headers object's
+// entries and the body to the gateway. Reporting never changes the send and
+// doesn't wait for the gateway. The id is removed from every request either
+// way.
 const SHADOW_HEADER = "x-9r-shadow-id";
 const SHADOW_URL = String(process.env.GATEWAY_SHADOW_URL || "");
 const SHADOW_ON = GATEWAY_ON && !!GATEWAY_TOKEN && process.env.GATEWAY_MODE === "native" && process.env.GATEWAY_SHADOW === "1" && /^http:\/\/(127\.0\.0\.1|\[::1\]):\d+\//.test(SHADOW_URL);
 delete process.env.GATEWAY_SHADOW_URL;
 const shadowAls = SHADOW_ON ? new (require("async_hooks").AsyncLocalStorage)() : null;
 
+// What a value is, for a report that can't carry it: "null", "undefined",
+// a class name, or a typeof.
+function kindOf(value) {
+  if (value === null || value === undefined) return String(value);
+  if (typeof value !== "object") return typeof value;
+  const proto = Object.getPrototypeOf(value);
+  return (proto && proto.constructor && proto.constructor.name) || "a null-prototype object";
+}
+
 function shadowReport(id, url, options) {
   const headers = options && options.headers;
-  const plain = !!headers && typeof headers === "object" && !Array.isArray(headers) && Object.getPrototypeOf(headers) === Object.prototype;
+  // A literal or a null-prototype object: its own entries, in order.
+  const proto = headers !== null && typeof headers === "object" && !Array.isArray(headers) ? Object.getPrototypeOf(headers) : undefined;
+  const plain = proto === Object.prototype || proto === null;
   const body = options && options.body;
-  const isText = typeof body === "string";
+  const bytes = typeof body === "string" ? Buffer.from(body, "utf8") : ArrayBuffer.isView(body) ? Buffer.from(body.buffer, body.byteOffset, body.byteLength) : null;
   const report = JSON.stringify({
     id,
     url,
     method: String((options && options.method) || "GET").toUpperCase(),
-    headersKind: plain ? "object" : headers === undefined ? "none" : (headers && headers.constructor && headers.constructor.name) || typeof headers,
+    headersKind: plain ? "object" : kindOf(headers),
     headers: plain ? Object.entries(headers).map(([k, v]) => [k, String(v)]) : [],
-    bodyKind: isText ? "string" : body === undefined || body === null ? "none" : (body.constructor && body.constructor.name) || typeof body,
-    body: isText ? Buffer.from(body, "utf8").toString("base64") : "",
+    bodyKind: typeof body === "string" ? "string" : bytes ? "bytes" : kindOf(body),
+    body: bytes ? bytes.toString("base64") : "",
   });
   const req = http.request(SHADOW_URL, {
     method: "POST",
@@ -797,14 +807,18 @@ function shadowReport(id, url, options) {
 
 if (SHADOW_ON) {
   globalThis[Symbol.for("10router.gatewayShadow")] = {
-    observe(url, options) {
+    // run is the send. One send can pass through proxyAwareFetch twice (a
+    // second copy of the module patched fetch over the first), so only the
+    // outermost call, the executor's, is reported.
+    around(url, options, run) {
       const store = shadowAls.getStore();
-      if (!store) return;
+      if (!store || store.inSend) return run();
       try {
         shadowReport(store.id, url, options);
       } catch (error) {
         console.warn("[Gateway] shadow report failed:", error && error.message ? error.message : error);
       }
+      return shadowAls.run({ ...store, inSend: true }, run);
     },
   };
 }

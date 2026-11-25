@@ -39,7 +39,7 @@ docker rm -f gw-shadow > /dev/null 2>&1
 docker run -d --name gw-shadow --network host \
   -v "$DATA_DIR:/app/data" -e DATA_DIR=/app/data \
   -e JWT_SECRET="e2e-$(openssl rand -hex 16)" -e PORT=20128 -e HOSTNAME=0.0.0.0 \
-  -e GATEWAY_MODE=native -e GATEWAY_SHADOW=1 "$IMAGE" > /dev/null
+  -e GATEWAY_MODE=native -e GATEWAY_SHADOW=1 -e MODEL_CATALOG_SYNC=off "$IMAGE" > /dev/null
 up=0
 for _ in $(seq 1 90); do [ "$(code_of "$LOCAL/v1/models")" = 200 ] && { up=1; break; }; sleep 2; done
 if [ "$up" != 1 ]; then
@@ -62,16 +62,31 @@ show "shadow compare" "$OUT/shadow.json"
 show "shadow log lines" <(grep -F '[Gateway] shadow' "$OUT/container.log" | head -80)
 
 s() { json "$1" < "$OUT/shadow.json"; }
-check "every request reached Node and none failed ($(json statuses < "$OUT/drive.json"))" \
+# The corpus's only declines: a body that doesn't stream, and one that may
+# need a model capability. Any other reason is a request Node serves and the
+# native route has stopped planning.
+node -e '
+  const reasons = JSON.parse(require("fs").readFileSync(0, "utf8")).reasons || {};
+  const allowed = [/^route: proxy to Node: not stream: true$/, /^combo: proxy to Node: a request that may need a model capability/];
+  const other = Object.keys(reasons).filter((r) => !allowed.some((a) => a.test(r)));
+  console.log(other.join("\n"));
+' < "$OUT/shadow.json" > "$OUT/other-reasons.txt"
+check "every request reached Node and was served ($(json statuses < "$OUT/drive.json"))" \
   "[ \"\$(json failures < '$OUT/drive.json')\" = '[]' ]"
 check "the gateway saw every request ($(s requests) of $(json sent < "$OUT/drive.json"))" \
   "[ \"\$(s requests)\" = \"\$(json sent < '$OUT/drive.json')\" ]"
-check "it planned most of them ($(s planned) planned, $(s declined) declined)" "[ \"\$(s planned)\" -ge 80 ]"
+check "it declined only bodies that don't stream or may need a capability ($(s declined) declined)" "[ ! -s '$OUT/other-reasons.txt' ] || { cat '$OUT/other-reasons.txt'; false; }"
+check "it planned the rest ($(s planned) planned)" "[ \"\$(s planned)\" -ge 180 ]"
 check "every send of a planned request matched byte for byte ($(s matched) matched, $(s differed) differed)" \
   "[ \"\$(s differed)\" = 0 ] && [ \"\$(s matched)\" -ge \"\$(s planned)\" ]"
+check "each request's first send was for the plan's first leaf ($(s reordered) not)" "[ \"\$(s reordered)\" = 0 ]"
 check "Node sent for every request Go would have sent for ($(s noSend) without a send)" "[ \"\$(s noSend)\" = 0 ]"
 check "no report was unknown or failed ($(s unknown) unknown, $(s errors) errors)" "[ \"\$(s unknown)\" = 0 ] && [ \"\$(s errors)\" = 0 ]"
-check "every send was reported ($(s sends) reports, $(grep -c '"method":"POST"' "$OUT/mock.log") upstream requests)" \
+check "every send was reported once ($(s sends) reports, $(grep -c '"method":"POST"' "$OUT/mock.log") upstream requests)" \
   "[ \"\$(s sends)\" = \"\$(grep -c '\"method\":\"POST\"' '$OUT/mock.log')\" ]"
+# The catalog's maxOutput is in effect (Node clamped max_tokens to it), so its
+# match above shows Go read the same catalog.
+check "the seeded catalog's maxOutput reached the upstream" \
+  "grep '\"model\":\"zz-catalog-probe-1\"' '$OUT/mock.log' | grep -q '\"max_tokens\":3000'"
 show "mock upstream log (first 40)" <(head -40 "$OUT/mock.log")
 exit "$fail"

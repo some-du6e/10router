@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -194,6 +195,24 @@ func TestModelHangFollowsTheHeadersBudget(t *testing.T) {
 	n := New(d, clientip.NewRule(""), env, "")
 	if got, want := n.Accounts.Hang.BudgetMs, upstream.HeadersBudget(env, true).Ms; got != want || got == New(d, nil, noEnv, "").Accounts.Hang.BudgetMs {
 		t.Fatalf("BudgetMs %v, want %v (and not the default)", got, want)
+	}
+}
+
+// The catalog is DATA_DIR/model-catalog.json, beside the database's db/
+// directory, as catalogOverride.js and src/lib/db/paths.js put them.
+func TestCatalogFileIsBesideTheDatabase(t *testing.T) {
+	dir := t.TempDir()
+	dataFile, err := db.DataFile(func(k string) string {
+		if k == "DATA_DIR" {
+			return dir
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := CatalogFile(dataFile), filepath.Join(dir, "model-catalog.json"); got != want {
+		t.Fatalf("CatalogFile(%s) = %s, want %s", dataFile, got, want)
 	}
 }
 

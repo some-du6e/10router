@@ -234,15 +234,21 @@ type gunzip struct {
 // gzipPrefix is how a gzip member starts: the magic number and deflate.
 var gzipPrefix = []byte{0x1f, 0x8b, 0x08}
 
+// gzipReservedFlags are the FLG bits RFC 1952 reserves: zlib fails a header
+// with any set ("unknown header flags set"); Go's reader ignores them.
+const gzipReservedFlags = 0xe0
+
 // open starts a member where the body is: io.EOF when the body ends before
 // or inside its header, an error for bytes that aren't a gzip header. zlib
 // checks the header byte by byte as it arrives, so bytes that can't start a
 // member fail even when the body ends before a whole header; Go's reader
-// would ask for all ten first.
+// would ask for all ten first. (One difference stays: Go's reader refuses a
+// file name or comment of 512 bytes or more, which zlib reads; a reply that
+// carries one fails here where Node's decodes.)
 func (g *gunzip) open() error {
-	head, _ := g.br.Peek(len(gzipPrefix))
+	head, _ := g.br.Peek(len(gzipPrefix) + 1)
 	for i, c := range head {
-		if c != gzipPrefix[i] {
+		if i < len(gzipPrefix) && c != gzipPrefix[i] || i == len(gzipPrefix) && c&gzipReservedFlags != 0 {
 			return gzip.ErrHeader
 		}
 	}

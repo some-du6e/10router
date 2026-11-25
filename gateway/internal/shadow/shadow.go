@@ -20,11 +20,9 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -78,30 +76,39 @@ type Shadow struct {
 }
 
 type record struct {
-	n      *native.Native
-	plan   *native.Plan
-	sends  int
-	scored bool
+	n     *native.Native
+	plan  *native.Plan
+	sends int
 }
 
-// Stats are the compare's counters.
+// Stats are the compare's counters, as health shows them.
 type Stats struct {
 	// Requests is every /v1/messages seen; Planned the ones the native route
 	// would serve, Declined the others (by reason in Reasons).
-	Requests, Planned, Declined int
+	Requests int `json:"requests"`
+	Planned  int `json:"planned"`
+	Declined int `json:"declined"`
 	// Sends is every send Node reported. Matched: one Go prepared byte for
 	// byte. Differed: one of a planned request Go would have sent otherwise.
 	// Unplanned: a send of a request Go declined (Node's to serve). Unknown:
 	// a report naming no request the shadow holds.
-	Sends, Matched, Differed, Unplanned, Unknown int
+	Sends     int `json:"sends"`
+	Matched   int `json:"matched"`
+	Differed  int `json:"differed"`
+	Unplanned int `json:"unplanned"`
+	Unknown   int `json:"unknown"`
+	// Reordered: a request's first send matched a plan leaf other than the
+	// first, where Node tried another combo member first (the e2e's upstream
+	// never fails, so there it means the combo order differs).
+	Reordered int `json:"reordered"`
 	// NoSend: a planned request Node answered without sending anything,
 	// where Go would have sent.
-	NoSend int
+	NoSend int `json:"noSend"`
 	// Errors: a database read or a bad report.
-	Errors  int
-	Reasons map[string]int
+	Errors  int            `json:"errors"`
+	Reasons map[string]int `json:"reasons"`
 	// Diffs are the latest differences, newest last.
-	Diffs []string
+	Diffs []string `json:"diffs"`
 }
 
 func (s *Shadow) logf(format string, args ...any) {
@@ -239,11 +246,10 @@ func (s *Shadow) score(id string) {
 	s.mu.Lock()
 	rec := s.pending[id]
 	delete(s.pending, id)
-	if rec == nil || rec.scored {
+	if rec == nil {
 		s.mu.Unlock()
 		return
 	}
-	rec.scored = true
 	noSend := rec.plan != nil && rec.sends == 0
 	if noSend {
 		s.stats.NoSend++
@@ -264,7 +270,9 @@ type Report struct {
 	// Headers in key order, values as String() makes them.
 	HeadersKind string      `json:"headersKind"`
 	Headers     [][2]string `json:"headers"`
-	// BodyKind is "string" for a string body, Body its UTF-8 bytes.
+	// BodyKind is "string" for a string body (Body its UTF-8 bytes) or
+	// "bytes" for a Buffer or other byte view (the executor's), else what it
+	// is.
 	BodyKind string `json:"bodyKind"`
 	Body     []byte `json:"body"`
 }
@@ -275,9 +283,7 @@ func (s *Shadow) ServeReport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	ip, perr := netip.ParseAddr(host)
-	if err != nil || perr != nil || !ip.Unmap().IsLoopback() {
+	if peer, err := netip.ParseAddrPort(r.RemoteAddr); err != nil || !peer.Addr().Unmap().IsLoopback() {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -308,8 +314,10 @@ func (s *Shadow) Compare(ctx context.Context, rep Report) {
 	s.mu.Lock()
 	s.stats.Sends++
 	rec := s.pending[rep.ID]
+	firstSend := false
 	if rec != nil {
 		rec.sends++
+		firstSend = rec.sends == 1
 	}
 	switch {
 	case rec == nil:
@@ -324,7 +332,7 @@ func (s *Shadow) Compare(ctx context.Context, rep Report) {
 	s.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	diff, err := match(ctx, rec.n, rec.plan, rep)
+	leaf, diff, err := match(ctx, rec.n, rec.plan, rep)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch {
@@ -334,6 +342,13 @@ func (s *Shadow) Compare(ctx context.Context, rep Report) {
 		s.logf("%s: comparing failed: %v", rep.ID, err)
 	case diff == "":
 		s.stats.Matched++
+		if firstSend && leaf != 0 {
+			l := rec.plan.Leaves[leaf]
+			s.stats.Reordered++
+			d := fmt.Sprintf("%s: Node's first send is for %s %s, leaf %d of the plan, not its first", rep.ID, l.Provider, l.Model, leaf)
+			s.diffLocked(d)
+			s.logf("%s", d)
+		}
 	default:
 		s.stats.Differed++
 		s.diffLocked(rep.ID + ": " + diff)
@@ -342,23 +357,35 @@ func (s *Shadow) Compare(ctx context.Context, rep Report) {
 }
 
 // match prepares the attempt for every key of the plan's leaves whose
-// credential Node's headers carry, and returns "" when one is Node's send
-// exactly, else the first candidate's difference.
-func match(ctx context.Context, n *native.Native, p *native.Plan, rep Report) (string, error) {
+// credential Node's headers carry: diff is "" when one is Node's send
+// exactly (leaf is its index in p.Leaves), else the first candidate's
+// difference.
+func match(ctx context.Context, n *native.Native, p *native.Plan, rep Report) (leaf int, diff string, err error) {
 	switch {
 	case rep.Method != http.MethodPost:
-		return "method " + rep.Method, nil
+		return 0, "method " + rep.Method, nil
 	case rep.HeadersKind != "object":
-		return "Node's headers are a " + rep.HeadersKind + ", not a plain object", nil
-	case rep.BodyKind != "string":
-		return "Node's body is a " + rep.BodyKind + ", not a string", nil
+		return 0, "Node's headers are " + rep.HeadersKind + ", not a plain object", nil
+	case rep.BodyKind != "string" && rep.BodyKind != "bytes":
+		return 0, "Node's body is " + rep.BodyKind + ", not a string or bytes", nil
+	}
+	prepared := func(l native.Leaf, c *db.Connection) (*claudeprep.Request, error) {
+		prepare, err := n.Prepare(p, l, c)
+		if err != nil {
+			return nil, err
+		}
+		node, err := claudeprep.ParseNodeSettings(jsjson.Marshal(c.ProviderSpecificData()))
+		if err != nil {
+			return nil, err
+		}
+		return prepare(node)
 	}
 	active := true
-	first, tried := "", 0
-	for _, l := range p.Leaves {
+	tried := 0
+	for i, l := range p.Leaves {
 		rows, err := n.DB.ListConnections(ctx, l.Provider, &active)
 		if err != nil {
-			return "", err
+			return 0, "", err
 		}
 		for _, c := range rows {
 			if !carriesCredential(rep.Headers, c) {
@@ -366,39 +393,23 @@ func match(ctx context.Context, n *native.Native, p *native.Plan, rep Report) (s
 			}
 			tried++
 			where := l.Provider + " " + l.Model + " key " + c.ID
-			prepare, err := n.Prepare(p, l, c)
-			if err != nil {
-				first = firstOf(first, where+": Go declines: "+err.Error())
-				continue
+			d := ""
+			if req, err := prepared(l, c); err != nil {
+				d = where + ": Go declines: " + err.Error()
+			} else if d = Diff(req, rep, c); d == "" {
+				return i, "", nil
+			} else {
+				d = where + ": " + d
 			}
-			node, err := claudeprep.ParseNodeSettings(jsjson.Marshal(c.ProviderSpecificData()))
-			if err != nil {
-				first = firstOf(first, where+": Go declines: "+err.Error())
-				continue
+			if diff == "" {
+				diff = d
 			}
-			req, err := prepare(node)
-			if err != nil {
-				first = firstOf(first, where+": Go declines: "+err.Error())
-				continue
-			}
-			d := Diff(req, rep, c)
-			if d == "" {
-				return "", nil
-			}
-			first = firstOf(first, where+": "+d)
 		}
 	}
 	if tried == 0 {
-		return "Node sent with a credential none of the plan's keys hold (to " + redactURL(rep.URL) + ")", nil
+		return 0, "Node sent with a credential none of the plan's keys hold (to " + redactURL(rep.URL) + ")", nil
 	}
-	return first, nil
-}
-
-func firstOf(have, next string) string {
-	if have != "" {
-		return have
-	}
-	return next
+	return 0, diff, nil
 }
 
 // carriesCredential: one of Node's header values holds c's key or token.
@@ -417,17 +428,24 @@ func carriesCredential(h [][2]string, c *db.Connection) bool {
 	return false
 }
 
-// secretHeaders are never quoted in a difference.
-var secretHeaders = map[string]bool{"authorization": true, "x-api-key": true, "api-key": true, "cookie": true, "proxy-authorization": true}
+// quotedHeaders are the headers whose values a difference shows: the ones
+// the preparation writes that hold no credential. An endpoint's own header
+// lines may carry secrets under any name, so every other value is shown only
+// by its length.
+var quotedHeaders = map[string]bool{
+	"content-type": true, "accept": true, "anthropic-version": true, "anthropic-beta": true,
+	"user-agent": true, "x-app": true, "anthropic-dangerous-direct-browser-access": true,
+}
 
 // Diff is the first difference between Go's request and Node's send, ""
-// when they are the same. Credentials and URL queries are never quoted.
+// when they are the same. Header values outside quotedHeaders (and any that
+// holds c's credential) and URL queries are never quoted.
 func Diff(req *claudeprep.Request, rep Report, c *db.Connection) string {
 	if req.URL != rep.URL {
 		return fmt.Sprintf("URL: Go %s, Node %s", redactURL(req.URL), redactURL(rep.URL))
 	}
 	quote := func(name, value string) string {
-		if secretHeaders[strings.ToLower(name)] || (c != nil && carriesCredential([][2]string{{name, value}}, c)) {
+		if !quotedHeaders[strings.ToLower(name)] || (c != nil && carriesCredential([][2]string{{name, value}}, c)) {
 			return fmt.Sprintf("%s: (%d bytes, not shown)", name, len(value))
 		}
 		return fmt.Sprintf("%s: %q", name, value)
@@ -470,19 +488,9 @@ func reportNames(h [][2]string) string {
 	return "[" + strings.Join(names, " ") + "]"
 }
 
-// window is up to 60 bytes either side of at.
+// window is up to 60 bytes either side of at (at is at most len(b)).
 func window(b []byte, at int) string {
-	lo, hi := at-60, at+60
-	if lo < 0 {
-		lo = 0
-	}
-	if hi > len(b) {
-		hi = len(b)
-	}
-	if lo > hi {
-		lo = hi
-	}
-	return string(b[lo:hi])
+	return string(b[max(at-60, 0):min(at+60, len(b))])
 }
 
 // redactURL is the URL without its query (which may hold a key).
@@ -497,26 +505,4 @@ func redactURL(s string) string {
 	u.User = nil
 	u.Fragment = ""
 	return u.String()
-}
-
-// Health is the counters for the health endpoint (this machine's clients).
-func (s *Shadow) Health() map[string]any {
-	st := s.Snapshot()
-	reasons := make([]map[string]any, 0, len(st.Reasons))
-	for k, v := range st.Reasons {
-		reasons = append(reasons, map[string]any{"reason": k, "count": v})
-	}
-	sort.Slice(reasons, func(i, j int) bool {
-		ci, cj := reasons[i]["count"].(int), reasons[j]["count"].(int)
-		if ci != cj {
-			return ci > cj
-		}
-		return reasons[i]["reason"].(string) < reasons[j]["reason"].(string)
-	})
-	return map[string]any{
-		"requests": st.Requests, "planned": st.Planned, "declined": st.Declined,
-		"sends": st.Sends, "matched": st.Matched, "differed": st.Differed,
-		"unplanned": st.Unplanned, "unknown": st.Unknown, "noSend": st.NoSend, "errors": st.Errors,
-		"reasons": reasons, "diffs": st.Diffs,
-	}
 }
