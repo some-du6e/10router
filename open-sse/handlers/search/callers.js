@@ -150,10 +150,9 @@ function buildPerplexityRequest(config, params) {
   };
 }
 
-// `lite` is Exa's low-latency search type (about 0.35 s against 1.2 s for
-// `auto`, at $0.004 instead of $0.007) and takes the domain and category
-// filters below. Exa reads contents only under `contents`; highlights capped
-// per result keep the snippets the tool results carry short.
+// Exa's low-latency type. It answers 400 to any field outside its allowlist,
+// so a new body field must be one `lite` takes. Exa reads contents only under
+// `contents`, and the highlight cap is per result.
 const EXA_SEARCH_TYPE = "lite";
 const EXA_HIGHLIGHT_CHARS = 700;
 
