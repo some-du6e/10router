@@ -525,6 +525,80 @@ describe("auth flows forward the saved connection", () => {
     });
   });
 
+  it("aborts a pending Codex device poll when the modal unmounts", async () => {
+    vi.useFakeTimers();
+    try {
+      let finishPoll;
+      const pendingPoll = new Promise((resolve) => { finishPoll = resolve; });
+      const fetch = vi.fn((url) => {
+        if (url.endsWith("/device-code")) return Response.json({
+          device_code: "device-auth-id", user_code: "ABCD-1234", interval: 1,
+        });
+        return pendingPoll;
+      });
+      vi.stubGlobal("fetch", fetch);
+      vi.stubGlobal("window", {
+        location: { hostname: "router.example.test", origin: "https://router.example.test" },
+      });
+      const component = dashboardComponent("src/shared/components/OAuthModal.js", {
+        ...componentImports,
+        "@/shared/utils/oauthCallbackBinding.js": { PROXY_OAUTH_PROVIDERS: new Set() },
+      });
+      const props = { isOpen: true, provider: "codex", providerInfo: { name: "Codex" }, onSuccess: vi.fn(), onClose: vi.fn() };
+      await button(component.render(props), "Use device code").props.onClick();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetch.mock.calls[1][0]).toBe("/api/oauth/codex/poll");
+      const { signal } = fetch.mock.calls[1][1];
+      expect(signal.aborted).toBe(false);
+
+      component.unmount();
+      expect(signal.aborted).toBe(true);
+      finishPoll(Response.json({ success: true, connection: { id: "saved-account" } }));
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(props.onSuccess).not.toHaveBeenCalled();
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["close", "unmount"])("releases a late Codex proxy without opening a popup on %s", async (exit) => {
+    let finishStartup;
+    const startup = new Promise((resolve) => { finishStartup = resolve; });
+    const fetch = vi.fn((url) => {
+      if (url.includes("/authorize")) return Response.json({
+        authUrl: "https://auth.example.test/authorize", state: "state-1", codeVerifier: "verifier",
+      });
+      if (url.includes("/start-proxy")) return startup;
+      return Response.json({ success: true });
+    });
+    const openLoginPopup = vi.fn();
+    const openLoginTab = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    vi.stubGlobal("window", {
+      location: { hostname: "localhost", origin: "http://localhost:20128", port: "20128", protocol: "http:" },
+    });
+    const component = dashboardComponent("src/shared/components/OAuthModal.js", {
+      ...componentImports,
+      "@/shared/utils/oauthCallbackBinding.js": { PROXY_OAUTH_PROVIDERS: new Set(), openLoginPopup, openLoginTab },
+    });
+    const props = { isOpen: true, provider: "codex", providerInfo: { name: "Codex" }, onClose: vi.fn() };
+    component.render(props);
+    const flow = button(component.render(props), "Sign in with browser").props.onClick();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/start-proxy")));
+
+    if (exit === "unmount") component.unmount();
+    else component.render(props).props.onClose();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    finishStartup(Response.json({ success: true, serverSide: true }));
+    await flow;
+
+    expect(fetch).toHaveBeenLastCalledWith("/api/oauth/codex/stop-proxy");
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(openLoginPopup).not.toHaveBeenCalled();
+    expect(openLoginTab).not.toHaveBeenCalled();
+  });
+
   it("forwards the connection the GitLab PAT route saved", async () => {
     createConnection.mockResolvedValue({ id: "selected-account", provider: "gitlab", email: "dev@example.test" });
     const fetch = vi.fn(async (url, init) => {

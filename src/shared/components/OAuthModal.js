@@ -18,6 +18,17 @@ import {
 const openWindow = (url, target, features) => window.open(url, target, features);
 const CODEX_CALLBACK_URL = "http://127.0.0.1:1455/auth/callback";
 
+// The local proxy is shared. Finish a cancelled startup and its shutdown
+// before a reopened modal can start another proxy.
+let codexProxyOperation = Promise.resolve();
+function queueCodexProxyOperation(operation) {
+  const next = codexProxyOperation.then(operation);
+  codexProxyOperation = next.catch(() => {});
+  return next;
+}
+
+const stopCodexProxy = () => fetch("/api/oauth/codex/stop-proxy").catch(() => {});
+
 // Providers offering a paste-token fallback (import-token flow).
 // UX warns if the IDE (which issues the token) is not installed.
 const PASTE_TOKEN_PROVIDERS = {
@@ -59,7 +70,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const [ignoredCallback, setIgnoredCallback] = useState(false);
   const popupRef = useRef(null);
   const codexProxyRef = useRef(false);
-  const deviceAttemptRef = useRef(null);
+  const signInAttemptRef = useRef(null);
   const openedRef = useRef(false);
   const { copied, copy } = useCopyToClipboard();
 
@@ -67,6 +78,22 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const [isLocalhost, setIsLocalhost] = useState(false);
   const [placeholderUrl, setPlaceholderUrl] = useState("/callback?code=...");
   const callbackProcessedRef = useRef(false);
+
+  const cancelSignIn = useCallback(() => {
+    signInAttemptRef.current?.abort();
+    signInAttemptRef.current = null;
+    if (codexProxyRef.current) {
+      codexProxyRef.current = false;
+      queueCodexProxyOperation(stopCodexProxy);
+    }
+  }, []);
+
+  useEffect(() => () => {
+    // StrictMode can restart the mount effects after cancelling an automatic
+    // device request. Let the open effect issue its replacement.
+    if (signInAttemptRef.current) openedRef.current = false;
+    cancelSignIn();
+  }, [cancelSignIn]);
 
   // Detect if running on localhost (client-side only)
   useEffect(() => {
@@ -221,7 +248,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       setStep("choose");
       return;
     }
-    let deviceSignal;
+    let attemptSignal;
     try {
       setError(null);
 
@@ -245,10 +272,10 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         "grok-cli",
       ];
       if (deviceCodeProviders.includes(provider) || (provider === "codex" && codexMethod === "device")) {
-        deviceAttemptRef.current?.abort();
+        cancelSignIn();
         const attempt = new AbortController();
-        deviceAttemptRef.current = attempt;
-        deviceSignal = attempt.signal;
+        signInAttemptRef.current = attempt;
+        attemptSignal = attempt.signal;
         setIsDeviceCode(true);
         setDeviceData(null);
         setStep("waiting");
@@ -261,9 +288,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           }
           deviceCodeUrl.searchParams.set("auth_method", "idc");
         }
-        const res = await fetch(deviceCodeUrl.toString(), { signal: deviceSignal });
+        const res = await fetch(deviceCodeUrl.toString(), { signal: attemptSignal });
         const data = await res.json();
-        if (deviceSignal.aborted) return;
+        if (attemptSignal.aborted) return;
         if (!res.ok) throw new Error(data.error);
 
         setDeviceData(data);
@@ -302,7 +329,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           Number.isFinite(data.expires_in) && data.expires_in > 0
             ? data.expires_in * 1000
             : undefined,
-          deviceSignal,
+          attemptSignal,
         );
         return;
       }
@@ -311,6 +338,10 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       const appPort = window.location.port || (window.location.protocol === "https:" ? "443" : "80");
       let redirectUri;
       if (provider === "codex") {
+        cancelSignIn();
+        const attempt = new AbortController();
+        signInAttemptRef.current = attempt;
+        attemptSignal = attempt.signal;
         redirectUri = CODEX_CALLBACK_URL;
       } else if (provider === "xai") {
         redirectUri = "http://127.0.0.1:56121/callback";
@@ -324,8 +355,11 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       if (oauthMeta) {
         Object.entries(oauthMeta).forEach(([k, v]) => { if (v) authorizeUrl.searchParams.set(k, v); });
       }
-      const res = await fetch(authorizeUrl.toString());
+      const res = attemptSignal
+        ? await fetch(authorizeUrl.toString(), { signal: attemptSignal })
+        : await fetch(authorizeUrl.toString());
       const data = await res.json();
+      if (attemptSignal?.aborted) return;
       if (!res.ok) throw new Error(data.error);
 
       // Codex: start proxy with server-side session (auto-exchange) + fallback to channels
@@ -338,14 +372,24 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           proxyUrl.searchParams.set("state", data.state);
           proxyUrl.searchParams.set("code_verifier", data.codeVerifier);
           proxyUrl.searchParams.set("redirect_uri", redirectUri);
-          const proxyRes = await fetch(proxyUrl.toString());
-          const proxyData = await proxyRes.json();
-          codexProxyActive = proxyData.success;
-          codexServerSide = !!proxyData.serverSide;
-          codexProxyRef.current = codexProxyActive;
+          await queueCodexProxyOperation(async () => {
+            if (attemptSignal.aborted) return;
+            // Keep the request alive after closing so we can release a proxy
+            // the server finishes starting.
+            const proxyRes = await fetch(proxyUrl.toString());
+            const proxyData = await proxyRes.json();
+            if (attemptSignal.aborted) {
+              if (proxyData.success) await stopCodexProxy();
+              return;
+            }
+            codexProxyActive = proxyData.success;
+            codexServerSide = !!proxyData.serverSide;
+            codexProxyRef.current = codexProxyActive;
+          });
         } catch {
           codexProxyActive = false;
         }
+        if (attemptSignal.aborted) return;
       }
 
       // xAI: same fixed-port server-side proxy pattern as codex (port 56121)
@@ -411,11 +455,11 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         }
       }
     } catch (err) {
-      if (deviceSignal?.aborted) return;
+      if (attemptSignal?.aborted) return;
       setError(err.message);
       setStep("error");
     }
-  }, [provider, isLocalhost, startPolling, oauthMeta, idcConfig, authMode, startProxyFlow]);
+  }, [provider, isLocalhost, startPolling, oauthMeta, idcConfig, authMode, startProxyFlow, cancelSignIn]);
 
   // Reset state and start OAuth when modal opens
   useEffect(() => {
@@ -443,14 +487,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       startOAuthFlow();
     } else if (!isOpen) {
       // Abort polling and cleanup proxy when modal closes
-      deviceAttemptRef.current?.abort();
+      cancelSignIn();
       openedRef.current = false;
-      if (provider === "codex") {
-        if (codexProxyRef.current) {
-          codexProxyRef.current = false;
-          fetch("/api/oauth/codex/stop-proxy").catch(() => {});
-        }
-      } else if (provider === "xai") {
+      if (provider === "xai") {
         fetch("/api/oauth/xai/stop-proxy").catch(() => {});
       } else if (provider === "trae") {
         fetch("/api/oauth/trae/stop-proxy").catch(() => {});
@@ -460,7 +499,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         fetch("/api/oauth/zed/stop-proxy").catch(() => {});
       }
     }
-  }, [isOpen, provider, startOAuthFlow]);
+  }, [isOpen, provider, startOAuthFlow, cancelSignIn]);
 
   // Server-side proxy mode (codex/xai fixed-port + trae/windsurf dynamic-port):
   // poll status until the proxy auto-exchanges and saves the connection.
@@ -653,13 +692,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
   // Clear session on modal close + cleanup proxy
   const handleClose = useCallback(() => {
-    deviceAttemptRef.current?.abort();
-    if (provider === "codex") {
-      if (codexProxyRef.current) {
-        codexProxyRef.current = false;
-        fetch("/api/oauth/codex/stop-proxy").catch(() => {});
-      }
-    } else if (provider === "xai") {
+    cancelSignIn();
+    if (provider === "xai") {
       fetch("/api/oauth/xai/stop-proxy").catch(() => {});
     } else if (provider === "trae") {
       fetch("/api/oauth/trae/stop-proxy").catch(() => {});
@@ -669,7 +703,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       fetch("/api/oauth/zed/stop-proxy").catch(() => {});
     }
     onClose();
-  }, [onClose, provider]);
+  }, [onClose, provider, cancelSignIn]);
 
   if (!provider || !providerInfo) return null;
   const isXaiProvider = provider === "xai";
@@ -923,6 +957,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
             <div className="flex gap-2">
               <Button onClick={() => {
                 if (provider === "codex") {
+                  cancelSignIn();
                   setAuthData(null);
                   setCallbackUrl("");
                   setIsDeviceCode(false);
