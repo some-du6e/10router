@@ -150,14 +150,20 @@ function buildPerplexityRequest(config, params) {
   };
 }
 
+// `lite` is Exa's low-latency search type (about 0.35 s against 1.2 s for
+// `auto`, at $0.004 instead of $0.007) and takes the domain and category
+// filters below. Exa reads contents only under `contents`; highlights capped
+// per result keep the snippets the tool results carry short.
+const EXA_SEARCH_TYPE = "lite";
+const EXA_HIGHLIGHT_CHARS = 700;
+
 function buildExaRequest(config, params) {
   const { includes, excludes } = parseDomainFilter(params.domainFilter);
   const body = {
     query: params.query,
     numResults: params.maxResults,
-    type: "auto",
-    text: true,
-    highlights: true,
+    type: EXA_SEARCH_TYPE,
+    contents: { highlights: { maxCharacters: EXA_HIGHLIGHT_CHARS } },
   };
   if (includes.length) body.includeDomains = includes;
   if (excludes.length) body.excludeDomains = excludes;

@@ -68,6 +68,12 @@ function normalizePerplexity(data, _query, _searchType) {
   return { results, totalResults: results.length };
 }
 
+// Exa can split a result's highlight budget over several excerpts.
+function exaHighlights(item) {
+  if (!Array.isArray(item?.highlights)) return "";
+  return item.highlights.filter((h) => typeof h === "string" && h.trim()).map((h) => h.trim()).join(" … ");
+}
+
 function normalizeExa(data, _query, _searchType) {
   const now = new Date().toISOString();
   const items = data.results;
@@ -76,7 +82,7 @@ function normalizeExa(data, _query, _searchType) {
     makeResult("exa", {
       title: item.title,
       url: item.url,
-      snippet: item.highlights?.[0] || item.text?.slice(0, 300) || "",
+      snippet: exaHighlights(item) || item.text?.slice(0, 300) || "",
       score: item.score,
       published_at: item.publishedDate,
       favicon_url: item.favicon,
