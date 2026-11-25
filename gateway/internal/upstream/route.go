@@ -3,8 +3,10 @@ package upstream
 import (
 	"context"
 	"net/url"
+	"os"
 	"strings"
 
+	"github.com/some-du6e/10router/gateway/internal/claudeprep"
 	"github.com/some-du6e/10router/gateway/internal/db"
 	"github.com/some-du6e/10router/gateway/internal/db/jsjson"
 )
@@ -55,7 +57,7 @@ func str(v any) (string, error) {
 	case string:
 		return jsTrim(t), nil
 	case float64:
-		return string(jsjson.AppendNumber(nil, t)), nil
+		return jsNum(t), nil
 	case bool:
 		if t {
 			return "true", nil
@@ -178,8 +180,13 @@ func fromSetting(ctx context.Context, value, layer string, pools Pools) (Resolve
 
 // Sendable reports whether the gateway sends a request on this route the
 // way proxyAwareFetch would: direct, with no proxy or relay in the way. Any
-// other route is a decline.
+// other route is a decline, and so is a target whose host net/url reads
+// otherwise than WHATWG URL (an IPv6 literal, a non-ASCII name), which the
+// NO_PROXY match reads.
 func (r Resolved) Sendable(env Env, target string) error {
+	if u, err := url.Parse(target); err != nil || strings.ContainsAny(u.Host, "[]") || !printableASCII(u.Host) {
+		return declined("a target host net/url and WHATWG URL read differently")
+	}
 	switch {
 	case r.BlockedReason != "":
 		return declined("the account's proxy refuses it (Node fails the attempt itself)")
@@ -194,6 +201,46 @@ func (r Resolved) Sendable(env Env, target string) error {
 		return declined("the system proxy (HTTP(S)_PROXY) applies")
 	}
 	return nil
+}
+
+func printableASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] <= 0x20 || s[i] >= 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// Preflight declines, before anything is sent, a connection this sender
+// would have to decline once the account loop reached it: node settings
+// Prepare refuses, an endpoint Timeout, Retries or Proxy setting, the TLS
+// variables Node reads, the Settings outbound proxy (Node sets HTTP(S)_PROXY
+// in its own process, which the gateway can't see), and a route that isn't
+// Sendable. accounts.CheckProvider runs it on each key.
+func Preflight(ctx context.Context, c *db.Connection, s Settings, pools Pools, env Env) error {
+	if env == nil {
+		env = os.Getenv
+	}
+	if err := CheckTLSEnv(env); err != nil {
+		return err
+	}
+	if v, _ := s.Get("outboundProxyEnabled"); jsjson.Truthy(v) {
+		return declined("the Settings outbound proxy is on (Node applies it to its own environment)")
+	}
+	psd := c.ProviderSpecificData()
+	node, err := claudeprep.ParseNodeSettings(jsjson.Marshal(psd))
+	if err != nil {
+		return err
+	}
+	if o := node.Overrides; o != nil && (o.Timeout != "" || o.Retries != "" || o.Proxy != "") {
+		return declined("an endpoint Timeout, Retries or Proxy setting")
+	}
+	r, err := ResolveRoute(ctx, psd, c.Provider, s, pools)
+	if err != nil {
+		return err
+	}
+	return r.Sendable(env, node.BaseURL)
 }
 
 // envProxyURL is getEnvProxyUrl(target), normalized: the system proxy the

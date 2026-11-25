@@ -5,38 +5,16 @@ import (
 	"strings"
 
 	"github.com/some-du6e/10router/gateway/internal/claudeprep"
+	"github.com/some-du6e/10router/gateway/internal/jsregex"
 )
 
 // maxBetaRetries is default.js's MAX_BETA_RETRIES (module-private; held to
 // Node by the recorded beta scenarios).
 const maxBetaRetries = 1
 
-// rejectedRe is anthropicBeta.ts's REJECTED_RE, /Unexpected
-// value\(s\)\s+(.+?)\s+for the\s+`?anthropic-beta`?\s+header/i, with the
-// letters spelled out (Go's (?i) folds the Kelvin sign and the long s, and
-// JavaScript's /i without u doesn't) and \s as JavaScript's. Module-private
-// in Node; held to it by the recorded rejection texts.
-var rejectedRe = func() *regexp.Regexp {
-	ws := "[" + regexp.QuoteMeta(jsWhitespace) + "]"
-	fold := func(s string) string {
-		var b strings.Builder
-		for _, c := range s {
-			switch {
-			case c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z':
-				b.WriteString("[" + strings.ToLower(string(c)) + strings.ToUpper(string(c)) + "]")
-			case c == ' ':
-				b.WriteString(" ")
-			default:
-				b.WriteString(regexp.QuoteMeta(string(c)))
-			}
-		}
-		return b.String()
-	}
-	// JavaScript's `.` stops at \n, \r and the line separators.
-	dot := `[^\n\r\x{2028}\x{2029}]`
-	src := fold("Unexpected value") + `\(` + fold("s") + `\)` + ws + `+(` + dot + `+?)` + ws + `+` + fold("for the") + ws + "+`?" + fold("anthropic-beta") + "`?" + ws + `+` + fold("header")
-	return regexp.MustCompile(src)
-}()
+// rejectedRe is anthropicBeta.ts's REJECTED_RE as Node writes it
+// (module-private; held to it by the recorded rejection texts).
+var rejectedRe = compile(jsregex.Regex{Source: "Unexpected value\\(s\\)\\s+(.+?)\\s+for the\\s+`?anthropic-beta`?\\s+header", Flags: "i"})
 
 var backtickRe = regexp.MustCompile("`([^`]+)`")
 

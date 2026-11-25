@@ -212,6 +212,27 @@ const SCENARIOS = [
     requests: [{ model: "hot/m1" }],
   },
   {
+    // Node weighs a 401 as dead-key evidence it keeps in memory: Go hands
+    // the request over before its first byte (goHandoff).
+    name: "a 401 goes to Node",
+    goHandoff: "401",
+    connections: [conn("k1", HOT, 1), conn("k2", HOT, 2)],
+    upstream: { k1: [err(401, "Invalid API key")], k2: ["ok"] },
+    requests: [{ model: "hot/m1" }],
+  },
+  {
+    name: "every key refuses the request",
+    connections: [conn("k1", HOT, 1), conn("k2", HOT, 2)],
+    upstream: { k1: [BAD], k2: [err(400, "Unknown parameter: frobnicate")] },
+    requests: [{ model: "hot/m1" }],
+  },
+  {
+    name: "a warm key rate-limited twice",
+    connections: [conn("k1", HOT, 1), conn("k2", HOT, 2)],
+    upstream: { k1: ["ok", RL, RL, "ok"], k2: ["ok"] },
+    requests: [{ model: "hot/m1", bigSystem: 22000 }, { model: "hot/m1", bigSystem: 22000, advanceMs: 10 * S }],
+  },
+  {
     name: "keys on different upstreams keep walking",
     connections: [conn("k1", HOT, 1), conn("k2", HOT, 2, {}, { baseUrl: "https://other.example.test/v1" }), conn("k3", HOT, 3)],
     upstream: { k1: [SCHEMA], k2: [SCHEMA], k3: ["ok"] },
@@ -288,7 +309,7 @@ async function runScenario(scenario, dir) {
         rows: rows(),
       });
     }
-    return { name: scenario.name, settings: settingsRow, initial, requests };
+    return { name: scenario.name, goHandoff: scenario.goHandoff || "", settings: settingsRow, initial, requests };
   } finally {
     restore();
     vi.restoreAllMocks();

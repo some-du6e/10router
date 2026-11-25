@@ -46,9 +46,9 @@ type Result struct {
 	// Status and Error are the failure: "[status]: message".
 	Status int
 	Error  string
-	// HeadersTimeout: no response headers within the budget (Status 504).
+	// HeadersTimeout: no response headers within the budget (Status 504);
+	// Sent.Stream says whether the send streamed.
 	HeadersTimeout bool
-	Stream         bool
 }
 
 // Execute is DefaultExecutor.execute for a Messages-path node: BaseExecutor's
@@ -59,8 +59,10 @@ type Result struct {
 // ErrNetwork, and the caller hands the request to Node.
 func (s *Sender) Execute(ctx context.Context, in Input) (Result, error) {
 	if in.Env == nil {
-		in.Env = osEnv
+		in.Env = os.Getenv
 	}
+	// Preflight declines these before any send; this is the same check where
+	// the setting is read, should the row change meanwhile.
 	if o := in.Node.Overrides; o != nil && (o.Timeout != "" || o.Retries != "" || o.Proxy != "") {
 		return Result{}, declined("an endpoint Timeout, Retries or Proxy setting")
 	}
@@ -101,13 +103,13 @@ func (s *Sender) Execute(ctx context.Context, in Input) (Result, error) {
 			return res.Result, err
 		}
 	}
-	if len(learned) > 0 && in.LearnedBetas != nil {
+	// A retry that ran out of time for headers throws in Node (BaseExecutor),
+	// so execute ends before onBetasRejected: nothing learned is saved.
+	if len(learned) > 0 && in.LearnedBetas != nil && !res.HeadersTimeout {
 		in.LearnedBetas(dropped)
 	}
 	return res.Result, nil
 }
-
-func osEnv(name string) string { return os.Getenv(name) }
 
 // attempt is a Result with the failure body's text, which the beta loop reads.
 type attempt struct {
@@ -131,7 +133,7 @@ func (s *Sender) execute(ctx context.Context, in Input, req *claudeprep.Request)
 		switch {
 		case errors.Is(err, errHeadersTimeout):
 			// The budget is spent: no retry (and one URL, no next one).
-			return attempt{Result: Result{Status: http.StatusGatewayTimeout, Error: "[504]: " + budget.TimeoutText(), HeadersTimeout: true, Stream: req.Stream, Sent: req}}, nil
+			return attempt{Result: Result{Status: http.StatusGatewayTimeout, Error: "[504]: " + budget.TimeoutText(), HeadersTimeout: true, Sent: req}}, nil
 		case err != nil:
 			return attempt{}, err
 		}
@@ -157,6 +159,13 @@ func (s *Sender) sendTimed(ctx context.Context, req *claudeprep.Request, b Budge
 	timer := time.AfterFunc(time.Duration(b.Ms)*time.Millisecond, func() { cancel(errHeadersTimeout) })
 	resp, err := s.Send(attemptCtx, req)
 	stopped := timer.Stop()
+	if err == nil && !stopped {
+		// The budget ran out as the headers came: Node's timer and its fetch
+		// can't both win, and the body is already cancelled here.
+		resp.Body.Close()
+		cancel(nil)
+		return nil, errHeadersTimeout
+	}
 	if err != nil {
 		defer cancel(nil)
 		if ctx.Err() != nil {

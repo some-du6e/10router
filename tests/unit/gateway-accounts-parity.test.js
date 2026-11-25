@@ -144,6 +144,12 @@ function vectors() {
     [{ account: "k1", status: 503, error: "[503]: {\"error\":{\"message\":\"overloaded\"}}" }, { account: "", status: 0, error: "x" }],
     [{ account: "k1", status: 401, error: "[401]: bad" }, { account: "k2", status: 400, error: "[400]: invalid request" }],
     [{ account: "k1", status: 404, error: "[404]: no model" }, { account: "k2", status: 422, error: "[422]: bad body" }],
+    // Messages that aren't strings, as a template literal writes them.
+    [
+      { account: "k1", status: 400, error: "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}" },
+      { account: "k2", status: 400, error: "[400]: {\"error\":{\"message\":{\"a\":1}}}" },
+      { account: "k3", status: 400, error: "[400]: {\"message\":true}" },
+    ],
   ];
   const summaryCases = failuresSets.map((failures) => ({ failures, out: summary.summarizeAccountFailures(PROVIDER, "m", failures) }));
   const lockedCases = [];
@@ -309,6 +315,37 @@ const SCENARIOS = [
       { op: "select", model: "m", warm: ["k2"], maxWarmWaitMs: 60 * S },
       { op: "select", model: "m", avoid: ["k1"] },
       { op: "select", model: "m", avoid: ["k1", "k3"], exclude: [] },
+    ],
+  },
+  {
+    // A key the strategy ranks ahead of the warm one frees up first (the wait
+    // is skipped), then only later (the wait's jitter is capped short of it).
+    name: "a better key ahead of the warm one",
+    connections: [conn("k2", 1), conn("k1", 2), conn("k3", 3)],
+    steps: [
+      { op: "fail", id: "k2", status: 429, error: RL, model: "m" },
+      { op: "fail", id: "k1", status: 429, error: RL, model: "m" },
+      { op: "select", model: "m", warm: ["k1"], maxWarmWaitMs: 10 * S },
+      // k2 frees up well after k1: wait for k1.
+      { op: "fail", id: "k2", status: 429, error: RL, model: "n", resetsAtMs: T0 + 5 * S },
+      { op: "fail", id: "k1", status: 429, error: RL, model: "n" },
+      { op: "select", model: "n", warm: ["k1"], maxWarmWaitMs: 10 * S },
+      // k2 frees up just after k1: the wait's jitter stops short of it.
+      // (k1's backoff is at 8 s by now.)
+      { op: "fail", id: "k2", status: 429, error: RL, model: "o", resetsAtMs: T0 + 8060 },
+      { op: "fail", id: "k1", status: 429, error: RL, model: "o" },
+      { op: "select", model: "o", warm: ["k1"], maxWarmWaitMs: 10 * S },
+    ],
+  },
+  {
+    name: "every key has a provider reset",
+    connections: [conn("k1", 1), conn("k2", 2)],
+    steps: [
+      { op: "fail", id: "k1", status: 429, error: RL, model: "m", resetsAtMs: T0 + 90 * S },
+      { op: "fail", id: "k2", status: 429, error: RL, model: "m", resetsAtMs: T0 + 60 * S },
+      { op: "select", model: "m" },
+      { op: "fail", id: "k2", status: 429, error: RL, model: "", resetsAtMs: T0 + 120 * S },
+      { op: "select", model: "m" },
     ],
   },
   {

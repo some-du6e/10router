@@ -1649,5 +1649,453 @@
    },
    "transport": "[\"\",\"\",\"\",false]"
   }
+ ],
+ "fetchDefaults": [
+  {
+   "url": "http://upstream.test/v1/messages",
+   "given": [
+    [
+     "content-type",
+     "application/json"
+    ],
+    [
+     "x-api-key",
+     "key-k1"
+    ],
+    [
+     "accept",
+     "text/event-stream"
+    ]
+   ],
+   "headers": [
+    [
+     "content-type",
+     "application/json"
+    ],
+    [
+     "x-api-key",
+     "key-k1"
+    ],
+    [
+     "accept",
+     "text/event-stream"
+    ],
+    [
+     "accept-language",
+     "*"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "user-agent",
+     "node"
+    ],
+    [
+     "accept-encoding",
+     "gzip, deflate"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ]
+   ]
+  },
+  {
+   "url": "https://upstream.test/v1/messages",
+   "given": [
+    [
+     "content-type",
+     "application/json"
+    ],
+    [
+     "x-api-key",
+     "key-k1"
+    ],
+    [
+     "accept",
+     "text/event-stream"
+    ]
+   ],
+   "headers": [
+    [
+     "content-type",
+     "application/json"
+    ],
+    [
+     "x-api-key",
+     "key-k1"
+    ],
+    [
+     "accept",
+     "text/event-stream"
+    ],
+    [
+     "accept-language",
+     "*"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "user-agent",
+     "node"
+    ],
+    [
+     "accept-encoding",
+     "br, gzip, deflate"
+    ],
+    [
+     "connection",
+     "keep-alive"
+    ]
+   ]
+  }
+ ],
+ "envProxies": [
+  {
+   "env": {},
+   "target": "https://api.upstream.test/v1/messages",
+   "proxy": null
+  },
+  {
+   "env": {},
+   "target": "http://upstream.test:8080/v1",
+   "proxy": null
+  },
+  {
+   "env": {},
+   "target": "https://upstream.test/v1",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:1"
+   },
+   "target": "https://api.upstream.test/v1/messages",
+   "proxy": "http://proxy.test:1"
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:1"
+   },
+   "target": "http://upstream.test:8080/v1",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:1"
+   },
+   "target": "https://upstream.test/v1",
+   "proxy": "http://proxy.test:1"
+  },
+  {
+   "env": {
+    "https_proxy": "http://proxy.test:2"
+   },
+   "target": "https://api.upstream.test/v1/messages",
+   "proxy": "http://proxy.test:2"
+  },
+  {
+   "env": {
+    "https_proxy": "http://proxy.test:2"
+   },
+   "target": "http://upstream.test:8080/v1",
+   "proxy": null
+  },
+  {
+   "env": {
+    "https_proxy": "http://proxy.test:2"
+   },
+   "target": "https://upstream.test/v1",
+   "proxy": "http://proxy.test:2"
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "  ",
+    "https_proxy": "http://proxy.test:3"
+   },
+   "target": "https://api.upstream.test/v1/messages",
+   "proxy": "  "
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "  ",
+    "https_proxy": "http://proxy.test:3"
+   },
+   "target": "http://upstream.test:8080/v1",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "  ",
+    "https_proxy": "http://proxy.test:3"
+   },
+   "target": "https://upstream.test/v1",
+   "proxy": "  "
+  },
+  {
+   "env": {
+    "HTTP_PROXY": "http://proxy.test:4"
+   },
+   "target": "https://api.upstream.test/v1/messages",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTP_PROXY": "http://proxy.test:4"
+   },
+   "target": "http://upstream.test:8080/v1",
+   "proxy": "http://proxy.test:4"
+  },
+  {
+   "env": {
+    "HTTP_PROXY": "http://proxy.test:4"
+   },
+   "target": "https://upstream.test/v1",
+   "proxy": null
+  },
+  {
+   "env": {
+    "ALL_PROXY": "socks5://proxy.test:5"
+   },
+   "target": "https://api.upstream.test/v1/messages",
+   "proxy": "socks5://proxy.test:5"
+  },
+  {
+   "env": {
+    "ALL_PROXY": "socks5://proxy.test:5"
+   },
+   "target": "http://upstream.test:8080/v1",
+   "proxy": "socks5://proxy.test:5"
+  },
+  {
+   "env": {
+    "ALL_PROXY": "socks5://proxy.test:5"
+   },
+   "target": "https://upstream.test/v1",
+   "proxy": "socks5://proxy.test:5"
+  },
+  {
+   "env": {
+    "all_proxy": "http://proxy.test:6",
+    "HTTPS_PROXY": ""
+   },
+   "target": "https://api.upstream.test/v1/messages",
+   "proxy": "http://proxy.test:6"
+  },
+  {
+   "env": {
+    "all_proxy": "http://proxy.test:6",
+    "HTTPS_PROXY": ""
+   },
+   "target": "http://upstream.test:8080/v1",
+   "proxy": "http://proxy.test:6"
+  },
+  {
+   "env": {
+    "all_proxy": "http://proxy.test:6",
+    "HTTPS_PROXY": ""
+   },
+   "target": "https://upstream.test/v1",
+   "proxy": "http://proxy.test:6"
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:7",
+    "NO_PROXY": "upstream.test"
+   },
+   "target": "https://api.upstream.test/v1/messages",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:7",
+    "NO_PROXY": "upstream.test"
+   },
+   "target": "http://upstream.test:8080/v1",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:7",
+    "NO_PROXY": "upstream.test"
+   },
+   "target": "https://upstream.test/v1",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:8",
+    "NO_PROXY": ".upstream.test"
+   },
+   "target": "https://api.upstream.test/v1/messages",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:8",
+    "NO_PROXY": ".upstream.test"
+   },
+   "target": "http://upstream.test:8080/v1",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:8",
+    "NO_PROXY": ".upstream.test"
+   },
+   "target": "https://upstream.test/v1",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:9",
+    "NO_PROXY": "api.upstream.test"
+   },
+   "target": "https://api.upstream.test/v1/messages",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:9",
+    "NO_PROXY": "api.upstream.test"
+   },
+   "target": "http://upstream.test:8080/v1",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:9",
+    "NO_PROXY": "api.upstream.test"
+   },
+   "target": "https://upstream.test/v1",
+   "proxy": "http://proxy.test:9"
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:10",
+    "no_proxy": "*"
+   },
+   "target": "https://api.upstream.test/v1/messages",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:10",
+    "no_proxy": "*"
+   },
+   "target": "http://upstream.test:8080/v1",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:10",
+    "no_proxy": "*"
+   },
+   "target": "https://upstream.test/v1",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:11",
+    "NO_PROXY": " other.test , UPSTREAM.TEST "
+   },
+   "target": "https://api.upstream.test/v1/messages",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:11",
+    "NO_PROXY": " other.test , UPSTREAM.TEST "
+   },
+   "target": "http://upstream.test:8080/v1",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:11",
+    "NO_PROXY": " other.test , UPSTREAM.TEST "
+   },
+   "target": "https://upstream.test/v1",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:12",
+    "NO_PROXY": "pstream.test"
+   },
+   "target": "https://api.upstream.test/v1/messages",
+   "proxy": "http://proxy.test:12"
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:12",
+    "NO_PROXY": "pstream.test"
+   },
+   "target": "http://upstream.test:8080/v1",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:12",
+    "NO_PROXY": "pstream.test"
+   },
+   "target": "https://upstream.test/v1",
+   "proxy": "http://proxy.test:12"
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:13",
+    "NO_PROXY": "",
+    "no_proxy": "upstream.test"
+   },
+   "target": "https://api.upstream.test/v1/messages",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:13",
+    "NO_PROXY": "",
+    "no_proxy": "upstream.test"
+   },
+   "target": "http://upstream.test:8080/v1",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTPS_PROXY": "http://proxy.test:13",
+    "NO_PROXY": "",
+    "no_proxy": "upstream.test"
+   },
+   "target": "https://upstream.test/v1",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTP_PROXY": "http://proxy.test:14",
+    "NO_PROXY": ".test"
+   },
+   "target": "https://api.upstream.test/v1/messages",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTP_PROXY": "http://proxy.test:14",
+    "NO_PROXY": ".test"
+   },
+   "target": "http://upstream.test:8080/v1",
+   "proxy": null
+  },
+  {
+   "env": {
+    "HTTP_PROXY": "http://proxy.test:14",
+    "NO_PROXY": ".test"
+   },
+   "target": "https://upstream.test/v1",
+   "proxy": null
+  }
  ]
 }

@@ -68,7 +68,6 @@ type Outcome struct {
 	Error           string
 	Limited         bool
 	LimitsExhausted bool
-	Unconfigured    bool
 	ResetAtMs       float64
 	RetryAtMs       float64
 	AccountErrors   []AccountError
@@ -94,8 +93,9 @@ type LoopInput struct {
 	ByteSent func() bool
 	// Sleep waits ms or until ctx ends (the warm-key wait).
 	Sleep func(ctx context.Context, ms float64) error
-	// SharesOneUpstream is keysShareOneUpstream for the provider.
-	SharesOneUpstream func(ctx context.Context) (bool, error)
+	// Transport is a connection's network path (upstream.Resolved.Transport),
+	// for keysShareOneUpstream.
+	Transport func(*db.Connection) (string, error)
 }
 
 // Handoff is a failure Node must see again for itself: the request goes to
@@ -204,6 +204,9 @@ func (a *Accounts) accountPass(ctx context.Context, in LoopInput, attempt Attemp
 			return Outcome{}, err
 		}
 		if res.Success {
+			// chatCore's onRequestSuccess, as the stream starts. Node logs a
+			// failed clear and serves on; so does this.
+			_ = a.ClearError(ctx, pick.Conn, in.Model)
 			a.Hang.NoteServed(in.Provider, in.Model)
 			if cacheKey != "" {
 				a.Warm.Remember(cacheKey, c.ID, CacheTTLMs(in.Body), a.nowMs())
@@ -263,7 +266,7 @@ func (a *Accounts) accountPass(ctx context.Context, in LoopInput, attempt Attemp
 		psd := c.ProviderSpecificData()
 		agreement := tally.note(c.ID, UpstreamOf(psd), res.Status, res.Error)
 		if agreement == Normalized && shared == nil {
-			s, err := in.SharesOneUpstream(ctx)
+			s, err := a.KeysShareOneUpstream(ctx, in.Provider, in.Transport)
 			if err != nil {
 				return Outcome{}, err
 			}
@@ -321,7 +324,7 @@ func (a *Accounts) noAccount(in LoopInput, locked *AllLocked, exclude map[string
 	}
 	if len(exclude) == 0 {
 		msg := "No active credentials for provider: " + in.Provider
-		return Outcome{Unconfigured: true, Status: 404, Error: msg, AccountErrors: accountErrors, Reply: Reply{Status: 404, Message: msg}}
+		return Outcome{Status: 404, Error: msg, AccountErrors: accountErrors, Reply: Reply{Status: 404, Message: msg}}
 	}
 	st, _, _, _ := allLockedError(lastStatus, lastError, hasLast, nil, failures)
 	msg := summarize(in.Provider, in.Model, failures)
@@ -438,19 +441,28 @@ func extractProviderMessage(text string) string {
 	return text
 }
 
-// jsDisplay is how a template literal writes a value.
+// jsDisplay is how a template literal writes a value: String(v), an array
+// as its items joined with "," (null and undefined items empty).
 func jsDisplay(v *claudeprep.Value) string {
-	if v.IsString() {
+	switch {
+	case v.IsString():
 		return v.Str()
-	}
-	if v.IsNumber() {
+	case v.IsNumber():
 		return string(jsjson.Marshal(v.Float()))
-	}
-	if v.Kind() == claudeprep.KindBool {
+	case v.Kind() == claudeprep.KindBool:
 		if v.Truthy() {
 			return "true"
 		}
 		return "false"
+	case v.IsNullish():
+		return ""
+	case v.IsArray():
+		items := v.Items()
+		parts := make([]string, len(items))
+		for i, it := range items {
+			parts[i] = jsDisplay(it)
+		}
+		return strings.Join(parts, ",")
 	}
 	return "[object Object]"
 }

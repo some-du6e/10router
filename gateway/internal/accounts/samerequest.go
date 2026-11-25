@@ -10,6 +10,7 @@ import (
 	"github.com/some-du6e/10router/gateway/internal/claudeprep"
 	"github.com/some-du6e/10router/gateway/internal/db"
 	"github.com/some-du6e/10router/gateway/internal/db/jsjson"
+	"github.com/some-du6e/10router/gateway/internal/jsregex"
 )
 
 // sameRequestError.ts: a request error every key of a custom endpoint would
@@ -18,11 +19,11 @@ import (
 // The module's own regexes (not exported by Node), compiled with
 // JavaScript's semantics; the parity fixtures hold them to Node's answers.
 var (
-	statusPrefixRe    = compileJS(jsRegex{Source: `^\[\d+\]:\s*`})
-	requestIDSuffixRe = compileJS(jsRegex{Source: ` ?\(request id: [^)]{0,128}\)`, Flags: "i"})
-	digitsRe          = compileJS(jsRegex{Source: `\d+`})
-	spacesRe          = compileJS(jsRegex{Source: `\s+`})
-	fourDigitsRe      = compileJS(jsRegex{Source: `\d{4,}`})
+	statusPrefixRe    = compile(jsregex.Regex{Source: `^\[\d+\]:\s*`})
+	requestIDSuffixRe = compile(jsregex.Regex{Source: ` ?\(request id: [^)]{0,128}\)`, Flags: "i"})
+	digitsRe          = compile(jsregex.Regex{Source: `\d+`})
+	spacesRe          = compile(jsregex.Regex{Source: `\s+`})
+	fourDigitsRe      = compile(jsregex.Regex{Source: `\d{4,}`})
 )
 
 // asText is the error cut to SAME_REQUEST_ERROR_MAX_TEXT UTF-16 units.

@@ -106,13 +106,7 @@ func get(s accounts.Settings, key string) any {
 	return v
 }
 
-// truthyOr is `a || b`.
-func truthyOr(a, b any) any {
-	if jsjson.Truthy(a) {
-		return a
-	}
-	return b
-}
+var truthyOr = jsjson.Or
 
 // strategy is the combo's strategy: comboStrategies[key].fallbackStrategy,
 // else the global comboStrategy, else fallback. Only fallback is served.
@@ -196,6 +190,10 @@ type Leaf func(ctx context.Context, provider, model string) (accounts.Outcome, e
 // Env is what Run calls out to.
 type Env struct {
 	Leaf Leaf
+	// Preflight declines, before anything is sent, a provider whose keys the
+	// loop would have to decline on later (accounts.CheckProvider with the
+	// sender's route and settings checks). Run calls it once per provider.
+	Preflight func(ctx context.Context, provider string) error
 	// Sleep waits ms or until ctx ends (the transient wait).
 	Sleep func(ctx context.Context, ms float64) error
 	// NowMs is the clock (unavailableResponse's Retry-After).
@@ -215,8 +213,35 @@ type Result struct {
 }
 
 // Run routes the request through t: a leaf's account loop, or
-// handleComboChat's fallback over a combo's members.
+// handleComboChat's fallback over a combo's members. Every provider the tree
+// reaches is preflighted first, so a decline comes before any write.
 func Run(ctx context.Context, t *Target, env Env) (Result, error) {
+	if env.Preflight != nil {
+		seen := map[string]bool{}
+		var walk func(*Target) error
+		walk = func(t *Target) error {
+			if t.Combo == "" {
+				if seen[t.Provider] {
+					return nil
+				}
+				seen[t.Provider] = true
+				return env.Preflight(ctx, t.Provider)
+			}
+			for _, m := range t.Members {
+				if err := walk(m); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if err := walk(t); err != nil {
+			return Result{}, err
+		}
+	}
+	return run(ctx, t, env)
+}
+
+func run(ctx context.Context, t *Target, env Env) (Result, error) {
 	if ctx.Err() != nil {
 		return Result{ClientGone: true}, nil
 	}
@@ -248,7 +273,7 @@ const maxTransientWaitMs = 5000
 func runCombo(ctx context.Context, t *Target, env Env) (Result, error) {
 	lastError, lastStatus := "", 0
 	for _, m := range t.Members {
-		r, err := Run(ctx, m, env)
+		r, err := run(ctx, m, env)
 		if err != nil || r.Success || r.ClientGone {
 			return r, err
 		}
@@ -278,15 +303,6 @@ func runCombo(ctx context.Context, t *Target, env Env) (Result, error) {
 	if msg == "" {
 		msg = "All combo models unavailable"
 	}
-	return Result{Response: comboFailure(status, msg), Message: msg}, nil
-}
-
-// comboFailure is handleComboChat's all-failed reply (no member reply
-// carries a retryAfter, so never unavailableResponse).
-func comboFailure(status int, msg string) accounts.Response {
-	inner := jsjson.NewObject()
-	inner.Set("message", msg)
-	body := jsjson.NewObject()
-	body.Set("error", inner)
-	return accounts.Response{Status: status, Header: []accounts.Header{{Name: "Content-Type", Value: "application/json"}}, Body: jsjson.Marshal(body)}
+	// No member reply carries a retryAfter, so never unavailableResponse.
+	return Result{Response: accounts.MessageResponse(status, msg), Message: msg}, nil
 }

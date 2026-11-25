@@ -3,6 +3,7 @@ package accounts
 import (
 	"context"
 	"math"
+	"math/rand/v2"
 	"sort"
 	"strings"
 	"sync"
@@ -53,7 +54,7 @@ func (a *Accounts) random() float64 {
 	if a.Random != nil {
 		return a.Random()
 	}
-	return defaultRandom()
+	return rand.Float64()
 }
 
 // SelectOptions are getProviderCredentials' options for the hot path.
@@ -103,13 +104,7 @@ func providerOverride(s Settings, provider string) *jsjson.Object {
 	return po
 }
 
-// truthyOr is `a || b`: a when truthy.
-func truthyOr(a, b any) any {
-	if jsjson.Truthy(a) {
-		return a
-	}
-	return b
-}
+var truthyOr = jsjson.Or
 
 // Strategy is the provider's fallbackStrategy: its own, else Global, else
 // fill-first. Only fill-first and round-robin are served natively.

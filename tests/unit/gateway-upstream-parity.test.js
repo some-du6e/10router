@@ -153,6 +153,63 @@ function proxyCases(routing) {
   });
 }
 
+// Node's own fetch, before proxyFetch.js patches the global.
+const nativeFetch = globalThis.fetch;
+
+// The headers Node's fetch builds for a POST with the executor's headers,
+// per target, as its dispatcher receives them: one that sends nothing. Over
+// https too, which the local wire server can't show without a certificate.
+async function fetchDefaults() {
+  const given = [["content-type", "application/json"], ["x-api-key", "key-k1"], ["accept", "text/event-stream"]];
+  const out = [];
+  for (const url of ["http://upstream.test/v1/messages", "https://upstream.test/v1/messages"]) {
+    let seen = null;
+    const dispatcher = {
+      dispatch(opts, handler) {
+        seen = opts.headers;
+        handler.onError(new Error("captured"));
+        return true;
+      },
+    };
+    await nativeFetch(url, { method: "POST", headers: Object.fromEntries(given), body: new Uint8Array([123, 125]), dispatcher }).catch(() => {});
+    const pairs = [];
+    if (Array.isArray(seen)) {
+      if (Array.isArray(seen[0])) for (const [k, v] of seen) pairs.push([String(k).toLowerCase(), String(v)]);
+      else for (let i = 0; i < seen.length; i += 2) pairs.push([String(seen[i]).toLowerCase(), String(seen[i + 1])]);
+    } else if (seen) {
+      for (const [k, v] of Object.entries(seen)) pairs.push([k.toLowerCase(), String(v)]);
+    }
+    // The transport adds these, not fetch's header list.
+    out.push({ url, given, headers: [...pairs.filter(([k]) => k !== "content-length" && k !== "host"), ["connection", "keep-alive"]] });
+  }
+  return out;
+}
+
+const PROXY_ENVS = [
+  {}, { HTTPS_PROXY: "http://proxy.test:1" }, { https_proxy: "http://proxy.test:2" }, { HTTPS_PROXY: "  ", https_proxy: "http://proxy.test:3" },
+  { HTTP_PROXY: "http://proxy.test:4" }, { ALL_PROXY: "socks5://proxy.test:5" }, { all_proxy: "http://proxy.test:6", HTTPS_PROXY: "" },
+  { HTTPS_PROXY: "http://proxy.test:7", NO_PROXY: "upstream.test" }, { HTTPS_PROXY: "http://proxy.test:8", NO_PROXY: ".upstream.test" },
+  { HTTPS_PROXY: "http://proxy.test:9", NO_PROXY: "api.upstream.test" }, { HTTPS_PROXY: "http://proxy.test:10", no_proxy: "*" },
+  { HTTPS_PROXY: "http://proxy.test:11", NO_PROXY: " other.test , UPSTREAM.TEST " }, { HTTPS_PROXY: "http://proxy.test:12", NO_PROXY: "pstream.test" },
+  { HTTPS_PROXY: "http://proxy.test:13", NO_PROXY: "", no_proxy: "upstream.test" }, { HTTP_PROXY: "http://proxy.test:14", NO_PROXY: ".test" },
+];
+const PROXY_TARGETS = ["https://api.upstream.test/v1/messages", "http://upstream.test:8080/v1", "https://upstream.test/v1"];
+
+async function envProxyCases() {
+  const { getEnvProxyUrl } = await import("../../open-sse/utils/proxyFetch.js");
+  const out = [];
+  for (const env of PROXY_ENVS) {
+    for (const target of PROXY_TARGETS) {
+      for (const name of ENV) delete process.env[name];
+      Object.assign(process.env, env);
+      const proxy = getEnvProxyUrl(target);
+      out.push({ env, target, proxy: proxy ?? null });
+    }
+  }
+  for (const name of ENV) delete process.env[name];
+  return out;
+}
+
 // ── Wire scenarios ───────────────────────────────────────────────────────────
 
 const SSE_OK = [
@@ -179,6 +236,8 @@ const WIRE = [
   { name: "an error body in broken UTF-8", script: [{ status: 500, bodyBytes: [0x7b, 0xff, 0xfe, 0x78, 0xe2, 0x82, 0x7d] }] },
   { name: "a BOM before the error", script: [{ status: 500, bodyBytes: [0xef, 0xbb, 0xbf, 0x6f, 0x6b] }] },
   { name: "no headers in time", script: ["hang"] },
+  // The beta retry runs out of time: Node throws, so it saves no flag.
+  { name: "a rejected flag, then no headers", script: [rejected("interleaved-thinking-2025-05-14"), "hang"] },
   { name: "learned flags stay off", psd: { droppedBetas: ["interleaved-thinking-2025-05-14"] }, script: [rejected("context-management-2025-06-27"), "ok"] },
   { name: "strip beta sends none", psd: { stripBeta: true }, script: ["ok"] },
 ];
@@ -297,6 +356,8 @@ describe("sender fixtures for the Go gateway", () => {
       budgets,
       rejections: REJECTIONS.map((t) => ({ text: t, flags: parseRejectedBetas(t) })),
       proxies: proxyCases(routing),
+      fetchDefaults: await fetchDefaults(),
+      envProxies: await envProxyCases(),
     }, null, 1) + "\n";
     if (RECORD) writeFileSync(`${DIR}testdata/vectors.json`, text);
     expect(readFileSync(`${DIR}testdata/vectors.json`, "utf8"), "Node's sender rules changed: regenerate with UPSTREAM_RECORD=1 and update gateway/internal/upstream").toBe(text);

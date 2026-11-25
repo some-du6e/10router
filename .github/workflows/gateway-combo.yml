@@ -13,6 +13,8 @@ on:
     paths:
       - "gateway/internal/combo/**"
       - "gateway/internal/accounts/**"
+      - "gateway/internal/upstream/**"
+      - "gateway/internal/jsregex/**"
       - "gateway/internal/claudeprep/**"
       - "gateway/internal/db/**"
       - "gateway/internal/decline/**"
@@ -75,7 +77,7 @@ jobs:
         run: ./node_modules/.bin/vitest run unit/gateway-combo-parity.test.js unit/gateway-combo-fallback-parity.test.js
       - name: Go parity test
         working-directory: gateway
-        run: go test -count=1 -v ./internal/combo 2>&1 | grep -a -v -E '^\s+--- PASS|^=== RUN' ; exit "${PIPESTATUS[0]}"
+        run: go test -count=1 -race -v ./internal/combo 2>&1 | grep -a -v -E '^\s+--- PASS|^=== RUN' ; exit "${PIPESTATUS[0]}"
 
   # The suite is not all-green on master (see AGENTS.md), so this runs it on
   # both the base and this branch and fails only on tests that pass on the base

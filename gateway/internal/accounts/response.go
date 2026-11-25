@@ -24,18 +24,21 @@ type Response struct {
 // Unavailable (its Retry-After counted from nowMs), else errorResponse.
 func (r Reply) Response(nowMs float64) Response {
 	if r.Unavailable {
-		body := jsjson.NewObject()
-		inner := jsjson.NewObject()
-		inner.Set("message", r.ClientMessage())
-		body.Set("error", inner)
 		secs := math.Max(math.Ceil((r.RetryAfterMs-nowMs)/1000), 1)
-		return Response{
-			Status: r.Status,
-			Header: []Header{{"Content-Type", "application/json"}, {"Retry-After", string(jsjson.AppendNumber(nil, secs))}},
-			Body:   jsjson.Marshal(body),
-		}
+		return MessageResponse(r.Status, r.ClientMessage(), Header{"Retry-After", string(jsjson.AppendNumber(nil, secs))})
 	}
 	return ErrorResponse(r.Status, r.Message)
+}
+
+// MessageResponse is a JSON {"error":{"message":msg}} reply with
+// Content-Type application/json, then extra: unavailableResponse's shape, and
+// combo.js's all-failed reply.
+func MessageResponse(status int, msg string, extra ...Header) Response {
+	inner := jsjson.NewObject()
+	inner.Set("message", msg)
+	body := jsjson.NewObject()
+	body.Set("error", inner)
+	return Response{Status: status, Header: append([]Header{{"Content-Type", "application/json"}}, extra...), Body: jsjson.Marshal(body)}
 }
 
 // ErrorResponse is errorResponse(status, message): buildErrorBody's

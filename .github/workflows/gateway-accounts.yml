@@ -11,6 +11,7 @@ on:
   pull_request:
     paths:
       - "gateway/internal/accounts/**"
+      - "gateway/internal/jsregex/**"
       - "gateway/internal/claudeprep/**"
       - "gateway/internal/db/**"
       - "gateway/internal/decline/**"
@@ -26,7 +27,11 @@ on:
       - "open-sse/services/cacheAffinity.js"
       - "open-sse/services/modelHang.js"
       - "open-sse/services/sameRequestError.ts"
-      - "open-sse/services/spreadLeases.js"
+      # What auth.js's selection and locks read besides the ported files.
+      - "src/sse/services/spreadLeases.js"
+      - "src/sse/services/soonestReset.js"
+      - "src/shared/utils/planCapability.js"
+      - "open-sse/utils/errorClass.js"
       - "open-sse/utils/limitHold.js"
       - "open-sse/utils/sessionManager.js"
       - "open-sse/utils/claudeCloaking.js"

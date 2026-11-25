@@ -1,6 +1,7 @@
 [
  {
   "name": "one key serves",
+  "goHandoff": "",
   "settings": "{\"requireApiKey\":false}",
   "initial": {
    "providerNodes": [
@@ -136,6 +137,7 @@
  },
  {
   "name": "the next key after a rate limit",
+  "goHandoff": "",
   "settings": "{\"requireApiKey\":false}",
   "initial": {
    "providerNodes": [
@@ -311,6 +313,7 @@
  },
  {
   "name": "a combo falls through to its next member",
+  "goHandoff": "",
   "settings": "{\"requireApiKey\":false}",
   "initial": {
    "providerNodes": [
@@ -480,6 +483,7 @@
  },
  {
   "name": "the transient wait between members",
+  "goHandoff": "",
   "settings": "{\"requireApiKey\":false}",
   "initial": {
    "providerNodes": [
@@ -640,6 +644,7 @@
  },
  {
   "name": "every member fails",
+  "goHandoff": "",
   "settings": "{\"requireApiKey\":false}",
   "initial": {
    "providerNodes": [
@@ -805,6 +810,7 @@
  },
  {
   "name": "a nested combo",
+  "goHandoff": "",
   "settings": "{\"requireApiKey\":false}",
   "initial": {
    "providerNodes": [
@@ -921,6 +927,7 @@
  },
  {
   "name": "every key locked, then free",
+  "goHandoff": "",
   "settings": "{\"requireApiKey\":false}",
   "initial": {
    "providerNodes": [
@@ -1097,6 +1104,7 @@
  },
  {
   "name": "the same request error from enough keys",
+  "goHandoff": "",
   "settings": "{\"requireApiKey\":false}",
   "initial": {
    "providerNodes": [
@@ -1255,6 +1263,7 @@
  },
  {
   "name": "header timeouts, then a hung model",
+  "goHandoff": "",
   "settings": "{\"requireApiKey\":false}",
   "initial": {
    "providerNodes": [
@@ -1517,6 +1526,7 @@
  },
  {
   "name": "a request error locks nothing",
+  "goHandoff": "",
   "settings": "{\"requireApiKey\":false}",
   "initial": {
    "providerNodes": [
@@ -1652,6 +1662,7 @@
  },
  {
   "name": "a warm key waits out its short lock",
+  "goHandoff": "",
   "settings": "{\"requireApiKey\":false}",
   "initial": {
    "providerNodes": [
@@ -1834,6 +1845,7 @@
  },
  {
   "name": "round-robin keys",
+  "goHandoff": "",
   "settings": "{\"requireApiKey\":false,\"fallbackStrategy\":\"round-robin\",\"stickyRoundRobinLimit\":1}",
   "initial": {
    "providerNodes": [
@@ -2036,6 +2048,7 @@
  },
  {
   "name": "a member with no keys",
+  "goHandoff": "",
   "settings": "{\"requireApiKey\":false}",
   "initial": {
    "providerNodes": [
@@ -2162,6 +2175,7 @@
  },
  {
   "name": "the same limit message from two upstreams",
+  "goHandoff": "",
   "settings": "{\"requireApiKey\":false}",
   "initial": {
    "providerNodes": [
@@ -2319,7 +2333,486 @@
   ]
  },
  {
+  "name": "a 401 goes to Node",
+  "goHandoff": "401",
+  "settings": "{\"requireApiKey\":false}",
+  "initial": {
+   "providerNodes": [
+    {
+     "id": "openai-compatible-chat-hot",
+     "type": "openai-compatible",
+     "name": "hot",
+     "data": "{\"prefix\":\"hot\",\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\"}",
+     "createdAt": "2026-03-01T10:00:00.000Z",
+     "updatedAt": "2026-03-01T10:00:00.000Z"
+    },
+    {
+     "id": "openai-compatible-chat-cold",
+     "type": "openai-compatible",
+     "name": "cold",
+     "data": "{\"prefix\":\"cold\",\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\"}",
+     "createdAt": "2026-03-01T10:00:00.000Z",
+     "updatedAt": "2026-03-01T10:00:00.000Z"
+    }
+   ],
+   "combos": [
+    {
+     "id": "combo-main",
+     "name": "main",
+     "kind": null,
+     "models": "[\"hot/m1\",\"cold/m1\"]",
+     "createdAt": "2026-03-01T10:00:00.000Z",
+     "updatedAt": "2026-03-01T10:00:00.000Z"
+    },
+    {
+     "id": "combo-outer",
+     "name": "outer",
+     "kind": null,
+     "models": "[\"main\",\"hot/m2\"]",
+     "createdAt": "2026-03-01T10:00:00.000Z",
+     "updatedAt": "2026-03-01T10:00:00.000Z"
+    },
+    {
+     "id": "combo-solo",
+     "name": "solo",
+     "kind": null,
+     "models": "[\"hot/m1\"]",
+     "createdAt": "2026-03-01T10:00:00.000Z",
+     "updatedAt": "2026-03-01T10:00:00.000Z"
+    }
+   ],
+   "providerConnections": [
+    {
+     "id": "k1",
+     "provider": "openai-compatible-chat-hot",
+     "authType": "apikey",
+     "name": "k1",
+     "email": null,
+     "priority": 1,
+     "isActive": 1,
+     "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\",\"modelRoutes\":{\"m1\":\"anthropic\",\"m2\":\"anthropic\"}}}",
+     "createdAt": "2026-03-01T11:00:00.000Z",
+     "updatedAt": "2026-03-01T11:00:00.000Z",
+     "ownerManagementKeyId": null
+    },
+    {
+     "id": "k2",
+     "provider": "openai-compatible-chat-hot",
+     "authType": "apikey",
+     "name": "k2",
+     "email": null,
+     "priority": 2,
+     "isActive": 1,
+     "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\",\"modelRoutes\":{\"m1\":\"anthropic\",\"m2\":\"anthropic\"}}}",
+     "createdAt": "2026-03-01T11:00:00.000Z",
+     "updatedAt": "2026-03-01T11:00:00.000Z",
+     "ownerManagementKeyId": null
+    }
+   ]
+  },
+  "requests": [
+   {
+    "model": "hot/m1",
+    "startMs": 1772366400000,
+    "endMs": 1772366400000,
+    "events": [
+     {
+      "send": "k1"
+     },
+     {
+      "attempt": {
+       "connectionId": "k1",
+       "provider": "openai-compatible-chat-hot",
+       "model": "m1",
+       "success": false,
+       "status": 401,
+       "error": "[401]: {\"error\":{\"message\":\"Invalid API key\"}}",
+       "resetsAtMs": 0,
+       "headersTimeout": null
+      }
+     },
+     {
+      "send": "k2"
+     },
+     {
+      "attempt": {
+       "connectionId": "k2",
+       "provider": "openai-compatible-chat-hot",
+       "model": "m1",
+       "success": true,
+       "status": 0,
+       "error": "",
+       "resetsAtMs": 0,
+       "headersTimeout": null
+      }
+     }
+    ],
+    "reply": {
+     "status": 200,
+     "ok": true
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\",\"modelRoutes\":{\"m1\":\"anthropic\",\"m2\":\"anthropic\"}},\"modelLock_m1\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_m1\":false,\"providerReset_m1\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[401]: {\\\"error\\\":{\\\"message\\\":\\\"Invalid API key\\\"}}\",\"errorCode\":401,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\",\"modelRoutes\":{\"m1\":\"anthropic\",\"m2\":\"anthropic\"}},\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"lastErrorAt\":null,\"backoffLevel\":0,\"authDemoteOkAt\":\"2026-03-01T12:00:00.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "every key refuses the request",
+  "goHandoff": "",
+  "settings": "{\"requireApiKey\":false}",
+  "initial": {
+   "providerNodes": [
+    {
+     "id": "openai-compatible-chat-hot",
+     "type": "openai-compatible",
+     "name": "hot",
+     "data": "{\"prefix\":\"hot\",\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\"}",
+     "createdAt": "2026-03-01T10:00:00.000Z",
+     "updatedAt": "2026-03-01T10:00:00.000Z"
+    },
+    {
+     "id": "openai-compatible-chat-cold",
+     "type": "openai-compatible",
+     "name": "cold",
+     "data": "{\"prefix\":\"cold\",\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\"}",
+     "createdAt": "2026-03-01T10:00:00.000Z",
+     "updatedAt": "2026-03-01T10:00:00.000Z"
+    }
+   ],
+   "combos": [
+    {
+     "id": "combo-main",
+     "name": "main",
+     "kind": null,
+     "models": "[\"hot/m1\",\"cold/m1\"]",
+     "createdAt": "2026-03-01T10:00:00.000Z",
+     "updatedAt": "2026-03-01T10:00:00.000Z"
+    },
+    {
+     "id": "combo-outer",
+     "name": "outer",
+     "kind": null,
+     "models": "[\"main\",\"hot/m2\"]",
+     "createdAt": "2026-03-01T10:00:00.000Z",
+     "updatedAt": "2026-03-01T10:00:00.000Z"
+    },
+    {
+     "id": "combo-solo",
+     "name": "solo",
+     "kind": null,
+     "models": "[\"hot/m1\"]",
+     "createdAt": "2026-03-01T10:00:00.000Z",
+     "updatedAt": "2026-03-01T10:00:00.000Z"
+    }
+   ],
+   "providerConnections": [
+    {
+     "id": "k1",
+     "provider": "openai-compatible-chat-hot",
+     "authType": "apikey",
+     "name": "k1",
+     "email": null,
+     "priority": 1,
+     "isActive": 1,
+     "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\",\"modelRoutes\":{\"m1\":\"anthropic\",\"m2\":\"anthropic\"}}}",
+     "createdAt": "2026-03-01T11:00:00.000Z",
+     "updatedAt": "2026-03-01T11:00:00.000Z",
+     "ownerManagementKeyId": null
+    },
+    {
+     "id": "k2",
+     "provider": "openai-compatible-chat-hot",
+     "authType": "apikey",
+     "name": "k2",
+     "email": null,
+     "priority": 2,
+     "isActive": 1,
+     "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\",\"modelRoutes\":{\"m1\":\"anthropic\",\"m2\":\"anthropic\"}}}",
+     "createdAt": "2026-03-01T11:00:00.000Z",
+     "updatedAt": "2026-03-01T11:00:00.000Z",
+     "ownerManagementKeyId": null
+    }
+   ]
+  },
+  "requests": [
+   {
+    "model": "hot/m1",
+    "startMs": 1772366400000,
+    "endMs": 1772366400000,
+    "events": [
+     {
+      "send": "k1"
+     },
+     {
+      "attempt": {
+       "connectionId": "k1",
+       "provider": "openai-compatible-chat-hot",
+       "model": "m1",
+       "success": false,
+       "status": 400,
+       "error": "[400]: {\"error\":{\"message\":\"improperly formed request\"}}",
+       "resetsAtMs": 0,
+       "headersTimeout": null
+      }
+     },
+     {
+      "send": "k2"
+     },
+     {
+      "attempt": {
+       "connectionId": "k2",
+       "provider": "openai-compatible-chat-hot",
+       "model": "m1",
+       "success": false,
+       "status": 400,
+       "error": "[400]: {\"error\":{\"message\":\"Unknown parameter: frobnicate\"}}",
+       "resetsAtMs": 0,
+       "headersTimeout": null
+      }
+     }
+    ],
+    "reply": {
+     "status": 400,
+     "headers": {
+      "content-type": "application/json",
+      "retry-after": "120"
+     },
+     "body": "{\"error\":{\"message\":\"All 2 accounts unavailable for [openai-compatible-chat-hot/m1]. k1 (HTTP 400): improperly formed request | k2 (HTTP 400): Unknown parameter: frobnicate (reset after 2m)\"}}"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\",\"modelRoutes\":{\"m1\":\"anthropic\",\"m2\":\"anthropic\"}},\"modelLock_m1\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_m1\":false,\"providerReset_m1\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[400]: {\\\"error\\\":{\\\"message\\\":\\\"improperly formed request\\\"}}\",\"errorCode\":400,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\",\"modelRoutes\":{\"m1\":\"anthropic\",\"m2\":\"anthropic\"}}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "a warm key rate-limited twice",
+  "goHandoff": "",
+  "settings": "{\"requireApiKey\":false}",
+  "initial": {
+   "providerNodes": [
+    {
+     "id": "openai-compatible-chat-hot",
+     "type": "openai-compatible",
+     "name": "hot",
+     "data": "{\"prefix\":\"hot\",\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\"}",
+     "createdAt": "2026-03-01T10:00:00.000Z",
+     "updatedAt": "2026-03-01T10:00:00.000Z"
+    },
+    {
+     "id": "openai-compatible-chat-cold",
+     "type": "openai-compatible",
+     "name": "cold",
+     "data": "{\"prefix\":\"cold\",\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\"}",
+     "createdAt": "2026-03-01T10:00:00.000Z",
+     "updatedAt": "2026-03-01T10:00:00.000Z"
+    }
+   ],
+   "combos": [
+    {
+     "id": "combo-main",
+     "name": "main",
+     "kind": null,
+     "models": "[\"hot/m1\",\"cold/m1\"]",
+     "createdAt": "2026-03-01T10:00:00.000Z",
+     "updatedAt": "2026-03-01T10:00:00.000Z"
+    },
+    {
+     "id": "combo-outer",
+     "name": "outer",
+     "kind": null,
+     "models": "[\"main\",\"hot/m2\"]",
+     "createdAt": "2026-03-01T10:00:00.000Z",
+     "updatedAt": "2026-03-01T10:00:00.000Z"
+    },
+    {
+     "id": "combo-solo",
+     "name": "solo",
+     "kind": null,
+     "models": "[\"hot/m1\"]",
+     "createdAt": "2026-03-01T10:00:00.000Z",
+     "updatedAt": "2026-03-01T10:00:00.000Z"
+    }
+   ],
+   "providerConnections": [
+    {
+     "id": "k1",
+     "provider": "openai-compatible-chat-hot",
+     "authType": "apikey",
+     "name": "k1",
+     "email": null,
+     "priority": 1,
+     "isActive": 1,
+     "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\",\"modelRoutes\":{\"m1\":\"anthropic\",\"m2\":\"anthropic\"}}}",
+     "createdAt": "2026-03-01T11:00:00.000Z",
+     "updatedAt": "2026-03-01T11:00:00.000Z",
+     "ownerManagementKeyId": null
+    },
+    {
+     "id": "k2",
+     "provider": "openai-compatible-chat-hot",
+     "authType": "apikey",
+     "name": "k2",
+     "email": null,
+     "priority": 2,
+     "isActive": 1,
+     "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\",\"modelRoutes\":{\"m1\":\"anthropic\",\"m2\":\"anthropic\"}}}",
+     "createdAt": "2026-03-01T11:00:00.000Z",
+     "updatedAt": "2026-03-01T11:00:00.000Z",
+     "ownerManagementKeyId": null
+    }
+   ]
+  },
+  "requests": [
+   {
+    "model": "hot/m1",
+    "bigSystem": 22000,
+    "startMs": 1772366400000,
+    "endMs": 1772366400000,
+    "events": [
+     {
+      "send": "k1"
+     },
+     {
+      "attempt": {
+       "connectionId": "k1",
+       "provider": "openai-compatible-chat-hot",
+       "model": "m1",
+       "success": true,
+       "status": 0,
+       "error": "",
+       "resetsAtMs": 0,
+       "headersTimeout": null
+      }
+     }
+    ],
+    "reply": {
+     "status": 200,
+     "ok": true
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\",\"modelRoutes\":{\"m1\":\"anthropic\",\"m2\":\"anthropic\"}},\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"lastErrorAt\":null,\"backoffLevel\":0,\"authDemoteOkAt\":\"2026-03-01T12:00:00.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\",\"modelRoutes\":{\"m1\":\"anthropic\",\"m2\":\"anthropic\"}}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "model": "hot/m1",
+    "bigSystem": 22000,
+    "advanceMs": 10000,
+    "startMs": 1772366410000,
+    "endMs": 1772366416300,
+    "events": [
+     {
+      "send": "k1"
+     },
+     {
+      "attempt": {
+       "connectionId": "k1",
+       "provider": "openai-compatible-chat-hot",
+       "model": "m1",
+       "success": false,
+       "status": 429,
+       "error": "[429]: {\"error\":{\"message\":\"Rate limit exceeded\"}}",
+       "resetsAtMs": 0,
+       "headersTimeout": null
+      }
+     },
+     {
+      "sleep": 2150,
+      "by": "warm"
+     },
+     {
+      "send": "k1"
+     },
+     {
+      "attempt": {
+       "connectionId": "k1",
+       "provider": "openai-compatible-chat-hot",
+       "model": "m1",
+       "success": false,
+       "status": 429,
+       "error": "[429]: {\"error\":{\"message\":\"Rate limit exceeded\"}}",
+       "resetsAtMs": 0,
+       "headersTimeout": null
+      }
+     },
+     {
+      "sleep": 4150,
+      "by": "warm"
+     },
+     {
+      "send": "k1"
+     },
+     {
+      "attempt": {
+       "connectionId": "k1",
+       "provider": "openai-compatible-chat-hot",
+       "model": "m1",
+       "success": true,
+       "status": 0,
+       "error": "",
+       "resetsAtMs": 0,
+       "headersTimeout": null
+      }
+     }
+    ],
+    "reply": {
+     "status": 200,
+     "ok": true
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\",\"modelRoutes\":{\"m1\":\"anthropic\",\"m2\":\"anthropic\"}},\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"lastErrorAt\":null,\"backoffLevel\":0,\"authDemoteOkAt\":\"2026-03-01T12:00:00.000Z\",\"modelLock_m1\":null,\"modelLimit_m1\":null,\"providerReset_m1\":null,\"modelNoHeaders_m1\":null}",
+      "updatedAt": "2026-03-01T12:00:16.300Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\",\"modelRoutes\":{\"m1\":\"anthropic\",\"m2\":\"anthropic\"}}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   }
+  ]
+ },
+ {
   "name": "keys on different upstreams keep walking",
+  "goHandoff": "",
   "settings": "{\"requireApiKey\":false}",
   "initial": {
    "providerNodes": [

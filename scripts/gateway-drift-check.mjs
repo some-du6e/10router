@@ -42,7 +42,7 @@ for (const [pkg, files] of Object.entries(map)) {
   }
   problems.push(
     `This PR changes Node files gateway/internal/${pkg} ports:\n  ${touched.join("\n  ")}\n` +
-    `Update the port (and re-record its fixtures: ${pkg.toUpperCase()}_RECORD=1 on tests/unit/gateway-${pkg}-parity.test.js), ` +
+    `Update the port (and re-record its fixtures: ${pkg.toUpperCase()}_RECORD=1 on tests/unit/gateway-${pkg}*-parity.test.js), ` +
     `or add "${pkg}" to gateway/GATEWAY_PROXY_ONLY so the gateway keeps proxying that route.`,
   );
 }

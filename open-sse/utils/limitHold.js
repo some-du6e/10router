@@ -32,17 +32,17 @@ export const DEFAULT_TIMING = {
   maxHoldMs: 6 * 60 * 60 * 1000,
 };
 
-/**
- * Does this failure mean "come back later" rather than "this is broken"?
- * Auth failures, 5xx and network errors are handled by the existing retry and
- * account-fallback paths — holding on them would just hide a real fault.
- */
 // Error text (lowercased) that reads as a limit. Exported for the Go gateway's
 // table export (gateway/internal/accounts/tables.json).
 export const LIMIT_ERROR_TEXTS = [
   "usage_limit_reached", "usage limit", "rate limit", "rate_limit", "quota", "premium request", "resource_exhausted",
 ];
 
+/**
+ * Does this failure mean "come back later" rather than "this is broken"?
+ * Auth failures, 5xx and network errors are handled by the existing retry and
+ * account-fallback paths — holding on them would just hide a real fault.
+ */
 export function isLimitError(status, errorText = "") {
   if (status === 429) return true;
   const text = typeof errorText === "string" ? errorText.toLowerCase() : "";

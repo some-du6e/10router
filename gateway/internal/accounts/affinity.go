@@ -5,14 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"math"
-	"math/rand/v2"
 	"strings"
 	"sync"
 
 	"github.com/some-du6e/10router/gateway/internal/claudeprep"
 )
-
-func defaultRandom() float64 { return rand.Float64() }
 
 // WarmKeys is cacheAffinity.js's conversation → warm keys map: which keys
 // served a conversation within their cache TTL, most recently used last, with
@@ -101,13 +98,6 @@ func (w *WarmKeys) Remember(key, connectionID string, ttlMs, now float64) {
 		delete(w.byKey, oldest.Value.(*warmEntry).key)
 	}
 	w.byKey[key] = w.order.PushBack(e)
-}
-
-// Len is conversationCount.
-func (w *WarmKeys) Len() int {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.order.Len()
 }
 
 const (

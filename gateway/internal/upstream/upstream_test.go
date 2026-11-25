@@ -10,10 +10,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/some-du6e/10router/gateway/internal/claudeprep"
 	"github.com/some-du6e/10router/gateway/internal/db"
@@ -65,6 +67,19 @@ type vectorFile struct {
 		} `json:"out"`
 		Transport string `json:"transport"`
 	} `json:"proxies"`
+	// FetchDefaults: the headers Node's own fetch put on a POST with the
+	// executor's headers, per target, seen by a dispatcher that sends nothing.
+	FetchDefaults []struct {
+		URL     string      `json:"url"`
+		Given   [][2]string `json:"given"`
+		Headers [][2]string `json:"headers"`
+	} `json:"fetchDefaults"`
+	// EnvProxies: getEnvProxyUrl(target) under an environment.
+	EnvProxies []struct {
+		Env    map[string]string `json:"env"`
+		Target string            `json:"target"`
+		Proxy  *string           `json:"proxy"`
+	} `json:"envProxies"`
 }
 
 type fakePools map[string]*db.ProxyPool
@@ -80,8 +95,26 @@ func (s objSettings) Get(key string) (any, bool) { return s.o.Get(key) }
 func TestVectorsMatchNode(t *testing.T) {
 	var v vectorFile
 	readJSON(t, "testdata/vectors.json", &v)
-	if len(v.Budgets) < 40 || len(v.Rejections) < 10 || len(v.Proxies) < 15 {
+	if len(v.Budgets) < 40 || len(v.Rejections) < 10 || len(v.Proxies) < 15 || len(v.FetchDefaults) < 2 || len(v.EnvProxies) < 10 {
 		t.Fatal("too few vectors")
+	}
+	for _, c := range v.FetchDefaults {
+		var h []claudeprep.HeaderField
+		for _, kv := range c.Given {
+			h = append(h, claudeprep.HeaderField{Name: kv[0], Value: kv[1]})
+		}
+		if g, n := sortedHeaders(WireHeaders(c.URL, h)), sortedHeaders(c.Headers); g != n {
+			t.Errorf("fetch defaults for %s:\n go\n%s\n node\n%s", c.URL, g, n)
+		}
+	}
+	for _, c := range v.EnvProxies {
+		want := ""
+		if c.Proxy != nil {
+			want = jsTrim(*c.Proxy)
+		}
+		if got := envProxyURL(envOf(c.Env), c.Target); got != want {
+			t.Errorf("getEnvProxyUrl(%s) with %v = %q, Node %q", c.Target, c.Env, got, want)
+		}
 	}
 	for _, c := range v.Budgets {
 		b := HeadersBudget(envOf(c.Env), c.Stream)
@@ -90,7 +123,7 @@ func TestVectorsMatchNode(t *testing.T) {
 		}
 	}
 	for _, c := range v.Rejections {
-		if got := parseRejectedBetas(c.Text); fmt.Sprint(got) != fmt.Sprint(c.Flags) && !(len(got) == 0 && len(c.Flags) == 0) {
+		if got := parseRejectedBetas(c.Text); !slices.Equal(got, c.Flags) {
 			t.Errorf("parseRejectedBetas(%q) = %q, Node %q", c.Text, got, c.Flags)
 		}
 	}
@@ -171,10 +204,14 @@ func TestOnlyDirectRoutesAreSent(t *testing.T) {
 }
 
 func TestWireHeadersJoinRepeatsAndAddFetchDefaults(t *testing.T) {
-	got := WireHeaders([]claudeprep.HeaderField{{Name: "anthropic-beta", Value: "a"}, {Name: "Anthropic-Beta", Value: "b"}, {Name: "Accept", Value: "text/event-stream"}, {Name: "User-Agent", Value: "x/1"}})
+	h := []claudeprep.HeaderField{{Name: "anthropic-beta", Value: "a"}, {Name: "Anthropic-Beta", Value: "b"}, {Name: "Accept", Value: "text/event-stream"}, {Name: "User-Agent", Value: "x/1"}}
+	got := WireHeaders("http://upstream.test/v1", h)
 	want := [][2]string{{"anthropic-beta", "a, b"}, {"accept", "text/event-stream"}, {"user-agent", "x/1"}, {"accept-language", "*"}, {"sec-fetch-mode", "cors"}, {"accept-encoding", "gzip, deflate"}, {"connection", "keep-alive"}}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
+	if !slices.Equal(got, want) {
 		t.Fatalf("got %v", got)
+	}
+	if got := WireHeaders("https://upstream.test/v1", h); got[5] != [2]string{"accept-encoding", "br, gzip, deflate"} {
+		t.Fatalf("https: %v", got)
 	}
 }
 
@@ -363,10 +400,92 @@ func TestWireMatchesNode(t *testing.T) {
 				}
 			}
 			saved := sc.SavedBetas.Connection
-			if fmt.Sprint(learned) != fmt.Sprint(saved) && !(len(learned) == 0 && len(saved) == 0) {
+			if !slices.Equal(learned, saved) {
 				t.Errorf("learned %v, Node saved %v", learned, saved)
 			}
 		})
+	}
+}
+
+// The gzip header is the body's first bytes: a stream whose first event
+// comes after the headers budget is still the stream fetch would read.
+func TestGzipStreamReadsPastTheHeadersBudget(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(200)
+		w.(http.Flusher).Flush()
+		time.Sleep(400 * time.Millisecond)
+		zw := gzip.NewWriter(w)
+		_, _ = io.WriteString(zw, sseOK)
+		_ = zw.Close()
+	}))
+	defer srv.Close()
+	s := NewSender()
+	req := &claudeprep.Request{URL: srv.URL + "/v1/messages", Body: []byte("{}"), Stream: true}
+	res, err := s.Execute(context.Background(), Input{
+		Prepare: func(claudeprep.NodeSettings) (*claudeprep.Request, error) { return req, nil },
+		Env:     envOf(map[string]string{"UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "150"}),
+		Sleep:   func(context.Context, float64) error { return nil },
+	})
+	if err != nil || res.Response == nil {
+		t.Fatalf("%+v %v", res, err)
+	}
+	defer res.Response.Body.Close()
+	body, err := io.ReadAll(res.Response.Body)
+	if err != nil || string(body) != sseOK {
+		t.Fatalf("%q %v", body, err)
+	}
+}
+
+func TestPreflightDeclinesWhatTheSenderWould(t *testing.T) {
+	ctx := context.Background()
+	conn := func(psd string) *db.Connection {
+		o, err := jsjson.ParseObject([]byte(psd))
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := jsjson.NewObject()
+		data.Set("providerSpecificData", o)
+		return &db.Connection{ID: "k1", Provider: "openai-compatible-chat-x", IsActive: true, Data: data}
+	}
+	plain := `{"apiType":"chat","baseUrl":"https://upstream.test/v1","modelRoutes":{"m":"anthropic"}}`
+	settings := func(kv ...any) Settings {
+		o := jsjson.NewObject()
+		for i := 0; i < len(kv); i += 2 {
+			o.Set(kv[i].(string), kv[i+1])
+		}
+		return objSettings{o}
+	}
+	pools := fakePools{"p": {ID: "p", IsActive: true, Data: func() *jsjson.Object {
+		o, _ := jsjson.ParseObject([]byte(`{"proxyUrl":"http://proxy.test:1"}`))
+		return o
+	}()}}
+	cases := []struct {
+		name, psd, want string
+		s               Settings
+		env             map[string]string
+	}{
+		{name: "plain", psd: plain},
+		{name: "outbound proxy setting", psd: plain, s: settings("outboundProxyEnabled", true), want: "outbound proxy"},
+		{name: "endpoint timeout", psd: `{"apiType":"chat","baseUrl":"https://upstream.test/v1","overrides":{"timeout":"30"}}`, want: "Timeout"},
+		{name: "proxy pool", psd: `{"apiType":"chat","baseUrl":"https://upstream.test/v1","proxyPoolId":"p"}`, want: "proxy pool"},
+		{name: "global pool", psd: plain, s: settings("globalProxyPoolId", "p"), want: "proxy pool"},
+		{name: "extra CA", psd: plain, env: map[string]string{"NODE_EXTRA_CA_CERTS": "/certs/x.pem"}, want: "NODE_EXTRA_CA_CERTS"},
+		{name: "system proxy", psd: plain, env: map[string]string{"HTTPS_PROXY": "http://proxy.test:2"}, want: "system proxy"},
+		{name: "IPv6 host", psd: `{"apiType":"chat","baseUrl":"https://[::1]:8443/v1"}`, want: "WHATWG"},
+	}
+	for _, c := range cases {
+		s := c.s
+		if s == nil {
+			s = settings()
+		}
+		err := Preflight(ctx, conn(c.psd), s, pools, envOf(c.env))
+		switch {
+		case c.want == "" && err != nil:
+			t.Errorf("%s: %v", c.name, err)
+		case c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)):
+			t.Errorf("%s: want a decline naming %q, got %v", c.name, c.want, err)
+		}
 	}
 }
 

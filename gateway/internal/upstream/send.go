@@ -17,13 +17,23 @@ import (
 )
 
 // wireDefaults are the headers Node's fetch (undici) adds when the request
-// has none of that name, in its order.
+// has none of that name, in its order. accept-encoding depends on the scheme
+// (encodingFor); the recorder holds both to Node's fetch.
 var wireDefaults = [][2]string{
 	{"accept", "*/*"},
 	{"accept-language", "*"},
 	{"sec-fetch-mode", "cors"},
 	{"user-agent", "node"},
-	{"accept-encoding", "gzip, deflate"},
+	{"accept-encoding", ""},
+}
+
+// encodingFor is the accept-encoding undici asks for: brotli too over https.
+// The gateway decodes only gzip; a brotli reply goes to Node.
+func encodingFor(target string) string {
+	if strings.HasPrefix(strings.ToLower(target), "https:") {
+		return "br, gzip, deflate"
+	}
+	return "gzip, deflate"
 }
 
 // Sender sends one request the way proxyAwareFetch sends it directly.
@@ -54,9 +64,11 @@ func NewSender() *Sender {
 }
 
 // WireHeaders is the header list fetch puts on the wire for the executor's
-// headers object: names lowercased, repeated names joined with ", " (as the
-// Headers constructor appends them), then fetch's defaults for names absent.
-func WireHeaders(h []claudeprep.HeaderField) [][2]string {
+// headers object sent to target: names lowercased, repeated names joined
+// with ", " (as the Headers constructor appends them), then fetch's defaults
+// for names absent. Go's client writes them in its own order; an upstream
+// reads them by name.
+func WireHeaders(target string, h []claudeprep.HeaderField) [][2]string {
 	var out [][2]string
 	at := map[string]int{}
 	for _, f := range h {
@@ -70,6 +82,9 @@ func WireHeaders(h []claudeprep.HeaderField) [][2]string {
 	}
 	for _, d := range wireDefaults {
 		if _, ok := at[d[0]]; !ok {
+			if d[0] == "accept-encoding" {
+				d[1] = encodingFor(target)
+			}
 			out = append(out, d)
 		}
 	}
@@ -89,7 +104,7 @@ func (s *Sender) Send(ctx context.Context, req *claudeprep.Request) (*http.Respo
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrNetwork, err)
 	}
-	for _, kv := range WireHeaders(req.Header) {
+	for _, kv := range WireHeaders(req.URL, req.Header) {
 		hr.Header[http.CanonicalHeaderKey(kv[0])] = []string{kv[1]}
 	}
 	resp, err := s.Client.Do(hr)
@@ -107,12 +122,9 @@ func (s *Sender) Send(ctx context.Context, req *claudeprep.Request) (*http.Respo
 	switch enc := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding"))); enc {
 	case "", "identity":
 	case "gzip", "x-gzip":
-		zr, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			resp.Body.Close()
-			return nil, fmt.Errorf("%w: gzip: %v", ErrNetwork, err)
-		}
-		resp.Body = &decoded{Reader: zr, closer: resp.Body}
+		// Decoded as it is read, as fetch does: the gzip header is the body's
+		// first bytes, which may come long after the response headers.
+		resp.Body = &gunzip{raw: resp.Body}
 		resp.Header.Del("Content-Length")
 	default:
 		resp.Body.Close()
@@ -121,9 +133,21 @@ func (s *Sender) Send(ctx context.Context, req *claudeprep.Request) (*http.Respo
 	return resp, nil
 }
 
-type decoded struct {
-	io.Reader
-	closer io.Closer
+// gunzip opens the gzip stream on the first Read.
+type gunzip struct {
+	raw io.ReadCloser
+	zr  *gzip.Reader
+	err error
 }
 
-func (d *decoded) Close() error { return d.closer.Close() }
+func (g *gunzip) Read(p []byte) (int, error) {
+	if g.zr == nil && g.err == nil {
+		g.zr, g.err = gzip.NewReader(g.raw)
+	}
+	if g.err != nil {
+		return 0, g.err
+	}
+	return g.zr.Read(p)
+}
+
+func (g *gunzip) Close() error { return g.raw.Close() }

@@ -13,6 +13,7 @@ on:
   pull_request:
     paths:
       - "gateway/internal/upstream/**"
+      - "gateway/internal/jsregex/**"
       - "gateway/internal/claudeprep/**"
       - "gateway/internal/db/**"
       - "gateway/internal/decline/**"
@@ -29,6 +30,9 @@ on:
       - "open-sse/utils/error.js"
       - "src/lib/network/connectionProxy.ts"
       - "src/lib/network/proxyRouting.ts"
+      - "src/lib/network/outboundProxy.js"
+      - "src/lib/network/initOutboundProxy.js"
+      - "open-sse/config/runtimeConfig.js"
       - "src/sse/services/auth.js"
       - "src/sse/handlers/chat.ts"
       # The wire scenarios run the whole request path and its preparation.

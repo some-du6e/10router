@@ -105,7 +105,9 @@
     "open-sse/utils/error.js",
     "src/lib/network/connectionProxy.ts",
     "src/lib/network/proxyRouting.ts",
+    "src/lib/network/outboundProxy.js",
     "src/sse/services/auth.js",
-    "src/sse/handlers/chat.ts"
+    "src/sse/handlers/chat.ts",
+    "open-sse/config/runtimeConfig.js"
   ]
 }

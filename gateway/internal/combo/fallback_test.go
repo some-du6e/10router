@@ -3,6 +3,7 @@ package combo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -16,15 +17,18 @@ import (
 	"github.com/some-du6e/10router/gateway/internal/db/dbtest"
 	"github.com/some-du6e/10router/gateway/internal/db/jsjson"
 	"github.com/some-du6e/10router/gateway/internal/decline"
+	"github.com/some-du6e/10router/gateway/internal/upstream"
 )
 
 // fallbackFile is testdata/fallback.json, recorded from Node's handleChat by
 // tests/unit/gateway-combo-fallback-parity.test.js.
 type fallbackFile []struct {
-	Name     string                      `json:"name"`
-	Settings *string                     `json:"settings"`
-	Initial  map[string][]map[string]any `json:"initial"`
-	Requests []struct {
+	Name string `json:"name"`
+	// GoHandoff: Go hands the last request to Node with a reason naming it.
+	GoHandoff string                      `json:"goHandoff"`
+	Settings  *string                     `json:"settings"`
+	Initial   map[string][]map[string]any `json:"initial"`
+	Requests  []struct {
 		Model     string  `json:"model"`
 		BigSystem int     `json:"bigSystem"`
 		AdvanceMs int64   `json:"advanceMs"`
@@ -190,12 +194,6 @@ func TestFallbackMatchesNode(t *testing.T) {
 								if at.ConnectionID != c.ID || at.Model != model {
 									t.Fatalf("request %d: Go tries %s/%s, Node %s/%s", i, c.ID, model, at.ConnectionID, at.Model)
 								}
-								if at.Success {
-									// chatCore's onRequestSuccess, at stream start.
-									if err := a.ClearError(ctx, c, model); err != nil {
-										t.Fatal(err)
-									}
-								}
 								res := accounts.AttemptResult{Success: at.Success, Status: at.Status, Error: at.Error, ResetsAtMs: at.ResetsAtMs}
 								if at.HeadersTimeout != nil {
 									res.HeadersTimeout, res.TimeoutStream = true, at.HeadersTimeout.Stream
@@ -211,12 +209,25 @@ func TestFallbackMatchesNode(t *testing.T) {
 						RequestID: fmt.Sprintf("%s-%d", sc.Name, i),
 						ByteSent:  func() bool { return false },
 						Sleep:     sleeper("warm"),
-						SharesOneUpstream: func(ctx context.Context) (bool, error) {
-							return a.KeysShareOneUpstream(ctx, provider, func(*db.Connection) (string, error) { return "direct", nil })
+						Transport: func(c *db.Connection) (string, error) {
+							r, err := upstream.ResolveRoute(ctx, c.ProviderSpecificData(), c.Provider, snap.Settings, d)
+							return r.Transport(), err
 						},
 					}, attempt)
 				}
-				res, err := Run(ctx, plan, Env{Leaf: leaf, Sleep: sleeper("combo"), NowMs: nowMs})
+				preflight := func(ctx context.Context, provider string) error {
+					return a.CheckProvider(ctx, provider, func(c *db.Connection) error {
+						return upstream.Preflight(ctx, c, snap.Settings, d, func(string) string { return "" })
+					})
+				}
+				res, err := Run(ctx, plan, Env{Leaf: leaf, Preflight: preflight, Sleep: sleeper("combo"), NowMs: nowMs})
+				if sc.GoHandoff != "" && i == len(sc.Requests)-1 {
+					var h *accounts.Handoff
+					if !errors.As(err, &h) || !strings.Contains(err.Error(), sc.GoHandoff) {
+						t.Fatalf("request %d: want a handoff naming %q, got %v", i, sc.GoHandoff, err)
+					}
+					return
+				}
 				if err != nil {
 					t.Fatalf("request %d: %v", i, err)
 				}
@@ -391,6 +402,33 @@ func TestPlanDeclines(t *testing.T) {
 		if err != nil || p == nil {
 			t.Fatalf("%s: %v", model, err)
 		}
+	}
+}
+
+// A provider the loop would have to decline later is declined before the
+// first member sends anything.
+func TestPreflightDeclinesBeforeAnySend(t *testing.T) {
+	plan := &Target{Combo: "main", Members: []*Target{
+		{Provider: "openai-compatible-chat-a", Model: "m"},
+		{Combo: "inner", Members: []*Target{{Provider: "openai-compatible-chat-b", Model: "m"}, {Provider: "openai-compatible-chat-a", Model: "m2"}}},
+	}}
+	var checked []string
+	_, err := Run(context.Background(), plan, Env{
+		Leaf: func(context.Context, string, string) (accounts.Outcome, error) {
+			t.Fatal("a member ran before the preflight finished")
+			return accounts.Outcome{}, nil
+		},
+		Preflight: func(_ context.Context, provider string) error {
+			checked = append(checked, provider)
+			if provider == "openai-compatible-chat-b" {
+				return decline.New("upstream", "a proxy pool")
+			}
+			return nil
+		},
+		NowMs: func() float64 { return 0 },
+	})
+	if !decline.Is(err) || strings.Join(checked, ",") != "openai-compatible-chat-a,openai-compatible-chat-b" {
+		t.Fatalf("err %v, checked %v", err, checked)
 	}
 }
 

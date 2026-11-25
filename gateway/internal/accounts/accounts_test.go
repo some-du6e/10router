@@ -491,6 +491,25 @@ func pickJSON(p Pick) map[string]any {
 	return map[string]any{"none": true}
 }
 
+func TestJSLengthAndPlainBaseURL(t *testing.T) {
+	// A lone surrogate half (WTF-8 ED A0 BD) is one code unit; an emoji two.
+	if n := utf16Len("a\xed\xa0\xbdb\U0001F600"); n != 5 {
+		t.Fatalf("utf16Len = %d", n)
+	}
+	for s, want := range map[string]bool{
+		"https://upstream.test/v1": true, "https://upstream.test:8443/v1": true, "": true,
+		"https://[::1]:8443/v1": false, "https://bücher.test/v1": false, "https://upstream.test:0443/v1": false,
+		"https://user@upstream.test/v1": false, `https://upstream.test\v1`: false, "https://upstream.test /v1": false,
+	} {
+		if got := plainBaseURL(s); got != want {
+			t.Errorf("plainBaseURL(%q) = %v", s, got)
+		}
+	}
+	if err := Ready(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestUTF16Prefix(t *testing.T) {
 	if got := utf16Prefix("ab\U0001F600c", 3); got != "ab\xed\xa0\xbd" {
 		t.Fatalf("got %q", got)

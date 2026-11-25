@@ -5,6 +5,8 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	"github.com/some-du6e/10router/gateway/internal/db"
 )
 
 // Fallback is checkFallbackError's result. NewBackoffLevel is set (Has) only
@@ -113,9 +115,6 @@ func IsHeadersTimeout(status int, errorText string) bool {
 	return status == 504 && strings.Contains(errorText, tbl.HeadersTimeout.Text)
 }
 
-// HeadersTimeoutText is HEADERS_TIMEOUT.text.
-func HeadersTimeoutText() string { return tbl.HeadersTimeout.Text }
-
 // Lock field names (accountFallback.js, auth.js, accountFailureSummary.js).
 const (
 	ModelLockPrefix     = "modelLock_"
@@ -182,5 +181,5 @@ func FormatRetryAfter(untilMs, nowMs float64) string {
 
 // isoMs is `new Date(ms).toISOString()`.
 func isoMs(ms float64) string {
-	return time.UnixMilli(int64(ms)).UTC().Format("2006-01-02T15:04:05.000Z")
+	return db.ISOTime(time.UnixMilli(int64(ms)))
 }

@@ -21,9 +21,12 @@ package upstream
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"regexp"
 
 	"github.com/some-du6e/10router/gateway/internal/decline"
+	"github.com/some-du6e/10router/gateway/internal/jsregex"
 )
 
 //go:embed tables.json
@@ -59,12 +62,35 @@ var tbl struct {
 
 var relayType = map[string]bool{}
 
+// loadErr is why the embedded tables can't be used (nil when they can).
+var loadErr error
+
+// Ready reports whether the embedded tables loaded. The native route stays
+// off when they didn't: a bad embed must not crash a gateway that only
+// relays.
+func Ready() error { return loadErr }
+
+// never matches nothing: a pattern that failed to compile stands in as it.
+var never = regexp.MustCompile(`[^\x00-\x{10FFFF}]`)
+
+// compile is jsregex.Compile, with a failure kept in loadErr.
+func compile(r jsregex.Regex) *regexp.Regexp {
+	re, err := jsregex.Compile(r)
+	if err != nil {
+		loadErr = errors.Join(loadErr, fmt.Errorf("upstream: %w", err))
+		return never
+	}
+	return re
+}
+
 func init() {
 	if err := json.Unmarshal(tablesJSON, &tbl); err != nil {
-		panic(fmt.Sprintf("upstream: tables.json: %v", err))
+		loadErr = errors.Join(loadErr, fmt.Errorf("upstream: tables.json: %w", err))
+		return
 	}
 	if len(tbl.RetryConfig) == 0 || tbl.HeadersTimeoutText == "" || tbl.ProxyDirect == "" || tbl.Executor.FallbackCount == 0 {
-		panic("upstream: tables.json is incomplete")
+		loadErr = errors.Join(loadErr, errors.New("upstream: tables.json is incomplete"))
+		return
 	}
 	for _, t := range tbl.RelayTypes {
 		relayType[t] = true

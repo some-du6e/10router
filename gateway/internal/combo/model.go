@@ -58,18 +58,33 @@ type prefixProvider struct {
 	provider string
 }
 
+// loadErr is why the embedded tables can't be used (nil when they can).
+var loadErr error
+
+// Ready reports whether the embedded tables loaded. The native route stays
+// off when they didn't: a bad embed must not crash a gateway that only
+// relays.
+func Ready() error { return loadErr }
+
 func init() {
 	if err := json.Unmarshal(tablesJSON, &tbl); err != nil {
-		panic(fmt.Sprintf("combo: tables.json: %v", err))
+		loadErr = fmt.Errorf("combo: tables.json: %w", err)
+		return
+	}
+	if tbl.MaxComboDepth <= 0 || len(tbl.SearchToolTypes) == 0 || tbl.WebSearchToolType == "" {
+		loadErr = fmt.Errorf("combo: tables.json is incomplete")
+		return
 	}
 	for _, p := range tbl.ReservedProviderPrefixes {
 		reserved[p] = true
 	}
 	for _, pp := range tbl.ModelPrefixProviders {
-		prefixProviders = append(prefixProviders, prefixProvider{regexp.MustCompile(pp[0]), pp[1]})
-	}
-	if tbl.MaxComboDepth <= 0 || len(tbl.SearchToolTypes) == 0 || tbl.WebSearchToolType == "" {
-		panic("combo: tables.json is incomplete")
+		re, err := regexp.Compile(pp[0])
+		if err != nil {
+			loadErr = fmt.Errorf("combo: tables.json: %w", err)
+			return
+		}
+		prefixProviders = append(prefixProviders, prefixProvider{re, pp[1]})
 	}
 	for _, t := range tbl.SearchToolTypes {
 		searchToolType[t] = true

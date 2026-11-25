@@ -2291,6 +2291,530 @@
   ]
  },
  {
+  "name": "a better key ahead of the warm one",
+  "goDeclines": "",
+  "startMs": 1772366400000,
+  "settings": null,
+  "initial": [
+   {
+    "id": "k2",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k2",
+    "email": null,
+    "priority": 1,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   },
+   {
+    "id": "k1",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k1",
+    "email": null,
+    "priority": 2,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   },
+   {
+    "id": "k3",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k3",
+    "email": null,
+    "priority": 3,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   }
+  ],
+  "steps": [
+   {
+    "op": "fail",
+    "id": "k2",
+    "status": 429,
+    "error": "[429]: Rate limit exceeded",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 2000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k1",
+    "status": 429,
+    "error": "[429]: Rate limit exceeded",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 2000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "warm": [
+     "k1"
+    ],
+    "maxWarmWaitMs": 10000,
+    "nowMs": 1772366400000,
+    "out": {
+     "connectionId": "k3",
+     "connectionName": "k3"
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k2",
+    "status": 429,
+    "error": "[429]: Rate limit exceeded",
+    "model": "n",
+    "resetsAtMs": 1772366405000,
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 5000,
+     "providerResetAtMs": 1772366405000
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0,\"modelLock_n\":\"2026-03-01T12:00:05.000Z\",\"modelLimit_n\":true,\"providerReset_n\":\"2026-03-01T12:00:05.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k1",
+    "status": 429,
+    "error": "[429]: Rate limit exceeded",
+    "model": "n",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 4000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0,\"modelLock_n\":\"2026-03-01T12:00:05.000Z\",\"modelLimit_n\":true,\"providerReset_n\":\"2026-03-01T12:00:05.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":2,\"modelLock_n\":\"2026-03-01T12:00:04.000Z\",\"modelLimit_n\":true,\"providerReset_n\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "n",
+    "warm": [
+     "k1"
+    ],
+    "maxWarmWaitMs": 10000,
+    "nowMs": 1772366400000,
+    "out": {
+     "warmRetryAtMs": 1772366404150
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0,\"modelLock_n\":\"2026-03-01T12:00:05.000Z\",\"modelLimit_n\":true,\"providerReset_n\":\"2026-03-01T12:00:05.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":2,\"modelLock_n\":\"2026-03-01T12:00:04.000Z\",\"modelLimit_n\":true,\"providerReset_n\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k2",
+    "status": 429,
+    "error": "[429]: Rate limit exceeded",
+    "model": "o",
+    "resetsAtMs": 1772366408060,
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 8060,
+     "providerResetAtMs": 1772366408060
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0,\"modelLock_n\":\"2026-03-01T12:00:05.000Z\",\"modelLimit_n\":true,\"providerReset_n\":\"2026-03-01T12:00:05.000Z\",\"modelLock_o\":\"2026-03-01T12:00:08.060Z\",\"modelLimit_o\":true,\"providerReset_o\":\"2026-03-01T12:00:08.060Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":2,\"modelLock_n\":\"2026-03-01T12:00:04.000Z\",\"modelLimit_n\":true,\"providerReset_n\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k1",
+    "status": 429,
+    "error": "[429]: Rate limit exceeded",
+    "model": "o",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 8000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0,\"modelLock_n\":\"2026-03-01T12:00:05.000Z\",\"modelLimit_n\":true,\"providerReset_n\":\"2026-03-01T12:00:05.000Z\",\"modelLock_o\":\"2026-03-01T12:00:08.060Z\",\"modelLimit_o\":true,\"providerReset_o\":\"2026-03-01T12:00:08.060Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":3,\"modelLock_n\":\"2026-03-01T12:00:04.000Z\",\"modelLimit_n\":true,\"providerReset_n\":null,\"modelLock_o\":\"2026-03-01T12:00:08.000Z\",\"modelLimit_o\":true,\"providerReset_o\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "o",
+    "warm": [
+     "k1"
+    ],
+    "maxWarmWaitMs": 10000,
+    "nowMs": 1772366400000,
+    "out": {
+     "warmRetryAtMs": 1772366408035
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0,\"modelLock_n\":\"2026-03-01T12:00:05.000Z\",\"modelLimit_n\":true,\"providerReset_n\":\"2026-03-01T12:00:05.000Z\",\"modelLock_o\":\"2026-03-01T12:00:08.060Z\",\"modelLimit_o\":true,\"providerReset_o\":\"2026-03-01T12:00:08.060Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":3,\"modelLock_n\":\"2026-03-01T12:00:04.000Z\",\"modelLimit_n\":true,\"providerReset_n\":null,\"modelLock_o\":\"2026-03-01T12:00:08.000Z\",\"modelLimit_o\":true,\"providerReset_o\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "every key has a provider reset",
+  "goDeclines": "",
+  "startMs": 1772366400000,
+  "settings": null,
+  "initial": [
+   {
+    "id": "k1",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k1",
+    "email": null,
+    "priority": 1,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   },
+   {
+    "id": "k2",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k2",
+    "email": null,
+    "priority": 2,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   }
+  ],
+  "steps": [
+   {
+    "op": "fail",
+    "id": "k1",
+    "status": 429,
+    "error": "[429]: Rate limit exceeded",
+    "model": "m",
+    "resetsAtMs": 1772366490000,
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 90000,
+     "providerResetAtMs": 1772366490000
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:01:30.000Z\",\"modelLimit_m\":true,\"providerReset_m\":\"2026-03-01T12:01:30.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k2",
+    "status": 429,
+    "error": "[429]: Rate limit exceeded",
+    "model": "m",
+    "resetsAtMs": 1772366460000,
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 60000,
+     "providerResetAtMs": 1772366460000
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:01:30.000Z\",\"modelLimit_m\":true,\"providerReset_m\":\"2026-03-01T12:01:30.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:01:00.000Z\",\"modelLimit_m\":true,\"providerReset_m\":\"2026-03-01T12:01:00.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "allRateLimited": true,
+     "allLimitsExhausted": true,
+     "retryAfter": "2026-03-01T12:01:00.000Z",
+     "retryAfterHuman": "reset after 1m",
+     "providerResetAtMs": 1772366460000,
+     "lastError": "[429]: Rate limit exceeded",
+     "lastErrorCode": 429,
+     "lastErrorOwn": true
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:01:30.000Z\",\"modelLimit_m\":true,\"providerReset_m\":\"2026-03-01T12:01:30.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:01:00.000Z\",\"modelLimit_m\":true,\"providerReset_m\":\"2026-03-01T12:01:00.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k2",
+    "status": 429,
+    "error": "[429]: Rate limit exceeded",
+    "model": "",
+    "resetsAtMs": 1772366520000,
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 120000,
+     "providerResetAtMs": 1772366520000
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:01:30.000Z\",\"modelLimit_m\":true,\"providerReset_m\":\"2026-03-01T12:01:30.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:01:00.000Z\",\"modelLimit_m\":true,\"providerReset_m\":\"2026-03-01T12:01:00.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0,\"modelLock___all\":\"2026-03-01T12:02:00.000Z\",\"modelLimit___all\":true,\"providerReset___all\":\"2026-03-01T12:02:00.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "allRateLimited": true,
+     "allLimitsExhausted": true,
+     "retryAfter": "2026-03-01T12:01:30.000Z",
+     "retryAfterHuman": "reset after 1m 30s",
+     "providerResetAtMs": 1772366490000,
+     "lastError": "[429]: Rate limit exceeded",
+     "lastErrorCode": 429,
+     "lastErrorOwn": true
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:01:30.000Z\",\"modelLimit_m\":true,\"providerReset_m\":\"2026-03-01T12:01:30.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:01:00.000Z\",\"modelLimit_m\":true,\"providerReset_m\":\"2026-03-01T12:01:00.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0,\"modelLock___all\":\"2026-03-01T12:02:00.000Z\",\"modelLimit___all\":true,\"providerReset___all\":\"2026-03-01T12:02:00.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   }
+  ]
+ },
+ {
   "name": "clearing an auth streak and stale flags",
   "goDeclines": "",
   "startMs": 1772366400000,

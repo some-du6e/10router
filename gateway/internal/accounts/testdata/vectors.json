@@ -19924,6 +19924,26 @@
     }
    ],
    "out": "All 2 accounts unavailable for [openai-compatible-chat-hot/m]. k1 (HTTP 404): [404]: no model | k2 (HTTP 422): [422]: bad body"
+  },
+  {
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": "All 3 accounts unavailable for [openai-compatible-chat-hot/m]. k1 (HTTP 400): model must be a string,,x,1 | k2 (HTTP 400): [object Object] | k3 (HTTP 400): true"
   }
  ],
  "lockedCases": [
@@ -20024,6 +20044,33 @@
   {
    "lastStatus": null,
    "lastError": null,
+   "creds": null,
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 503,
+    "error": null,
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": null,
+   "lastError": null,
    "creds": {
     "lastErrorCode": 429,
     "lastError": "[429]: limited",
@@ -20127,6 +20174,37 @@
      "account": "k2",
      "status": 422,
      "error": "[422]: bad body"
+    }
+   ],
+   "out": {
+    "status": 429,
+    "error": "[429]: limited",
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": null,
+   "lastError": null,
+   "creds": {
+    "lastErrorCode": 429,
+    "lastError": "[429]: limited",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
     }
    ],
    "out": {
@@ -20253,6 +20331,37 @@
    "lastStatus": null,
    "lastError": null,
    "creds": {
+    "lastErrorCode": 503,
+    "lastError": null,
+    "lastErrorOwn": false
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 503,
+    "error": null,
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": null,
+   "lastError": null,
+   "creds": {
     "lastErrorCode": null,
     "lastError": "[401]: x",
     "lastErrorOwn": true
@@ -20365,6 +20474,37 @@
   },
   {
    "lastStatus": null,
+   "lastError": null,
+   "creds": {
+    "lastErrorCode": null,
+    "lastError": "[401]: x",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 503,
+    "error": "[401]: x",
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": null,
    "lastError": "[x]: last",
    "creds": null,
    "failures": [],
@@ -20460,6 +20600,33 @@
   {
    "lastStatus": null,
    "lastError": "[x]: last",
+   "creds": null,
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 503,
+    "error": "[x]: last",
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": null,
+   "lastError": "[x]: last",
    "creds": {
     "lastErrorCode": 429,
     "lastError": "[429]: limited",
@@ -20575,6 +20742,37 @@
    "lastStatus": null,
    "lastError": "[x]: last",
    "creds": {
+    "lastErrorCode": 429,
+    "lastError": "[429]: limited",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 429,
+    "error": "[x]: last",
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": null,
+   "lastError": "[x]: last",
+   "creds": {
     "lastErrorCode": 503,
     "lastError": null,
     "lastErrorOwn": false
@@ -20689,6 +20887,37 @@
    "lastStatus": null,
    "lastError": "[x]: last",
    "creds": {
+    "lastErrorCode": 503,
+    "lastError": null,
+    "lastErrorOwn": false
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 503,
+    "error": "[x]: last",
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": null,
+   "lastError": "[x]: last",
+   "creds": {
     "lastErrorCode": null,
     "lastError": "[401]: x",
     "lastErrorOwn": true
@@ -20791,6 +21020,37 @@
      "account": "k2",
      "status": 422,
      "error": "[422]: bad body"
+    }
+   ],
+   "out": {
+    "status": 503,
+    "error": "[x]: last",
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": null,
+   "lastError": "[x]: last",
+   "creds": {
+    "lastErrorCode": null,
+    "lastError": "[401]: x",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
     }
    ],
    "out": {
@@ -20896,6 +21156,33 @@
   {
    "lastStatus": 401,
    "lastError": null,
+   "creds": null,
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 401,
+   "lastError": null,
    "creds": {
     "lastErrorCode": 429,
     "lastError": "[429]: limited",
@@ -20999,6 +21286,37 @@
      "account": "k2",
      "status": 422,
      "error": "[422]: bad body"
+    }
+   ],
+   "out": {
+    "status": 429,
+    "error": "[429]: limited",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 401,
+   "lastError": null,
+   "creds": {
+    "lastErrorCode": 429,
+    "lastError": "[429]: limited",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
     }
    ],
    "out": {
@@ -21125,6 +21443,37 @@
    "lastStatus": 401,
    "lastError": null,
    "creds": {
+    "lastErrorCode": 503,
+    "lastError": null,
+    "lastErrorOwn": false
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 401,
+   "lastError": null,
+   "creds": {
     "lastErrorCode": null,
     "lastError": "[401]: x",
     "lastErrorOwn": true
@@ -21237,6 +21586,37 @@
   },
   {
    "lastStatus": 401,
+   "lastError": null,
+   "creds": {
+    "lastErrorCode": null,
+    "lastError": "[401]: x",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 401,
    "lastError": "[x]: last",
    "creds": null,
    "failures": [],
@@ -21332,6 +21712,33 @@
   {
    "lastStatus": 401,
    "lastError": "[x]: last",
+   "creds": null,
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 401,
+   "lastError": "[x]: last",
    "creds": {
     "lastErrorCode": 429,
     "lastError": "[429]: limited",
@@ -21435,6 +21842,37 @@
      "account": "k2",
      "status": 422,
      "error": "[422]: bad body"
+    }
+   ],
+   "out": {
+    "status": 429,
+    "error": "[429]: limited",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 401,
+   "lastError": "[x]: last",
+   "creds": {
+    "lastErrorCode": 429,
+    "lastError": "[429]: limited",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
     }
    ],
    "out": {
@@ -21561,6 +21999,37 @@
    "lastStatus": 401,
    "lastError": "[x]: last",
    "creds": {
+    "lastErrorCode": 503,
+    "lastError": null,
+    "lastErrorOwn": false
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 401,
+   "lastError": "[x]: last",
+   "creds": {
     "lastErrorCode": null,
     "lastError": "[401]: x",
     "lastErrorOwn": true
@@ -21672,6 +22141,37 @@
    }
   },
   {
+   "lastStatus": 401,
+   "lastError": "[x]: last",
+   "creds": {
+    "lastErrorCode": null,
+    "lastError": "[401]: x",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
    "lastStatus": 403,
    "lastError": null,
    "creds": null,
@@ -21768,6 +22268,33 @@
   {
    "lastStatus": 403,
    "lastError": null,
+   "creds": null,
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 403,
+   "lastError": null,
    "creds": {
     "lastErrorCode": 429,
     "lastError": "[429]: limited",
@@ -21871,6 +22398,37 @@
      "account": "k2",
      "status": 422,
      "error": "[422]: bad body"
+    }
+   ],
+   "out": {
+    "status": 429,
+    "error": "[429]: limited",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 403,
+   "lastError": null,
+   "creds": {
+    "lastErrorCode": 429,
+    "lastError": "[429]: limited",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
     }
    ],
    "out": {
@@ -21997,6 +22555,37 @@
    "lastStatus": 403,
    "lastError": null,
    "creds": {
+    "lastErrorCode": 503,
+    "lastError": null,
+    "lastErrorOwn": false
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 403,
+   "lastError": null,
+   "creds": {
     "lastErrorCode": null,
     "lastError": "[401]: x",
     "lastErrorOwn": true
@@ -22109,6 +22698,37 @@
   },
   {
    "lastStatus": 403,
+   "lastError": null,
+   "creds": {
+    "lastErrorCode": null,
+    "lastError": "[401]: x",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 403,
    "lastError": "[x]: last",
    "creds": null,
    "failures": [],
@@ -22204,6 +22824,33 @@
   {
    "lastStatus": 403,
    "lastError": "[x]: last",
+   "creds": null,
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 403,
+   "lastError": "[x]: last",
    "creds": {
     "lastErrorCode": 429,
     "lastError": "[429]: limited",
@@ -22307,6 +22954,37 @@
      "account": "k2",
      "status": 422,
      "error": "[422]: bad body"
+    }
+   ],
+   "out": {
+    "status": 429,
+    "error": "[429]: limited",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 403,
+   "lastError": "[x]: last",
+   "creds": {
+    "lastErrorCode": 429,
+    "lastError": "[429]: limited",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
     }
    ],
    "out": {
@@ -22433,6 +23111,37 @@
    "lastStatus": 403,
    "lastError": "[x]: last",
    "creds": {
+    "lastErrorCode": 503,
+    "lastError": null,
+    "lastErrorOwn": false
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 403,
+   "lastError": "[x]: last",
+   "creds": {
     "lastErrorCode": null,
     "lastError": "[401]: x",
     "lastErrorOwn": true
@@ -22544,6 +23253,37 @@
    }
   },
   {
+   "lastStatus": 403,
+   "lastError": "[x]: last",
+   "creds": {
+    "lastErrorCode": null,
+    "lastError": "[401]: x",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
    "lastStatus": 404,
    "lastError": null,
    "creds": null,
@@ -22640,6 +23380,33 @@
   {
    "lastStatus": 404,
    "lastError": null,
+   "creds": null,
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 404,
+   "lastError": null,
    "creds": {
     "lastErrorCode": 429,
     "lastError": "[429]: limited",
@@ -22755,6 +23522,37 @@
    "lastStatus": 404,
    "lastError": null,
    "creds": {
+    "lastErrorCode": 429,
+    "lastError": "[429]: limited",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 404,
+   "lastError": null,
+   "creds": {
     "lastErrorCode": 503,
     "lastError": null,
     "lastErrorOwn": false
@@ -22869,6 +23667,37 @@
    "lastStatus": 404,
    "lastError": null,
    "creds": {
+    "lastErrorCode": 503,
+    "lastError": null,
+    "lastErrorOwn": false
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 404,
+   "lastError": null,
+   "creds": {
     "lastErrorCode": null,
     "lastError": "[401]: x",
     "lastErrorOwn": true
@@ -22981,6 +23810,37 @@
   },
   {
    "lastStatus": 404,
+   "lastError": null,
+   "creds": {
+    "lastErrorCode": null,
+    "lastError": "[401]: x",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 404,
    "lastError": "[x]: last",
    "creds": null,
    "failures": [],
@@ -23076,6 +23936,33 @@
   {
    "lastStatus": 404,
    "lastError": "[x]: last",
+   "creds": null,
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 404,
+   "lastError": "[x]: last",
    "creds": {
     "lastErrorCode": 429,
     "lastError": "[429]: limited",
@@ -23191,6 +24078,37 @@
    "lastStatus": 404,
    "lastError": "[x]: last",
    "creds": {
+    "lastErrorCode": 429,
+    "lastError": "[429]: limited",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 404,
+   "lastError": "[x]: last",
+   "creds": {
     "lastErrorCode": 503,
     "lastError": null,
     "lastErrorOwn": false
@@ -23305,6 +24223,37 @@
    "lastStatus": 404,
    "lastError": "[x]: last",
    "creds": {
+    "lastErrorCode": 503,
+    "lastError": null,
+    "lastErrorOwn": false
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
+   "lastStatus": 404,
+   "lastError": "[x]: last",
+   "creds": {
     "lastErrorCode": null,
     "lastError": "[401]: x",
     "lastErrorOwn": true
@@ -23416,6 +24365,37 @@
    }
   },
   {
+   "lastStatus": 404,
+   "lastError": "[x]: last",
+   "creds": {
+    "lastErrorCode": null,
+    "lastError": "[401]: x",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 400,
+    "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}",
+    "swapped": true
+   }
+  },
+  {
    "lastStatus": 429,
    "lastError": null,
    "creds": null,
@@ -23501,6 +24481,33 @@
      "account": "k2",
      "status": 422,
      "error": "[422]: bad body"
+    }
+   ],
+   "out": {
+    "status": 429,
+    "error": null,
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": 429,
+   "lastError": null,
+   "creds": null,
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
     }
    ],
    "out": {
@@ -23627,6 +24634,37 @@
    "lastStatus": 429,
    "lastError": null,
    "creds": {
+    "lastErrorCode": 429,
+    "lastError": "[429]: limited",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 429,
+    "error": "[429]: limited",
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": 429,
+   "lastError": null,
+   "creds": {
     "lastErrorCode": 503,
     "lastError": null,
     "lastErrorOwn": false
@@ -23741,6 +24779,37 @@
    "lastStatus": 429,
    "lastError": null,
    "creds": {
+    "lastErrorCode": 503,
+    "lastError": null,
+    "lastErrorOwn": false
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 429,
+    "error": null,
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": 429,
+   "lastError": null,
+   "creds": {
     "lastErrorCode": null,
     "lastError": "[401]: x",
     "lastErrorOwn": true
@@ -23853,6 +24922,37 @@
   },
   {
    "lastStatus": 429,
+   "lastError": null,
+   "creds": {
+    "lastErrorCode": null,
+    "lastError": "[401]: x",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 429,
+    "error": "[401]: x",
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": 429,
    "lastError": "[x]: last",
    "creds": null,
    "failures": [],
@@ -23937,6 +25037,33 @@
      "account": "k2",
      "status": 422,
      "error": "[422]: bad body"
+    }
+   ],
+   "out": {
+    "status": 429,
+    "error": "[x]: last",
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": 429,
+   "lastError": "[x]: last",
+   "creds": null,
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
     }
    ],
    "out": {
@@ -24063,6 +25190,37 @@
    "lastStatus": 429,
    "lastError": "[x]: last",
    "creds": {
+    "lastErrorCode": 429,
+    "lastError": "[429]: limited",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 429,
+    "error": "[x]: last",
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": 429,
+   "lastError": "[x]: last",
+   "creds": {
     "lastErrorCode": 503,
     "lastError": null,
     "lastErrorOwn": false
@@ -24177,6 +25335,37 @@
    "lastStatus": 429,
    "lastError": "[x]: last",
    "creds": {
+    "lastErrorCode": 503,
+    "lastError": null,
+    "lastErrorOwn": false
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 429,
+    "error": "[x]: last",
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": 429,
+   "lastError": "[x]: last",
+   "creds": {
     "lastErrorCode": null,
     "lastError": "[401]: x",
     "lastErrorOwn": true
@@ -24279,6 +25468,37 @@
      "account": "k2",
      "status": 422,
      "error": "[422]: bad body"
+    }
+   ],
+   "out": {
+    "status": 429,
+    "error": "[x]: last",
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": 429,
+   "lastError": "[x]: last",
+   "creds": {
+    "lastErrorCode": null,
+    "lastError": "[401]: x",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
     }
    ],
    "out": {
@@ -24373,6 +25593,33 @@
      "account": "k2",
      "status": 422,
      "error": "[422]: bad body"
+    }
+   ],
+   "out": {
+    "status": 500,
+    "error": null,
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": 500,
+   "lastError": null,
+   "creds": null,
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
     }
    ],
    "out": {
@@ -24499,6 +25746,37 @@
    "lastStatus": 500,
    "lastError": null,
    "creds": {
+    "lastErrorCode": 429,
+    "lastError": "[429]: limited",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 500,
+    "error": "[429]: limited",
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": 500,
+   "lastError": null,
+   "creds": {
     "lastErrorCode": 503,
     "lastError": null,
     "lastErrorOwn": false
@@ -24613,6 +25891,37 @@
    "lastStatus": 500,
    "lastError": null,
    "creds": {
+    "lastErrorCode": 503,
+    "lastError": null,
+    "lastErrorOwn": false
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 500,
+    "error": null,
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": 500,
+   "lastError": null,
+   "creds": {
     "lastErrorCode": null,
     "lastError": "[401]: x",
     "lastErrorOwn": true
@@ -24725,6 +26034,37 @@
   },
   {
    "lastStatus": 500,
+   "lastError": null,
+   "creds": {
+    "lastErrorCode": null,
+    "lastError": "[401]: x",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 500,
+    "error": "[401]: x",
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": 500,
    "lastError": "[x]: last",
    "creds": null,
    "failures": [],
@@ -24809,6 +26149,33 @@
      "account": "k2",
      "status": 422,
      "error": "[422]: bad body"
+    }
+   ],
+   "out": {
+    "status": 500,
+    "error": "[x]: last",
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": 500,
+   "lastError": "[x]: last",
+   "creds": null,
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
     }
    ],
    "out": {
@@ -24935,6 +26302,37 @@
    "lastStatus": 500,
    "lastError": "[x]: last",
    "creds": {
+    "lastErrorCode": 429,
+    "lastError": "[429]: limited",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 500,
+    "error": "[x]: last",
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": 500,
+   "lastError": "[x]: last",
+   "creds": {
     "lastErrorCode": 503,
     "lastError": null,
     "lastErrorOwn": false
@@ -25049,6 +26447,37 @@
    "lastStatus": 500,
    "lastError": "[x]: last",
    "creds": {
+    "lastErrorCode": 503,
+    "lastError": null,
+    "lastErrorOwn": false
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
+    }
+   ],
+   "out": {
+    "status": 500,
+    "error": "[x]: last",
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": 500,
+   "lastError": "[x]: last",
+   "creds": {
     "lastErrorCode": null,
     "lastError": "[401]: x",
     "lastErrorOwn": true
@@ -25151,6 +26580,37 @@
      "account": "k2",
      "status": 422,
      "error": "[422]: bad body"
+    }
+   ],
+   "out": {
+    "status": 500,
+    "error": "[x]: last",
+    "swapped": false
+   }
+  },
+  {
+   "lastStatus": 500,
+   "lastError": "[x]: last",
+   "creds": {
+    "lastErrorCode": null,
+    "lastError": "[401]: x",
+    "lastErrorOwn": true
+   },
+   "failures": [
+    {
+     "account": "k1",
+     "status": 400,
+     "error": "[400]: {\"message\":[\"model must be a string\",null,[\"x\",1]],\"statusCode\":400}"
+    },
+    {
+     "account": "k2",
+     "status": 400,
+     "error": "[400]: {\"error\":{\"message\":{\"a\":1}}}"
+    },
+    {
+     "account": "k3",
+     "status": 400,
+     "error": "[400]: {\"message\":true}"
     }
    ],
    "out": {
