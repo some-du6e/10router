@@ -22,7 +22,7 @@ export default {
     method: "POST",
     authType: "apikey",
     authHeader: "x-api-key",
-    costPerQuery: 0.007,
+    costPerQuery: 0.004,
     freeMonthlyQuota: 1000,
     searchTypes: [
       "web",

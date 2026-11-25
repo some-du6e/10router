@@ -150,14 +150,23 @@ function buildPerplexityRequest(config, params) {
   };
 }
 
+// Exa's low-latency type. It answers 400 to any field outside its allowlist,
+// so a new body field must be one `lite` takes. Exa reads contents only under
+// `contents`, and the highlight cap is per result.
+const EXA_SEARCH_TYPE = "lite";
+const EXA_HIGHLIGHT_CHARS = 700;
+// With highlights, `lite` leaves out results it has no cached copy of. The
+// base price covers 10 results, so ask for at least that many; the search
+// core keeps the first maxResults.
+const EXA_INCLUDED_RESULTS = 10;
+
 function buildExaRequest(config, params) {
   const { includes, excludes } = parseDomainFilter(params.domainFilter);
   const body = {
     query: params.query,
-    numResults: params.maxResults,
-    type: "auto",
-    text: true,
-    highlights: true,
+    numResults: Math.max(params.maxResults || 0, EXA_INCLUDED_RESULTS),
+    type: EXA_SEARCH_TYPE,
+    contents: { highlights: { maxCharacters: EXA_HIGHLIGHT_CHARS } },
   };
   if (includes.length) body.includeDomains = includes;
   if (excludes.length) body.excludeDomains = excludes;
