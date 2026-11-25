@@ -386,6 +386,10 @@ func parseText(text string) (*Value, error) {
 	return v, nil
 }
 
+// DecodeText is Body#text()'s decode (a response body's bytes as a string):
+// decodeUTF8.
+func DecodeText(data []byte) string { return decodeUTF8(data) }
+
 // decodeUTF8 is TextDecoder("utf-8").decode: a BOM dropped, each maximal
 // ill-formed subsequence replaced by U+FFFD (the WHATWG rule, which differs
 // from Go's one-byte-at-a-time replacement for truncated sequences).

@@ -15,10 +15,12 @@ package combo
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 
+	"github.com/some-du6e/10router/gateway/internal/accounts"
 	"github.com/some-du6e/10router/gateway/internal/db/jsjson"
 	"github.com/some-du6e/10router/gateway/internal/decline"
 )
@@ -40,6 +42,11 @@ type tables struct {
 	ModelPrefixProviders [][2]string `json:"modelPrefixProviders"`
 	// MaxComboDepth is runtimeConfig.js's MAX_COMBO_DEPTH.
 	MaxComboDepth int `json:"maxComboDepth"`
+	// SearchToolTypes is appConstants.js's SEARCH_TOOL_TYPES.
+	SearchToolTypes []string `json:"searchToolTypes"`
+	// WebSearchToolType is CLAUDE_BLOCK.WEB_SEARCH_TOOL, which the Claude
+	// search hooks answer or enrich.
+	WebSearchToolType string `json:"webSearchToolType"`
 }
 
 var (
@@ -53,18 +60,36 @@ type prefixProvider struct {
 	provider string
 }
 
+// loadErr is why the embedded tables can't be used (nil when they can).
+var loadErr error
+
+// Ready reports whether the embedded tables loaded, this package's and the
+// accounts' it runs. The native route stays off when they didn't: a bad
+// embed must not crash a gateway that only relays.
+func Ready() error { return errors.Join(loadErr, accounts.Ready()) }
+
 func init() {
 	if err := json.Unmarshal(tablesJSON, &tbl); err != nil {
-		panic(fmt.Sprintf("combo: tables.json: %v", err))
+		loadErr = fmt.Errorf("combo: tables.json: %w", err)
+		return
+	}
+	if tbl.MaxComboDepth <= 0 || len(tbl.SearchToolTypes) == 0 || tbl.WebSearchToolType == "" {
+		loadErr = fmt.Errorf("combo: tables.json is incomplete")
+		return
 	}
 	for _, p := range tbl.ReservedProviderPrefixes {
 		reserved[p] = true
 	}
 	for _, pp := range tbl.ModelPrefixProviders {
-		prefixProviders = append(prefixProviders, prefixProvider{regexp.MustCompile(pp[0]), pp[1]})
+		re, err := regexp.Compile(pp[0])
+		if err != nil {
+			loadErr = fmt.Errorf("combo: tables.json: %w", err)
+			return
+		}
+		prefixProviders = append(prefixProviders, prefixProvider{re, pp[1]})
 	}
-	if tbl.MaxComboDepth <= 0 {
-		panic("combo: tables.json has no maxComboDepth")
+	for _, t := range tbl.SearchToolTypes {
+		searchToolType[t] = true
 	}
 }
 

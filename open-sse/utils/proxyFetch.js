@@ -118,9 +118,10 @@ function shouldBypassByNoProxy(targetUrl, noProxyValue) {
 }
 
 /**
- * Get proxy URL from environment
+ * Get proxy URL from environment (exported for the Go gateway's parity
+ * fixtures, tests/unit/gateway-upstream-parity.test.js)
  */
-function getEnvProxyUrl(targetUrl) {
+export function getEnvProxyUrl(targetUrl) {
   const noProxy = process.env.NO_PROXY || process.env.no_proxy;
   if (shouldBypassByNoProxy(targetUrl, noProxy)) return null;
 

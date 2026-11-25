@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	gatewayfiles "github.com/some-du6e/10router/gateway"
 	"github.com/some-du6e/10router/gateway/internal/config"
 	"github.com/some-du6e/10router/gateway/internal/db/dbtest"
 )
@@ -590,6 +591,52 @@ func TestNativeHealthReportsTheSchemaGuard(t *testing.T) {
 	// Proxy mode reports nothing about it.
 	if body := health(New(baseConfig(portOf(t, app.URL)), log.New(io.Discard, "", 0), "test")); body["native"] != nil {
 		t.Fatalf("proxy health %v", body)
+	}
+}
+
+// A node-map.json the gateway can't read turns native off with a reason and
+// leaves every request relayed, in proxy and native mode alike.
+func TestCorruptNodeMapLeavesTheRelayServing(t *testing.T) {
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "from the app")
+	}))
+	defer app.Close()
+	corrupt := func() string { return gatewayfiles.NativeOffFor("", []byte(`{"route": [`)) }
+	for _, mode := range []config.Mode{config.ModeProxy, config.ModeNative} {
+		t.Run(string(mode), func(t *testing.T) {
+			cfg := baseConfig(portOf(t, app.URL))
+			cfg.Mode = mode
+			g := New(cfg, log.New(io.Discard, "", 0), "test")
+			g.nativeOff = corrupt
+			if mode == config.ModeNative {
+				dataDir := t.TempDir()
+				dbtest.New(t, dbtest.Options{Path: dataDir + "/db/data.sqlite"})
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				g.openNative(ctx, []string{"DATA_DIR=" + dataDir})
+				defer g.closeNative()
+			}
+			r := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{}`))
+			r.RemoteAddr = "203.0.113.7:5000"
+			w := httptest.NewRecorder()
+			g.ServeHTTP(w, r)
+			if w.Code != 200 || w.Body.String() != "from the app" {
+				t.Fatalf("relay: %d %q", w.Code, w.Body.String())
+			}
+			h := httptest.NewRequest("GET", HealthPath, nil)
+			h.RemoteAddr = "127.0.0.1:5000"
+			h.Host = "localhost:20128"
+			hw := httptest.NewRecorder()
+			g.ServeHTTP(hw, h)
+			var body map[string]any
+			_ = json.Unmarshal(hw.Body.Bytes(), &body)
+			if hw.Code != 200 {
+				t.Fatalf("health: %d %v", hw.Code, body)
+			}
+			if mode == config.ModeNative && (body["native"] != "off" || !strings.Contains(fmt.Sprint(body["nativeReason"]), "node-map.json")) {
+				t.Fatalf("native health %v", body)
+			}
+		})
 	}
 }
 

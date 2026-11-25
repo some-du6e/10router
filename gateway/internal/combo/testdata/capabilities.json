@@ -1,0 +1,577 @@
+[
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "hi"
+    }
+   ]
+  },
+  "required": []
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "hi"
+      }
+     ]
+    }
+   ]
+  },
+  "required": []
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "image",
+       "source": {
+        "type": "base64",
+        "media_type": "image/png",
+        "data": "iVBOR"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  "required": [
+   "vision"
+  ]
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "image",
+       "source": {
+        "type": "base64",
+        "media_type": "image/png",
+        "data": "iVBOR"
+       }
+      }
+     ]
+    },
+    {
+     "role": "assistant",
+     "content": "seen"
+    },
+    {
+     "role": "user",
+     "content": "and now?"
+    }
+   ]
+  },
+  "required": []
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "document",
+       "source": {
+        "type": "base64",
+        "media_type": "application/pdf",
+        "data": "JVBER"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  "required": [
+   "pdf"
+  ]
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "document",
+       "source": {
+        "type": "text",
+        "media_type": "text/plain",
+        "data": "plain"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  "required": []
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "tool_result",
+       "tool_use_id": "t1",
+       "content": [
+        {
+         "type": "image",
+         "source": {
+          "type": "base64",
+          "media_type": "image/png",
+          "data": "x"
+         }
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "required": []
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "look: data:image/png;base64,AAAA"
+    }
+   ]
+  },
+  "required": [
+   "vision"
+  ]
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "listen: data:audio/wav;base64,AAAA"
+    }
+   ]
+  },
+  "required": [
+   "audioInput"
+  ]
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "read: data:application/pdf;base64,AAAA"
+    }
+   ]
+  },
+  "required": [
+   "pdf"
+  ]
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "data:image/png;base64,AAAA"
+      }
+     ]
+    }
+   ]
+  },
+  "required": []
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "x",
+     "images": [
+      "a.png"
+     ]
+    }
+   ]
+  },
+  "required": [
+   "vision"
+  ]
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "x",
+     "images": []
+    }
+   ]
+  },
+  "required": []
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "x",
+     "attachments": [
+      {
+       "contentType": "image/png"
+      }
+     ]
+    }
+   ]
+  },
+  "required": [
+   "vision"
+  ]
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "x",
+     "attachments": [
+      {
+       "contentType": "text/plain"
+      }
+     ]
+    }
+   ]
+  },
+  "required": []
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "x",
+     "experimental_attachments": [
+      {
+       "url": "https://files.example.test/a"
+      }
+     ]
+    }
+   ]
+  },
+  "required": [
+   "vision"
+  ]
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "x",
+     "attachments": [
+      null,
+      0
+     ]
+    }
+   ]
+  },
+  "required": []
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "x",
+     "image_url": "u"
+    }
+   ]
+  },
+  "required": [
+   "vision"
+  ]
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "x",
+     "audio": {
+      "data": "x"
+     }
+    }
+   ]
+  },
+  "required": [
+   "audioInput"
+  ]
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "input_audio",
+       "input_audio": {
+        "data": "x",
+        "format": "wav"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  "required": [
+   "audioInput"
+  ]
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "video_url",
+       "video_url": {
+        "url": "u"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  "required": [
+   "videoInput"
+  ]
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "x",
+       "inlineData": {
+        "mimeType": "image/png"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  "required": [
+   "vision"
+  ]
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "x",
+       "fileData": {
+        "mimeType": "text/csv"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  "required": []
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      null,
+      "text",
+      5,
+      {
+       "type": "text",
+       "text": "x"
+      }
+     ]
+    }
+   ]
+  },
+  "required": []
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "image",
+       "source": {
+        "type": "base64",
+        "media_type": "image/png",
+        "data": "x"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  "required": []
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "image",
+       "source": {
+        "type": "url",
+        "url": "u"
+       }
+      }
+     ]
+    },
+    {
+     "role": "model",
+     "content": "ok"
+    }
+   ]
+  },
+  "required": []
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "x"
+    }
+   ],
+   "tools": [
+    {
+     "type": "web_search_20250305",
+     "name": "web_search"
+    }
+   ]
+  },
+  "required": []
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "x"
+    }
+   ],
+   "tools": [
+    {
+     "name": "Read",
+     "input_schema": {
+      "type": "object"
+     }
+    },
+    null
+   ]
+  },
+  "required": []
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "x"
+    }
+   ],
+   "tools": [
+    {
+     "type": "web_search"
+    }
+   ]
+  },
+  "required": [
+   "search"
+  ]
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "x"
+    }
+   ],
+   "tools": [
+    {
+     "type": "google_search"
+    }
+   ]
+  },
+  "required": [
+   "search"
+  ]
+ },
+ {
+  "body": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "x"
+    }
+   ],
+   "tools": "not an array"
+  },
+  "required": []
+ },
+ {
+  "body": {
+   "messages": "not an array"
+  },
+  "required": []
+ },
+ {
+  "body": {
+   "messages": []
+  },
+  "required": []
+ },
+ {
+  "body": {
+   "messages": [
+    5,
+    null,
+    "x"
+   ]
+  },
+  "required": []
+ }
+]

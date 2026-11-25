@@ -1,0 +1,40 @@
+{
+  "retryConfig": {
+    "429": {
+      "attempts": 0,
+      "delayMs": 0
+    },
+    "502": {
+      "attempts": 3,
+      "delayMs": 3000
+    },
+    "503": {
+      "attempts": 3,
+      "delayMs": 2000
+    },
+    "504": {
+      "attempts": 2,
+      "delayMs": 3000
+    }
+  },
+  "retryDelayMs": 2000,
+  "executor": {
+    "timeoutMs": 0,
+    "headersTimeoutAttempts": 0,
+    "fallbackCount": 1
+  },
+  "fetchConnectTimeoutMs": 60000,
+  "headersTimeoutAttempts": 4,
+  "maxTimerMs": 2147483647,
+  "headersTimeoutText": "upstream sent no response headers",
+  "betaHeaderKeys": [
+    "anthropic-beta",
+    "Anthropic-Beta"
+  ],
+  "proxyDirect": "__direct__",
+  "relayTypes": [
+    "cloudflare",
+    "deno",
+    "vercel"
+  ]
+}

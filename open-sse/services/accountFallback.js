@@ -53,7 +53,8 @@ export function checkFallbackError(status, errorText, backoffLevel = 0) {
 // Statuses that describe the request, not the account: a different key sees the
 // same body, so locking the key only takes the whole pool down. Text rules (rate
 // limit, quota, ...) still win, since some gateways send those as 400.
-const REQUEST_ERROR_STATUSES = new Set([400, 404, 422]);
+// Exported for the Go gateway's table export (gateway/internal/accounts/tables.json).
+export const REQUEST_ERROR_STATUSES = new Set([400, 404, 422]);
 // ...except errors about the account some upstreams send as 400 (a bad key or
 // no money left). Those still lock.
 const ACCOUNT_ERROR_TEXTS = [...BAD_KEY_TEXTS, ...BILLING_TEXTS];

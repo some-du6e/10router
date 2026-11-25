@@ -1,5 +1,5 @@
 {
-  "_comment": "Node files each Go package ports (docs/GO_GATEWAY.md, 'Behaviors to port'). The drift check (scripts/gateway-drift-check.mjs, run by .github/workflows/gateway-drift.yml) fails a PR that changes one of these without changing gateway/internal/<pkg>/ (the port or its fixtures) or listing the package in gateway/GATEWAY_PROXY_ONLY. Files that only hold exported constants or tables (runtimeConfig.js, shared.js, ...) aren't listed: the parity workflow's path filter covers them, and its table-export and fixture checks fail when a value the port reads changes. pricing.js is listed because Go restates its matchPattern glob rules, not just its tables.",
+  "_comment": "Node files each Go package ports (docs/GO_GATEWAY.md, 'Behaviors to port'). The drift check (scripts/gateway-drift-check.mjs, run by .github/workflows/gateway-drift.yml) fails a PR that changes one of these without changing gateway/internal/<pkg>/ (the port or its fixtures) or listing the package in gateway/GATEWAY_PROXY_ONLY. Files that only hold exported constants or tables (errorConfig.js, shared.js, ...) aren't listed: the parity workflow's path filter covers them, and its table-export and fixture checks fail when a value the port reads changes. pricing.js is listed because Go restates its matchPattern glob rules, not just its tables, and runtimeConfig.js (under upstream) because Go restates its envMs, upstreamHeadersBudget and resolveRetryEntry.",
   "claudeprep": [
     "open-sse/providers/pricing.js",
     "open-sse/translator/index.ts",
@@ -65,6 +65,49 @@
     "src/sse/services/model.js",
     "open-sse/services/model.js",
     "src/lib/db/repos/combosRepo.js",
-    "src/lib/db/repos/nodesRepo.js"
+    "src/lib/db/repos/nodesRepo.js",
+    "open-sse/services/combo.js",
+    "open-sse/services/capacityAdapter.js",
+    "src/sse/handlers/chat.ts",
+    "src/sse/services/autoCombo.ts",
+    "src/sse/services/limitHoldConfig.js",
+    "src/sse/services/finalRoutingError.js",
+    "src/sse/services/claudeBuiltinSearch.js",
+    "src/sse/services/claudeSearchShortcut.ts",
+    "open-sse/utils/clientDetector.js",
+    "open-sse/utils/error.js",
+    "open-sse/utils/modelPath.ts"
+  ],
+  "accounts": [
+    "src/sse/services/auth.js",
+    "src/sse/handlers/chat.ts",
+    "open-sse/services/accountFallback.js",
+    "open-sse/services/cacheAffinity.js",
+    "open-sse/services/modelHang.js",
+    "open-sse/services/sameRequestError.ts",
+    "open-sse/utils/limitHold.js",
+    "open-sse/utils/sessionManager.js",
+    "open-sse/utils/claudeCloaking.js",
+    "open-sse/utils/error.js",
+    "open-sse/utils/modelPath.ts",
+    "src/sse/services/accountFailureSummary.js",
+    "src/sse/services/connectionUpstream.ts",
+    "src/shared/utils/endpointUrl.ts",
+    "src/lib/db/repos/connectionsRepo.js"
+  ],
+  "upstream": [
+    "open-sse/executors/base.js",
+    "open-sse/executors/default.js",
+    "open-sse/handlers/chatCore.js",
+    "open-sse/utils/proxyFetch.js",
+    "open-sse/utils/headersTimeout.js",
+    "open-sse/utils/anthropicBeta.ts",
+    "open-sse/utils/error.js",
+    "src/lib/network/connectionProxy.ts",
+    "src/lib/network/proxyRouting.ts",
+    "src/lib/network/outboundProxy.js",
+    "src/sse/services/auth.js",
+    "src/sse/handlers/chat.ts",
+    "open-sse/config/runtimeConfig.js"
   ]
 }
