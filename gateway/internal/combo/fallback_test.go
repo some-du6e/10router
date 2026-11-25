@@ -207,7 +207,7 @@ func TestFallbackMatchesNode(t *testing.T) {
 					return a.RunModel(ctx, accounts.LoopInput{
 						Provider: provider, Model: model, Body: body, Headers: ccHeaders, Settings: snap.Settings,
 						ByteSent: func() bool { return false },
-						Sleep:     sleeper("warm"),
+						Sleep:    sleeper("warm"),
 						Transport: func(c *db.Connection) (string, error) {
 							r, err := upstream.ResolveRoute(ctx, c.ProviderSpecificData(), c.Provider, snap.Settings, d)
 							return r.Transport(), err

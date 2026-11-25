@@ -2,9 +2,9 @@ package accounts
 
 import (
 	"context"
-	"fmt"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"math"
 	"strings"
 	"time"
