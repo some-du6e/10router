@@ -138,7 +138,22 @@ func (s *Shadow) declined(reason string) {
 	s.reasonLocked(reason)
 }
 
+// maxReason and maxDiff bound a reason or a difference kept: a decline or a
+// candidate's name can quote the client's model id, whatever its length.
+const (
+	maxReason = 400
+	maxDiff   = 2000
+)
+
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
 func (s *Shadow) reasonLocked(reason string) {
+	reason = clip(reason, maxReason)
 	if s.stats.Reasons == nil {
 		s.stats.Reasons = map[string]int{}
 	}
@@ -149,7 +164,7 @@ func (s *Shadow) reasonLocked(reason string) {
 }
 
 func (s *Shadow) diffLocked(d string) {
-	s.stats.Diffs = append(s.stats.Diffs, d)
+	s.stats.Diffs = append(s.stats.Diffs, clip(d, maxDiff))
 	if len(s.stats.Diffs) > maxDiffs {
 		s.stats.Diffs = s.stats.Diffs[len(s.stats.Diffs)-maxDiffs:]
 	}

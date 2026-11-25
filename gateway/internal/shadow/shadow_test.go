@@ -227,6 +227,24 @@ func TestDeclinedRequestsAreCountedAndTheirSendsUnplanned(t *testing.T) {
 	}
 }
 
+// A reason quoting a client's model id is kept clipped, as is a difference.
+func TestReasonsAndDiffsAreBounded(t *testing.T) {
+	s := &Shadow{}
+	s.declined("combo: proxy to Node: model " + strings.Repeat("m", 1<<20))
+	s.mu.Lock()
+	s.diffLocked(strings.Repeat("d", 1<<20))
+	s.mu.Unlock()
+	st := s.Snapshot()
+	for r := range st.Reasons {
+		if len(r) > maxReason+len("…") {
+			t.Fatalf("reason of %d bytes kept", len(r))
+		}
+	}
+	if len(st.Diffs) != 1 || len(st.Diffs[0]) > maxDiff+len("…") {
+		t.Fatalf("diffs %d", len(st.Diffs))
+	}
+}
+
 func TestObserveWithTheRouteOff(t *testing.T) {
 	s := &Shadow{Native: func() (*native.Native, string) { return nil, "the database has not been opened yet" }}
 	r := ccRequest(t, "main")

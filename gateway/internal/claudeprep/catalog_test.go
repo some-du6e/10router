@@ -217,6 +217,19 @@ func TestDeclineCovered(t *testing.T) {
 	}
 }
 
+// A file JSON.parse reads but the port's parser stops on (nesting past
+// maxDepth) declines every lookup, every time, rather than read as empty.
+func TestCatalogTooDeepDeclines(t *testing.T) {
+	deep := `{"models":{},"providers":{},"x":` + strings.Repeat("[", maxDepth+10) + strings.Repeat("]", maxDepth+10) + `}`
+	c := NewFileCatalog(writeTemp(t, deep))
+	for i := 0; i < 2; i++ {
+		var d *DeclineError
+		if err := catching(func() { c.Limits("p", "m") }); !errors.As(err, &d) || !strings.Contains(d.Reason, "nested deeper") {
+			t.Fatalf("lookup %d: got %v, want a decline", i, err)
+		}
+	}
+}
+
 func writeTemp(t *testing.T, text string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "model-catalog.json")

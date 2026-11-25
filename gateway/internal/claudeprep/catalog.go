@@ -1,6 +1,7 @@
 package claudeprep
 
 import (
+	"errors"
 	"math"
 	"os"
 	"strings"
@@ -27,6 +28,9 @@ type FileCatalog struct {
 	// models and providers are parsed?.models || {} and parsed?.providers
 	// || {}: nil for the {}.
 	models, providers *Value
+	// deep: the file nests past what claudeprep's parser takes, which
+	// JSON.parse reads; every lookup declines.
+	deep bool
 }
 
 // NewFileCatalog reads the catalog at path (Node's CATALOG_FILE).
@@ -44,19 +48,27 @@ func (c *FileCatalog) load() (models, providers *Value) {
 	defer c.mu.Unlock()
 	st, err := os.Stat(c.path)
 	if err != nil {
-		c.present, c.models, c.providers = false, nil, nil
+		c.present, c.models, c.providers, c.deep = false, nil, nil, false
 		return nil, nil
 	}
 	if c.present && st.ModTime().Equal(c.mtime) {
+		if c.deep {
+			decline("a model catalog file nested deeper than the port parses")
+		}
 		return c.models, c.providers
 	}
-	c.present, c.mtime, c.models, c.providers = true, st.ModTime(), nil, nil
+	c.present, c.mtime, c.models, c.providers, c.deep = true, st.ModTime(), nil, nil, false
 	raw, err := os.ReadFile(c.path)
 	if err != nil {
 		return nil, nil
 	}
 	// readFileSync(file, "utf8") keeps a BOM, which JSON.parse refuses.
 	top, err := parseText(decodeUTF8KeepBOM(raw))
+	if errors.Is(err, errTooDeep) {
+		// JSON.parse reads it; only the port's parser stops.
+		c.deep = true
+		decline("a model catalog file nested deeper than the port parses")
+	}
 	if err != nil {
 		return nil, nil
 	}

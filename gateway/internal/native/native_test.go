@@ -283,12 +283,14 @@ func TestLearnedBetasGoToNodeAndWait(t *testing.T) {
 	}))
 	defer srv.Close()
 	n := &Native{Events: &nodeevents.Client{Base: srv.URL, Token: "peer-token", HTTP: srv.Client()}}
-	n.LearnedBetas("openai-compatible-chat-hot", &db.Connection{ID: "k1"})([]string{"flag-a", "flag-b"})
+	// A flag Node's union would drop is dropped here, not sent to get the
+	// whole event refused.
+	n.LearnedBetas("openai-compatible-chat-hot", &db.Connection{ID: "k1"})([]string{"flag-a", strings.Repeat("x", 300), "flag-b", "flag-a"})
 	// LearnedBetas returns once Node answered, as Node awaits its write.
 	if token != "peer-token" || got["type"] != "betas-learned" || got["connectionId"] != "k1" || got["provider"] != "openai-compatible-chat-hot" {
 		t.Fatalf("token %q, event %v", token, got)
 	}
-	if flags, _ := got["droppedBetas"].([]any); len(flags) != 2 || flags[0] != "flag-a" {
+	if flags, _ := got["droppedBetas"].([]any); len(flags) != 2 || flags[0] != "flag-a" || flags[1] != "flag-b" {
 		t.Fatalf("flags %v", got["droppedBetas"])
 	}
 }

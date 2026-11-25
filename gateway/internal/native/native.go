@@ -57,6 +57,10 @@ type Native struct {
 // same request gets the flags through upstream.MergeDroppedBetas.
 func (n *Native) LearnedBetas(provider string, c *db.Connection) func(flags []string) {
 	return func(flags []string) {
+		// Only what saveDroppedBetas' union would keep (flag names, deduped,
+		// at most 50), so one malformed flag from a client's header can't get
+		// the whole event refused where Node would save the rest.
+		flags = upstream.MergeDroppedBetas(claudeprep.NodeSettings{}, flags).DroppedBetas
 		if n.Events == nil || len(flags) == 0 {
 			return
 		}
