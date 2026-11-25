@@ -189,7 +189,7 @@ func TestCatalogArrayDeclines(t *testing.T) {
 // DeclineCovered declines what a maxOutput or a declared modality could
 // change, and reads every other lookup as no entry.
 func TestDeclineCovered(t *testing.T) {
-	path := writeTemp(t, `{"models":{"mystery-1":{"vision":true},"zeta-9":{"vision":false},"omega-2":{"pdf":true}},"providers":{"p":{"mystery-1":{"maxOutput":3000},"zeta-9":{"contextWindow":5}}}}`)
+	path := writeTemp(t, `{"models":{"mystery-1":{"vision":true},"zeta-9":{"vision":false},"omega-2":{"pdf":true},"kappa-3":{"audioInput":true}},"providers":{"p":{"mystery-1":{"maxOutput":3000},"zeta-9":{"contextWindow":5}}}}`)
 	c := DeclineCovered(NewFileCatalog(path))
 	for _, model := range []string{"zeta-9", "other"} {
 		var m Modalities
@@ -207,6 +207,7 @@ func TestDeclineCovered(t *testing.T) {
 		{"maxOutput by base id", "maxOutput", func() { c.Limits("p", "acme/Mystery-1") }},
 		{"vision", "modality", func() { c.Modalities("mystery-1") }},
 		{"pdf", "modality", func() { c.Modalities("vendor/Omega-2:free") }},
+		{"audio", "modality", func() { c.Modalities("kappa-3") }},
 		// Through Prepare's capabilities, as the native route reads them.
 		{"capabilities", "synced model catalog", func() { NewModels(c).Capabilities("p", "omega-2") }},
 	} {

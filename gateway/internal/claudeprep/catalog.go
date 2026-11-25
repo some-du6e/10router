@@ -144,7 +144,8 @@ func (c *FileCatalog) Modalities(model string) (Modalities, bool) {
 // keeps or replaces media in earlier turns and tool results by it, which
 // combo.MayNeedCapability, reading only the current turn, lets through). With
 // no such entry both sides agree either way. Lookups only reach the catalog
-// from refine, for models the hand tables don't name.
+// from refine: for models without an exact hand-table entry, pattern matches
+// included (docs/GO_GATEWAY.md, part 3, weighs what that declines).
 func DeclineCovered(c Catalog) Catalog { return coveredDeclines{c} }
 
 type coveredDeclines struct{ c Catalog }

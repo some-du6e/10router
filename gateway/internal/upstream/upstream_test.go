@@ -588,6 +588,28 @@ func TestGzipMemberIsDeliveredBeforeMoreBytesCome(t *testing.T) {
 	}
 }
 
+// zlib checks the magic number as soon as its two bytes are here: a body
+// that can't be gzip fails then, not once two more bytes come.
+func TestGzipBadMagicFailsWithoutWaiting(t *testing.T) {
+	r, w := io.Pipe()
+	defer w.Close()
+	go func() { _, _ = w.Write([]byte{0x1f, 0x00}) }()
+	g := &gunzip{raw: r}
+	got := make(chan error, 1)
+	go func() {
+		_, err := g.Read(make([]byte, 16))
+		got <- err
+	}()
+	select {
+	case err := <-got:
+		if !errors.Is(err, gzip.ErrHeader) {
+			t.Fatalf("got %v, want gzip.ErrHeader", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a bad magic number waited for more of the body")
+	}
+}
+
 func TestIdleBodyFailsASilentRead(t *testing.T) {
 	r, w := io.Pipe()
 	defer w.Close()

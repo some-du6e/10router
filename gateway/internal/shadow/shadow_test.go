@@ -255,6 +255,19 @@ func TestPlanningPanicStillRelays(t *testing.T) {
 	}
 }
 
+// A panic while comparing a report is counted as an error, not lost with the
+// report's connection.
+func TestComparePanicIsAnError(t *testing.T) {
+	s := &Shadow{pending: map[string]*record{
+		// No database: the comparison's first read panics.
+		"x": {n: &native.Native{}, plan: &native.Plan{Leaves: []native.Leaf{{Provider: "openai-compatible-chat-hot", Model: "m1"}}}},
+	}}
+	s.Compare(context.Background(), Report{ID: "x", Method: http.MethodPost, HeadersKind: "object", BodyKind: "bytes"})
+	if st := s.Snapshot(); st.Errors != 1 || st.Sends != 1 || st.Matched != 0 || st.Differed != 0 || len(st.Diffs) != 1 || !strings.Contains(st.Diffs[0], "panicked") {
+		t.Fatalf("%+v", st)
+	}
+}
+
 func TestOversizedBodyIsRelayedWhole(t *testing.T) {
 	s := &Shadow{Native: func() (*native.Native, string) { return &native.Native{}, "" }, MaxBody: 8}
 	r := ccRequest(t, "main")
