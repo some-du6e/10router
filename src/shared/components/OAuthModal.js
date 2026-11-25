@@ -215,8 +215,12 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   }, []);
 
   // Start OAuth flow
-  const startOAuthFlow = useCallback(async (codexMethod = "browser") => {
+  const startOAuthFlow = useCallback(async (codexMethod) => {
     if (!provider) return;
+    if (provider === "codex" && !codexMethod) {
+      setStep("choose");
+      return;
+    }
     let deviceSignal;
     try {
       setError(null);
@@ -436,8 +440,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           .then((data) => setIdeStatus(data))
           .catch(() => setIdeStatus({ installed: false, path: null }));
       }
-      if (provider === "codex") setStep("choose");
-      else startOAuthFlow();
+      startOAuthFlow();
     } else if (!isOpen) {
       // Abort polling and cleanup proxy when modal closes
       deviceAttemptRef.current?.abort();
@@ -691,7 +694,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
               Device sign-in must be enabled in your ChatGPT security settings.
             </p>
             <div className="flex gap-2">
-              <Button onClick={() => { setStep("waiting"); return startOAuthFlow(); }} variant="secondary" fullWidth>
+              <Button onClick={() => { setStep("waiting"); return startOAuthFlow("browser"); }} variant="secondary" fullWidth>
                 Sign in with browser
               </Button>
               <Button onClick={() => startOAuthFlow("device")} fullWidth>
