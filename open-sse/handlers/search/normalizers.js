@@ -70,7 +70,7 @@ function normalizePerplexity(data, _query, _searchType) {
   return { results, totalResults: results.length };
 }
 
-function normalizeExa(data, _query, _searchType, providerId = "exa") {
+function normalizeExa(data, _query, _searchType, providerId) {
   const now = new Date().toISOString();
   const items = data.results;
   if (!Array.isArray(items)) return { results: [], totalResults: null };
@@ -301,11 +301,11 @@ const NORMALIZERS = {
 };
 
 /**
- * Dispatch to the normalizer of the API the provider serves (`api`, default
+ * Dispatch to the normalizer of the API the provider serves (`format`, default
  * its own id). Results are credited to `providerId`.
  * @returns {{results: Array, totalResults: number|null, pagination?: object}}
  */
-export function normalizeSearchResponse(providerId, data, query, searchType, api = providerId) {
-  const fn = NORMALIZERS[api];
+export function normalizeSearchResponse(providerId, data, query, searchType, format = providerId) {
+  const fn = NORMALIZERS[format];
   return fn ? fn(data, query, searchType, providerId) : { results: [], totalResults: null };
 }

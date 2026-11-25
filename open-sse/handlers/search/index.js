@@ -111,7 +111,7 @@ async function tryDedicatedProvider({ provider, providerConfig, body, credential
       return { success: false, status: resp.status, error: `${provider.id} returned ${resp.status}: ${errText.slice(0, 200)}` };
     }
     const data = await resp.json();
-    const normalized = normalizeSearchResponse(provider.id, data, params.query, params.searchType, providerConfig.api);
+    const normalized = normalizeSearchResponse(provider.id, data, params.query, params.searchType, providerConfig.format);
     const results = normalized.results.slice(0, params.maxResults);
     const duration = Date.now() - startTime;
     const usage = {
@@ -158,9 +158,9 @@ async function tryDedicatedProvider({ provider, providerConfig, body, credential
 export async function handleSearchCore({ body, provider, providerConfig, credentials, log }) {
   const globalStartTime = Date.now();
 
-  // 1. Sanitize query
+  // 1. Sanitize query (a refused query is the request's fault, not the account's)
   const { clean, error: sanitizeError } = sanitizeQuery(body.query || "");
-  if (sanitizeError) return errorResult(400, sanitizeError);
+  if (sanitizeError) return { ...errorResult(400, sanitizeError), requestError: true };
   const normalizedBody = { ...body, query: clean };
 
   // 2. Route: dedicated search API takes priority over chat-based
@@ -208,6 +208,5 @@ export async function handleSearchCore({ body, provider, providerConfig, credent
     if (fallback.success) return successResult(fallback.data);
   }
 
-  const failure = errorResult(result.status || 502, result.error || "Search failed");
-  return result.requestError ? { ...failure, requestError: true } : failure;
+  return { ...errorResult(result.status || 502, result.error || "Search failed"), requestError: result.requestError };
 }

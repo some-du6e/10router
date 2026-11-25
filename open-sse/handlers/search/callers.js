@@ -7,7 +7,7 @@
  * @property {string} id
  * @property {string} baseUrl
  * @property {string} [method]
- * @property {string} [api]  API the provider serves, when another provider's ("exa")
+ * @property {string} [format]  API the provider serves, when another provider's ("exa")
  *
  * @typedef {Object} ContentOptions
  * @property {boolean} [snippet]
@@ -434,15 +434,15 @@ const BUILDERS = {
 };
 
 /**
- * Dispatch to the provider's builder: by `provider.api` when it serves another
- * provider's API, else by `provider.id`.
+ * Dispatch to the provider's builder: by `provider.format` when it serves
+ * another provider's API, else by `provider.id`.
  * Falls back to generic POST + bearer auth for unknown providers.
  * @param {SearchProviderConfig} provider
  * @param {SearchRequestParams} params
  * @returns {{url: string, init: RequestInit}}
  */
 export function buildSearchRequest(provider, params) {
-  const builder = BUILDERS[provider.api || provider.id];
+  const builder = BUILDERS[provider.format || provider.id];
   if (builder) return builder(provider, params);
 
   return {

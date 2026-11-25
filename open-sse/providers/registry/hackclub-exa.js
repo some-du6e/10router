@@ -13,7 +13,7 @@ export default {
     website: "https://docs.ai.hackclub.com/api/exa.html",
     notice: {
       apiKeyUrl: "https://ai.hackclub.com/dashboard",
-      text: "Exa web search through Hack Club AI, with a Hack Club AI key. Searches count toward that account's daily spending limit, so put Exa after it in a Web Search combo. Hack Club AI's rules limit who may use it and with which tools.",
+      text: "Exa web search through Hack Club AI, with a Hack Club AI key. Searches count toward that account's daily spending limit, so put Exa after it in a Web Search combo. Read Hack Club AI's rules first (docs.ai.hackclub.com/guide/rules.html): they say it is for teens 18 and under and may not be used with coding agents like Cursor.",
     },
   },
   category: "apikey",
@@ -24,7 +24,6 @@ export default {
     baseUrl: "https://ai.hackclub.com/proxy/v1/exa/search",
     // Needs the key and runs no search, so a key check spends nothing.
     validateUrl: "https://ai.hackclub.com/proxy/v1/stats",
-    validateMethod: "GET",
     authType: "apikey",
     authHeader: "bearer",
     costPerQuery: 0,

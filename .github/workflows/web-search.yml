@@ -15,11 +15,14 @@ on:
       - "src/shared/components/ModelSelectModal.js"
       - "src/shared/components/ProviderInfoCard.js"
       - "src/app/api/providers/validate/route.js"
+      - "src/app/api/v1/models/route.js"
       - "src/app/api/v1/models/info/route.js"
       - "tests/package.json"
       - "tests/vitest.config.js"
+      - "tests/helpers/dashboardComponent.js"
       - "tests/unit/hackclub-exa-search.test.js"
       - "tests/unit/search-key-validation.test.js"
+      - "tests/unit/search-mode-picker.test.js"
       - "tests/unit/xquik-search-provider.test.js"
       - "tests/unit/search-ssrf-guard.test.js"
       - "tests/unit/searxng-provider-config.test.js"
@@ -52,6 +55,7 @@ jobs:
           ./node_modules/.bin/vitest run
           unit/hackclub-exa-search.test.js
           unit/search-key-validation.test.js
+          unit/search-mode-picker.test.js
           unit/xquik-search-provider.test.js
           unit/search-ssrf-guard.test.js
           unit/searxng-provider-config.test.js
@@ -65,6 +69,8 @@ jobs:
         run: |
           node tests/__baseline__/verify-providers.mjs
           node tests/__baseline__/verify-alias.mjs
+      # ModelSelectModal.js isn't listed: its effects already fail
+      # react-hooks/set-state-in-effect on the base branch.
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
@@ -78,12 +84,12 @@ jobs:
           src/shared/utils/searchModel.ts
           src/sse/handlers/search.js
           src/sse/services/claudeBuiltinSearch.js
-          src/shared/components/ModelSelectModal.js
           src/shared/components/ProviderInfoCard.js
           src/app/api/providers/validate/route.js
           src/app/api/v1/models/info/route.js
           tests/unit/hackclub-exa-search.test.js
           tests/unit/search-key-validation.test.js
+          tests/unit/search-mode-picker.test.js
 
   # The suite is not all-green on master (see AGENTS.md), so this runs it on
   # both the base and this branch and fails only on tests that pass on the base

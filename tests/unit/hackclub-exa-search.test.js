@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   combos: [],
-  connections: {},
+  accounts: {},
+  getProviderCredentials: vi.fn(),
   markAccountUnavailable: vi.fn(),
   clearAccountError: vi.fn(),
 }));
@@ -19,11 +20,7 @@ vi.mock("../../open-sse/services/oauthCredentialManager.js", () => ({
   shouldRefreshCredentials: () => false,
 }));
 vi.mock("../../src/sse/services/auth.js", () => ({
-  // One account per provider; an account the handler excluded is gone.
-  getProviderCredentials: async (provider, excluded) => {
-    const account = mocks.connections[provider];
-    return account && !excluded.has(account.connectionId) ? { ...account } : null;
-  },
+  getProviderCredentials: mocks.getProviderCredentials,
   markAccountUnavailable: mocks.markAccountUnavailable,
   clearAccountError: mocks.clearAccountError,
   extractApiKey: () => null,
@@ -47,6 +44,7 @@ import { parseSearchModel, searchModelChoices } from "../../src/shared/utils/sea
 
 const HACKCLUB_SEARCH_URL = "https://ai.hackclub.com/proxy/v1/exa/search";
 const EXA_SEARCH_URL = "https://api.exa.ai/search";
+const PSE_SEARCH_URL = "https://www.googleapis.com/customsearch/v1";
 const JSON_TYPE = { "Content-Type": "application/json" };
 
 const config = (id) => ({ id, ...AI_PROVIDERS[id].searchConfig });
@@ -92,17 +90,25 @@ let hackclubAnswer;
 
 beforeEach(() => {
   mocks.combos = [];
-  mocks.connections = {
-    "hackclub-exa": { connectionId: "hc-account", connectionName: "Hack Club", apiKey: "hc-key" },
-    exa: { connectionId: "exa-account", connectionName: "Exa", apiKey: "exa-key" },
+  mocks.accounts = {
+    "hackclub-exa": [{ connectionId: "hc-account", connectionName: "Hack Club", apiKey: "hc-key" }],
+    exa: [{ connectionId: "exa-account", connectionName: "Exa", apiKey: "exa-key" }],
   };
+  // The provider's accounts in order; one the handler excluded is skipped.
+  mocks.getProviderCredentials.mockReset();
+  mocks.getProviderCredentials.mockImplementation(async (provider, excluded) => {
+    const account = (mocks.accounts[provider] || []).find((candidate) => !excluded.has(candidate.connectionId));
+    return account ? { ...account } : null;
+  });
   mocks.markAccountUnavailable.mockReset();
   mocks.markAccountUnavailable.mockResolvedValue({ shouldFallback: true, cooldownMs: 0 });
   mocks.clearAccountError.mockReset();
   hackclubAnswer = () => Response.json(EXA_RESPONSE);
   fetchMock = vi.fn(async (url) => {
-    if (String(url) === HACKCLUB_SEARCH_URL) return hackclubAnswer();
-    if (String(url) === EXA_SEARCH_URL) return Response.json(EXA_RESPONSE);
+    const target = String(url);
+    if (target === HACKCLUB_SEARCH_URL) return hackclubAnswer();
+    if (target === EXA_SEARCH_URL) return Response.json(EXA_RESPONSE);
+    if (target.startsWith(`${PSE_SEARCH_URL}?`)) return Response.json({ items: [{ title: "PSE result", link: "https://pse.example/" }] });
     throw new Error(`unexpected fetch ${url}`);
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -118,7 +124,7 @@ afterEach(() => {
 const sentRequests = () => fetchMock.mock.calls.map(([url, init]) => ({
   url: String(url),
   headers: init.headers,
-  body: JSON.parse(init.body),
+  body: init.body === undefined ? undefined : JSON.parse(init.body),
 }));
 
 describe("Hack Club AI's Exa proxy", () => {
@@ -128,12 +134,11 @@ describe("Hack Club AI's Exa proxy", () => {
       category: "apikey",
       serviceKinds: ["webSearch"],
       searchConfig: {
-        api: "exa",
+        format: "exa",
         baseUrl: HACKCLUB_SEARCH_URL,
         method: "POST",
         authHeader: "bearer",
         validateUrl: "https://ai.hackclub.com/proxy/v1/stats",
-        validateMethod: "GET",
         costPerQuery: 0,
       },
     });
@@ -160,9 +165,40 @@ describe("Hack Club AI's Exa proxy", () => {
       citation: { provider: "hackclub-exa", rank: 1 },
     });
   });
+
+  it("falls back to the start of the page text for a result with no highlights", () => {
+    const text = "x".repeat(400);
+    const { results } = normalizeSearchResponse("exa", {
+      results: [
+        { title: "Text only", url: "https://a.example/", highlights: [], text },
+        { title: "Nothing", url: "https://b.example/" },
+      ],
+    }, "q", "web");
+    expect(results.map((result) => result.snippet)).toEqual(["x".repeat(300), ""]);
+  });
 });
 
 describe("Exa search modes", () => {
+  it("keeps Exa's searchConfig, with its modes", () => {
+    expect(AI_PROVIDERS.exa.searchConfig).toEqual({
+      format: "exa",
+      baseUrl: EXA_SEARCH_URL,
+      method: "POST",
+      authType: "apikey",
+      authHeader: "x-api-key",
+      costPerQuery: 0.007,
+      freeMonthlyQuota: 1000,
+      searchTypes: ["web", "news"],
+      modes: ["auto", "lite", "fast", "instant"],
+      defaultMode: "auto",
+      highlightMaxCharacters: 700,
+      defaultMaxResults: 5,
+      maxMaxResults: 100,
+      timeoutMs: 10000,
+      cacheTTLMs: 300000,
+    });
+  });
+
   it("keeps a bare exa on Exa's default search, with page text", () => {
     const request = buildSearchRequest(config("exa"), PARAMS);
     expect(request.url).toBe(EXA_SEARCH_URL);
@@ -187,13 +223,6 @@ describe("Exa search modes", () => {
     expect(bodyOf(request)).toMatchObject({
       type: "lite", includeDomains: ["nodejs.org"], excludeDomains: ["spam.example"], category: "news",
     });
-  });
-
-  it("lets provider_options.type override the model's mode, and refuses a type Exa isn't listed with", () => {
-    const request = buildSearchRequest(config("exa"), { ...PARAMS, searchMode: "instant", providerOptions: { type: "lite" } });
-    expect(bodyOf(request).type).toBe("lite");
-    expect(() => buildSearchRequest(config("exa"), { ...PARAMS, providerOptions: { type: "deep-reasoning" } }))
-      .toThrow('Unknown Exa search type "deep-reasoning": use one of auto, lite, fast, instant');
   });
 
   it("reads a mode from the model, and none from the /v1/models id", () => {
@@ -229,31 +258,49 @@ describe("/v1/search with a mode", () => {
   });
 
   it("refuses a mode the provider doesn't list before picking an account", async () => {
-    for (const model of ["exa/deep-reasoning", "tavily/instant"]) {
+    const refused = {};
+    for (const model of ["exa/deep-reasoning", "tavily/instant", "searxng/instant"]) {
       const response = await handleSearch(searchRequest({ model, query: "node release" }));
-      expect(response.status).toBe(400);
+      refused[model] = [response.status, (await response.json()).error.message];
     }
-    const tavily = await (await handleSearch(searchRequest({ model: "tavily/instant", query: "q" }))).json();
-    expect(tavily.error.message).toContain("tavily has no search modes");
+    expect(refused).toEqual({
+      "exa/deep-reasoning": [400, 'Unknown search mode "deep-reasoning" for exa: use one of auto, lite, fast, instant'],
+      "tavily/instant": [400, 'tavily has no search modes, so "tavily/instant" can\'t be used'],
+      "searxng/instant": [400, 'searxng has no search modes, so "searxng/instant" can\'t be used'],
+    });
+    expect(mocks.getProviderCredentials).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
   });
 
-  it("locks no account for a provider_options.type Exa refuses", async () => {
-    const response = await handleSearch(searchRequest({ model: "exa", query: "node release", provider_options: { type: "bogus" } }));
+  it("locks no account for a query the core refuses", async () => {
+    const response = await handleSearch(searchRequest({ model: "exa", query: "router\u001bnews" }));
     expect(response.status).toBe(400);
-    expect((await response.json()).error.message).toContain('Unknown Exa search type "bogus"');
+    expect((await response.json()).error.message).toContain("invalid control characters");
     expect(fetchMock).not.toHaveBeenCalled();
     expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
   });
 
-  it("locks no account for any other search refused before it is sent", async () => {
+  it("locks no account for a provider option the builder refuses", async () => {
     const response = await handleSearch(searchRequest({
       model: "exa", query: "node release", provider_options: { baseUrl: "http://127.0.0.1:8080" },
     }));
     expect(response.status).toBe(400);
     expect((await response.json()).error.message).toContain("Blocked URL");
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
+  });
+
+  it("tries the next account when one lacks a setting the request needs", async () => {
+    mocks.accounts["google-pse"] = [
+      { connectionId: "pse-a", connectionName: "A", apiKey: "pse-key-a", providerSpecificData: {} },
+      { connectionId: "pse-b", connectionName: "B", apiKey: "pse-key-b", providerSpecificData: { cx: "engine-b" } },
+    ];
+    const response = await handleSearch(searchRequest({ model: "google-pse", query: "node release" }));
+    expect(response.status).toBe(200);
+    expect((await response.json()).results[0].url).toBe("https://pse.example/");
+    const [sent] = sentRequests();
+    expect(new URL(sent.url).searchParams.get("cx")).toBe("engine-b");
+    expect(fetchMock).toHaveBeenCalledOnce();
     expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
   });
 });

@@ -1,6 +1,7 @@
 import { PROVIDER_MODELS } from "open-sse/config/providerModels.js";
 import { AI_PROVIDERS, ALIAS_TO_ID } from "@/shared/constants/providers";
 import { getModelKind } from "@/shared/constants/models";
+import { SEARCH_MODEL_ID } from "@/shared/utils/searchModel.js";
 
 const KIND_ENDPOINT = {
   llm: "/v1/chat/completions",
@@ -65,10 +66,10 @@ function lookup(fullId, requestedKind) {
   }
 
   // Web search/fetch — virtual model id "search" / "fetch"
-  if (modelId === "search" && providerInfo?.searchConfig) {
+  if (modelId === SEARCH_MODEL_ID && providerInfo?.searchConfig) {
     return buildInfo({
       alias, providerId, kind: "webSearch", providerInfo,
-      model: { id: "search", name: `${providerInfo.name} Search`, params: ["query", "max_results", "country", "language", "time_range", "domain_filter", "search_type"] },
+      model: { id: SEARCH_MODEL_ID, name: `${providerInfo.name} Search`, params: ["query", "max_results", "country", "language", "time_range", "domain_filter", "search_type"] },
     });
   }
   if (modelId === "fetch" && providerInfo?.fetchConfig) {

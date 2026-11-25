@@ -93,7 +93,7 @@ Provider IS the model — `"provider":"tavily" ≡ "model":"tavily"`.
 
 ## Search modes
 
-`exa` and `hackclub-exa` take Exa's search type as a mode after a `/`: `exa/instant`. The modes are `auto` (the default), `lite`, `fast` and `instant`. `instant` is the fastest and costs least. `provider_options: {"type": "lite"}` picks one for a single request, over the model's mode. `/v1/models/info?id=exa/search` lists them.
+`exa` and `hackclub-exa` take Exa's search type as a mode after a `/`: `exa/instant`. The modes are `auto` (the default), `lite`, `fast` and `instant`. `instant` is the fastest and costs least. `/v1/models/info?id=exa/search` lists them.
 
 Combo members can name a mode too. A Web Search combo of `hackclub-exa/instant` then `exa/instant` searches Hack Club AI first and falls back to Exa.
 

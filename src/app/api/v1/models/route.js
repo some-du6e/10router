@@ -7,6 +7,7 @@ import {
 } from "@/shared/constants/providers";
 import { getProviderConnections, getCombos, getCustomModels, getModelAliases } from "@/lib/localDb";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
+import { SEARCH_MODEL_ID } from "@/shared/utils/searchModel.js";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveKimchiModels } from "open-sse/services/kimchiModels.js";
 import { resolveQoderModels } from "open-sse/services/qoderModels.js";
@@ -571,7 +572,7 @@ export async function buildModelsList(kindFilter, options = {}) {
       const providerInfo = AI_PROVIDERS[providerId];
       if (kindFilter.includes("webSearch") && providerInfo?.searchConfig) {
         models.push({
-          id: `${outputAlias}/search`,
+          id: `${outputAlias}/${SEARCH_MODEL_ID}`,
           object: "model",
           kind: "webSearch",
           owned_by: outputAlias,

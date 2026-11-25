@@ -138,7 +138,7 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
     domain_filter: body.domain_filter,
     content_options: body.content_options,
     provider_options: body.provider_options,
-    search_mode: mode ?? undefined
+    search_mode: mode
   };
 
   // No-auth providers (e.g. searxng) bypass credential lookup
@@ -228,9 +228,14 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
       return result.response;
     }
 
-    // Refused before it was sent (a bad provider option): every account would
-    // refuse it the same way, and none is at fault.
-    if (result.requestError) return result.response;
+    // Refused before anything was sent (a query or option it can't take, or a
+    // setting this account lacks): no lock, but another account may have it.
+    if (result.requestError) {
+      excludeConnectionIds.add(credentials.connectionId);
+      lastError = result.error;
+      lastStatus = result.status;
+      continue;
+    }
 
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, credentialProviderId, searchLockKey, null, credentials.apiKey);
 

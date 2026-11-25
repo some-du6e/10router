@@ -98,8 +98,8 @@ async function probeWebProvider(provider, apiKey) {
   if (cfg.authType === "none") return true; // no-auth (e.g. searxng)
 
   let url = cfg.validateUrl || cfg.baseUrl;
-  // A validateUrl can take another method than the search (a GET key check).
-  const method = (cfg.validateUrl && cfg.validateMethod) || cfg.method;
+  // A validateUrl is a GET key check, as in transport; the search URL takes the search's method.
+  const method = cfg.validateUrl ? "GET" : cfg.method;
   const headers = { "Content-Type": "application/json" };
   let body;
 
