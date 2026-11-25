@@ -267,7 +267,9 @@ type scriptStep struct {
 const sseOK = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
 // scripted is the recorder's server: each request answered by the next step.
-func scripted(t *testing.T, script []json.RawMessage) (*httptest.Server, *[]wireRequest) {
+// scripted returns the server and a snapshot of what it received so far,
+// taken under its lock (a handler may still be recording).
+func scripted(t *testing.T, script []json.RawMessage) (*httptest.Server, func() []wireRequest) {
 	t.Helper()
 	var mu sync.Mutex
 	var seen []wireRequest
@@ -341,7 +343,11 @@ func scripted(t *testing.T, script []json.RawMessage) (*httptest.Server, *[]wire
 		_, _ = w.Write(out)
 	}))
 	t.Cleanup(func() { close(stop); srv.Close() })
-	return srv, &seen
+	return srv, func() []wireRequest {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]wireRequest(nil), seen...)
+	}
 }
 
 func sortedHeaders(h [][2]string) string {
@@ -409,10 +415,11 @@ func TestWireMatchesNode(t *testing.T) {
 			if fmt.Sprint(events) != fmt.Sprint(want) {
 				t.Errorf("events: go %v, Node %v", events, want)
 			}
-			if len(*seen) != len(sc.Requests) {
-				t.Fatalf("go sent %d requests, Node %d", len(*seen), len(sc.Requests))
+			got := seen()
+			if len(got) != len(sc.Requests) {
+				t.Fatalf("go sent %d requests, Node %d", len(got), len(sc.Requests))
 			}
-			for i, got := range *seen {
+			for i, got := range got {
 				w := sc.Requests[i]
 				if got.Method != w.Method || got.Path != w.Path || got.Body != w.Body {
 					t.Errorf("request %d: go %s %s %s\n node %s %s %s", i, got.Method, got.Path, got.Body, w.Method, w.Path, w.Body)
