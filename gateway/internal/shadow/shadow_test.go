@@ -240,6 +240,21 @@ func TestObserveWithTheRouteOff(t *testing.T) {
 	}
 }
 
+// A panic in the shadow's planning is its own error: the request is relayed
+// with its body, untagged.
+func TestPlanningPanicStillRelays(t *testing.T) {
+	// No database: Plan's first read panics.
+	s := &Shadow{Native: func() (*native.Native, string) { return &native.Native{}, "" }}
+	want, _ := io.ReadAll(ccRequest(t, "main").Body)
+	out, finish := s.Observe(ccRequest(t, "main"), "127.0.0.1")
+	finish()
+	got, _ := io.ReadAll(out.Body)
+	st := s.Snapshot()
+	if !bytes.Equal(got, want) || st.Errors != 1 || st.Planned != 0 || st.Declined != 1 {
+		t.Fatalf("relayed %d bytes, stats %+v", len(got), st)
+	}
+}
+
 func TestOversizedBodyIsRelayedWhole(t *testing.T) {
 	s := &Shadow{Native: func() (*native.Native, string) { return &native.Native{}, "" }, MaxBody: 8}
 	r := ccRequest(t, "main")

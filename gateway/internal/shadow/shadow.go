@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -204,7 +205,7 @@ func (s *Shadow) Observe(r *http.Request, peerIP string) (out *http.Request, fin
 	}
 	r.Body = readCloser{bytes.NewReader(raw), r.Body}
 	rec := &record{n: n}
-	plan, err := n.Plan(r.Context(), native.Incoming{Header: r.Header, Host: r.Host, RawQuery: r.URL.RawQuery, PeerIP: peerIP}, raw)
+	plan, err := s.plan(r, n, peerIP, raw)
 	switch {
 	case err == nil:
 		rec.plan = plan
@@ -239,6 +240,18 @@ func (s *Shadow) Observe(r *http.Request, peerIP string) (out *http.Request, fin
 		grace = defaultGrace
 	}
 	return r, func() { time.AfterFunc(grace, func() { s.score(id) }) }
+}
+
+// plan is n.Plan with a panic turned into an error: Node serves the client
+// whatever the shadow's own code does.
+func (s *Shadow) plan(r *http.Request, n *native.Native, peerIP string, raw []byte) (p *native.Plan, err error) {
+	defer func() {
+		if v := recover(); v != nil {
+			p, err = nil, fmt.Errorf("planning panicked: %v", v)
+			s.logf("planning panicked: %v\n%s", v, debug.Stack())
+		}
+	}()
+	return n.Plan(r.Context(), native.Incoming{Header: r.Header, Host: r.Host, RawQuery: r.URL.RawQuery, PeerIP: peerIP}, raw)
 }
 
 // score ends a request: a planned one Node sent nothing for is NoSend.

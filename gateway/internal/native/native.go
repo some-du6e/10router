@@ -80,7 +80,7 @@ func New(d *db.DB, rule *clientip.Rule, env upstream.Env, catalogPath string) *N
 	a.Hang.BudgetMs = upstream.HeadersBudget(env, true).Ms
 	var catalog claudeprep.Catalog
 	if catalogPath != "" {
-		catalog = claudeprep.NewFileCatalog(catalogPath)
+		catalog = claudeprep.DeclineCovered(claudeprep.NewFileCatalog(catalogPath))
 	}
 	return &Native{DB: d, Accounts: a, Rule: rule, Models: claudeprep.NewModels(catalog), Env: env}
 }

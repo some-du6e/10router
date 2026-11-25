@@ -134,6 +134,28 @@ func (c *FileCatalog) Modalities(model string) (Modalities, bool) {
 	return Modalities{Vision: isTrue("vision"), PDF: isTrue("pdf"), AudioInput: isTrue("audioInput")}, true
 }
 
+// DeclineCovered is the catalog the native route prepares with: Node's
+// request handlers apply the synced catalog only once a sync has run in
+// them (POST /api/models/catalog-sync installs the source in their copy of
+// capabilities.js; the one instrumentation installs at boot is another
+// module copy), so whether Node reads it depends on the process's history.
+// A request it would change (a maxOutput for the model) declines; with no
+// entry both sides agree either way. Modalities change nothing Prepare does
+// for a request the native route takes (combo.MayNeedCapability declines any
+// that may carry an image, PDF or audio), so they read as none.
+func DeclineCovered(c Catalog) Catalog { return coveredDeclines{c} }
+
+type coveredDeclines struct{ c Catalog }
+
+func (coveredDeclines) Modalities(string) (Modalities, bool) { return Modalities{}, false }
+
+func (d coveredDeclines) Limits(provider, model string) (Limits, bool) {
+	if l, ok := d.c.Limits(provider, model); ok && l.MaxOutput > 0 {
+		decline("the synced model catalog has a maxOutput for this model (Node's request handlers read the catalog only after a sync ran in them)")
+	}
+	return Limits{}, false
+}
+
 // Limits is getCatalogLimits: providers[provider][model], else by baseId,
 // whichever is truthy first; maxOutput counts when it is a positive number.
 func (c *FileCatalog) Limits(provider, model string) (Limits, bool) {

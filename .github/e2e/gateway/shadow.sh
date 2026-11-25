@@ -62,21 +62,28 @@ show "shadow compare" "$OUT/shadow.json"
 show "shadow log lines" <(grep -F '[Gateway] shadow' "$OUT/container.log" | head -80)
 
 s() { json "$1" < "$OUT/shadow.json"; }
-# The corpus's only declines: a body that doesn't stream, and one that may
-# need a model capability. Any other reason is a request Node serves and the
-# native route has stopped planning.
+# The only declines: a body that doesn't stream, one that may need a model
+# capability, and the catalog probe (Node's request handlers read the synced
+# catalog only after a sync ran in them, so a model it gives a maxOutput is
+# Node's). Any other reason is a request Node serves and the native route has
+# stopped planning.
+CATALOG_DECLINE='^claudeprep: proxy to Node: the synced model catalog has a maxOutput'
 node -e '
   const reasons = JSON.parse(require("fs").readFileSync(0, "utf8")).reasons || {};
-  const allowed = [/^route: proxy to Node: not stream: true$/, /^combo: proxy to Node: a request that may need a model capability/];
+  const allowed = [/^route: proxy to Node: not stream: true$/, /^combo: proxy to Node: a request that may need a model capability/, new RegExp(process.argv[1])];
   const other = Object.keys(reasons).filter((r) => !allowed.some((a) => a.test(r)));
-  console.log(other.join("\n"));
-' < "$OUT/shadow.json" > "$OUT/other-reasons.txt"
+  if (other.length) process.stdout.write(other.join("\n") + "\n");
+' "$CATALOG_DECLINE" < "$OUT/shadow.json" > "$OUT/other-reasons.txt"
+node -e '
+  const reasons = JSON.parse(require("fs").readFileSync(0, "utf8")).reasons || {};
+  process.stdout.write(String(Object.entries(reasons).filter(([r]) => new RegExp(process.argv[1]).test(r)).reduce((n, [, c]) => n + c, 0)));
+' "$CATALOG_DECLINE" < "$OUT/shadow.json" > "$OUT/catalog-declines.txt"
 check "every request reached Node and was served ($(json statuses < "$OUT/drive.json"))" \
   "[ \"\$(json failures < '$OUT/drive.json')\" = '[]' ]"
 check "the gateway saw every request ($(s requests) of $(json sent < "$OUT/drive.json"))" \
   "[ \"\$(s requests)\" = \"\$(json sent < '$OUT/drive.json')\" ]"
-check "it declined only bodies that don't stream or may need a capability ($(s declined) declined)" "[ ! -s '$OUT/other-reasons.txt' ] || { cat '$OUT/other-reasons.txt'; false; }"
-check "it planned the rest ($(s planned) planned)" "[ \"\$(s planned)\" -ge 180 ]"
+check "it declined only bodies that don't stream or may need a capability, and the catalog probe ($(s declined) declined)" "[ ! -s '$OUT/other-reasons.txt' ] || { cat '$OUT/other-reasons.txt'; false; }"
+check "it planned the rest ($(s planned) planned)" "[ \"\$(s planned)\" -ge 185 ]"
 check "every send of a planned request matched byte for byte ($(s matched) matched, $(s differed) differed)" \
   "[ \"\$(s differed)\" = 0 ] && [ \"\$(s matched)\" -ge \"\$(s planned)\" ]"
 check "each request's first send was for the plan's first leaf ($(s reordered) not)" "[ \"\$(s reordered)\" = 0 ]"
@@ -84,9 +91,10 @@ check "Node sent for every request Go would have sent for ($(s noSend) without a
 check "no report was unknown or failed ($(s unknown) unknown, $(s errors) errors)" "[ \"\$(s unknown)\" = 0 ] && [ \"\$(s errors)\" = 0 ]"
 check "every send was reported once ($(s sends) reports, $(grep -c '"method":"POST"' "$OUT/mock.log") upstream requests)" \
   "[ \"\$(s sends)\" = \"\$(grep -c '\"method\":\"POST\"' '$OUT/mock.log')\" ]"
-# The catalog's maxOutput is in effect (Node clamped max_tokens to it), so its
-# match above shows Go read the same catalog.
-check "the seeded catalog's maxOutput reached the upstream" \
-  "grep '\"model\":\"zz-catalog-probe-1\"' '$OUT/mock.log' | grep -q '\"max_tokens\":3000'"
+# Go read the seeded catalog: the one request whose model it covers is the
+# one declined for it.
+check "the catalog probe, and only it, was declined for the synced catalog ($(cat "$OUT/catalog-declines.txt"))" \
+  "grep -qx 1 '$OUT/catalog-declines.txt'"
+show "the catalog probe as Node sent it" <(grep '"model":"zz-catalog-probe-1"' "$OUT/mock.log")
 show "mock upstream log (first 40)" <(head -40 "$OUT/mock.log")
 exit "$fail"

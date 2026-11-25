@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -182,6 +183,29 @@ func TestCatalogArrayDeclines(t *testing.T) {
 	var d *DeclineError
 	if !errors.As(err, &d) {
 		t.Fatalf("got %v, want a decline", err)
+	}
+}
+
+// DeclineCovered declines what a maxOutput would change and reads every
+// other lookup as no entry.
+func TestDeclineCovered(t *testing.T) {
+	path := writeTemp(t, `{"models":{"mystery-1":{"vision":true}},"providers":{"p":{"mystery-1":{"maxOutput":3000},"zeta-9":{"contextWindow":5}}}}`)
+	c := DeclineCovered(NewFileCatalog(path))
+	if m, ok := c.Modalities("mystery-1"); ok || m.Vision {
+		t.Fatalf("modalities %+v %v", m, ok)
+	}
+	for _, model := range []string{"zeta-9", "other"} {
+		if err := catching(func() { c.Limits("p", model) }); err != nil {
+			t.Fatalf("%s: %v", model, err)
+		}
+	}
+	var d *DeclineError
+	if err := catching(func() { c.Limits("p", "acme/Mystery-1") }); !errors.As(err, &d) || !strings.Contains(d.Reason, "maxOutput") {
+		t.Fatalf("got %v, want a maxOutput decline", err)
+	}
+	// Through Prepare's capabilities, as the native route reads them.
+	if err := catching(func() { NewModels(c).Capabilities("p", "mystery-1") }); err == nil {
+		t.Fatal("Capabilities didn't decline")
 	}
 }
 
