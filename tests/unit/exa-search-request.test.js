@@ -43,7 +43,7 @@ describe("Exa search results", () => {
   it("joins every highlight a result returned into its snippet, falling back to page text", () => {
     const { results } = normalizeSearchResponse("exa", {
       results: [
-        { title: "A", url: "https://a.example/x", highlights: ["First excerpt.", "  ", "Second excerpt."] },
+        { title: "A", url: "https://a.example/x", highlights: ["First excerpt.", "  ", "Second excerpt."], text: "Page text." },
         { title: "B", url: "https://b.example/y", text: "Page text only." },
         { title: "C", url: "https://c.example/z", highlights: [] },
       ],
@@ -55,7 +55,7 @@ describe("Exa search results", () => {
 describe("Exa search end to end", () => {
   it("sends the lite body to Exa, keeps the requested count, and reports lite's base price", async () => {
     // The SSRF guard resolves the host before fetching; keep that off the network.
-    vi.spyOn(dns.promises, "lookup").mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    const lookup = vi.spyOn(dns.promises, "lookup").mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
     const hits = Array.from({ length: 10 }, (_, i) => ({ title: `R${i}`, url: `https://r${i}.example/`, highlights: [`Excerpt ${i}.`] }));
     hits[0].highlights = ["One.", "Two."];
     const fetch = vi.fn(async () => new Response(JSON.stringify({ results: hits }), {
@@ -70,7 +70,8 @@ describe("Exa search end to end", () => {
       providerConfig: searchConfig,
       credentials: { apiKey: "exa_test_key" },
     });
-    expect(result.success).toBe(true);
+    expect(result).toMatchObject({ success: true });
+    expect(lookup).toHaveBeenCalledWith("api.exa.ai", expect.objectContaining({ all: true }));
     expect(fetch).toHaveBeenCalledTimes(1);
     const [url, init] = fetch.mock.calls[0];
     expect(url).toBe("https://api.exa.ai/search");
