@@ -140,7 +140,7 @@ export async function exchangeTokens(providerName, code, redirectUri, codeVerifi
  */
 export async function requestDeviceCode(providerName, codeChallenge, options) {
   const provider = getProvider(providerName);
-  if (provider.flowType !== "device_code") {
+  if (!provider.requestDeviceCode) {
     throw new Error(`Provider ${providerName} does not support device code flow`);
   }
   return await provider.requestDeviceCode(provider.config, codeChallenge, options || {});
@@ -155,7 +155,7 @@ export async function requestDeviceCode(providerName, codeChallenge, options) {
  */
 export async function pollForToken(providerName, deviceCode, codeVerifier, extraData) {
   const provider = getProvider(providerName);
-  if (provider.flowType !== "device_code") {
+  if (!provider.pollToken) {
     throw new Error(`Provider ${providerName} does not support device code flow`);
   }
 

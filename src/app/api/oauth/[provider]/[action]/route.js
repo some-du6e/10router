@@ -189,8 +189,14 @@ export async function GET(request, { params }) {
 
     if (action === "device-code") {
       const providerData = getProvider(provider);
-      if (providerData.flowType !== "device_code") {
+      if (!providerData.requestDeviceCode) {
         return NextResponse.json({ error: "Provider does not support device code flow" }, { status: 400 });
+      }
+
+      if (provider === "codex") {
+        return NextResponse.json(await requestDeviceCode(provider), {
+          headers: { "Cache-Control": "no-store" },
+        });
       }
 
       const authData = await generateAuthData(provider, null);
@@ -367,7 +373,12 @@ export async function POST(request, { params }) {
       // Providers that don't use PKCE for device code
       const noPkceProviders = ["github", "kimi", "kimi-coding", "kilocode", "codebuddy-cn", "codebuddy-intl"];
       let result;
-      if (noPkceProviders.includes(provider)) {
+      if (provider === "codex") {
+        if (typeof deviceCode !== "string" || typeof extraData?.userCode !== "string" || !extraData.userCode) {
+          return NextResponse.json({ error: "Missing Codex device authorization ID or user code" }, { status: 400 });
+        }
+        result = await pollForToken(provider, deviceCode, null, extraData);
+      } else if (noPkceProviders.includes(provider)) {
         // kimi needs extraData._kimiDeviceId for stable X-Msh-Device-Id (CLIProxyAPI parity)
         result = await pollForToken(provider, deviceCode, null, extraData);
       } else if (provider === "kiro") {

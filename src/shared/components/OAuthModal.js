@@ -16,6 +16,7 @@ import {
 } from "@/shared/utils/oauthCallbackBinding.js";
 
 const openWindow = (url, target, features) => window.open(url, target, features);
+const CODEX_CALLBACK_URL = "http://127.0.0.1:1455/auth/callback";
 
 // Providers offering a paste-token fallback (import-token flow).
 // UX warns if the IDE (which issues the token) is not installed.
@@ -44,7 +45,7 @@ const PASTE_TOKEN_PROVIDERS = {
  * - Remote: Manual paste callback URL
  */
 export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, onClose, oauthMeta, idcConfig }) {
-  const [step, setStep] = useState("waiting"); // waiting | input | success | error
+  const [step, setStep] = useState(provider === "codex" ? "choose" : "waiting");
   const [authData, setAuthData] = useState(null);
   const [callbackUrl, setCallbackUrl] = useState("");
   const [error, setError] = useState(null);
@@ -57,7 +58,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const [ideStatus, setIdeStatus] = useState(null);
   const [ignoredCallback, setIgnoredCallback] = useState(false);
   const popupRef = useRef(null);
-  const pollingAbortRef = useRef(false);
+  const codexProxyRef = useRef(false);
+  const deviceAttemptRef = useRef(null);
   const openedRef = useRef(false);
   const { copied, copy } = useCopyToClipboard();
 
@@ -128,8 +130,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   }, [authData, onSuccess]);
 
   // Poll for device code token
-  const startPolling = useCallback(async (deviceCode, codeVerifier, interval, extraData, deadlineMs) => {
-    pollingAbortRef.current = false;
+  const startPolling = useCallback(async (deviceCode, codeVerifier, interval, extraData, deadlineMs, signal) => {
     setPolling(true);
     // Honor the upstream's expires_in when supplied (qoder sets 300s) so we
     // don't time out earlier than the device code itself. Default 120s
@@ -138,47 +139,38 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     const deadline = startedAt + (Number.isFinite(deadlineMs) && deadlineMs > 0 ? deadlineMs : 120_000);
 
     while (Date.now() < deadline) {
-      // Check if polling should be aborted
-      if (pollingAbortRef.current) {
-        console.log("[OAuthModal] Polling aborted");
-        setPolling(false);
-        return;
-      }
-
-      await new Promise((r) => setTimeout(r, interval * 1000));
-
-      // Check again after sleep
-      if (pollingAbortRef.current) {
-        console.log("[OAuthModal] Polling aborted after sleep");
-        setPolling(false);
-        return;
-      }
+      await new Promise((r) => setTimeout(r, Math.min(interval * 1000, deadline - Date.now())));
+      if (signal.aborted) return;
+      if (Date.now() >= deadline) break;
 
       try {
         const res = await fetch(`/api/oauth/${provider}/poll`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ deviceCode, codeVerifier, extraData }),
+          signal,
         });
 
         const data = await res.json();
+        if (signal.aborted) return;
 
         if (data.success) {
-          pollingAbortRef.current = true; // Stop polling immediately
           setStep("success");
           setPolling(false);
           onSuccess?.(data);
           return;
         }
 
-        if (data.error === "expired_token" || data.error === "access_denied") {
-          throw new Error(data.errorDescription || data.error);
+        if (data.error === "expired_token" || data.error === "access_denied"
+          || (provider === "codex" && (!res.ok || !data.pending))) {
+          throw new Error(data.errorDescription || data.error || "Device authorization failed");
         }
 
         if (data.error === "slow_down") {
           interval = Math.min(interval + 5, 30);
         }
       } catch (err) {
+        if (signal.aborted) return;
         setError(err.message);
         setStep("error");
         setPolling(false);
@@ -223,8 +215,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   }, []);
 
   // Start OAuth flow
-  const startOAuthFlow = useCallback(async () => {
+  const startOAuthFlow = useCallback(async (codexMethod = "browser") => {
     if (!provider) return;
+    let deviceSignal;
     try {
       setError(null);
 
@@ -247,8 +240,13 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         "qoder",
         "grok-cli",
       ];
-      if (deviceCodeProviders.includes(provider)) {
+      if (deviceCodeProviders.includes(provider) || (provider === "codex" && codexMethod === "device")) {
+        deviceAttemptRef.current?.abort();
+        const attempt = new AbortController();
+        deviceAttemptRef.current = attempt;
+        deviceSignal = attempt.signal;
         setIsDeviceCode(true);
+        setDeviceData(null);
         setStep("waiting");
 
         const deviceCodeUrl = new URL(`/api/oauth/${provider}/device-code`, window.location.origin);
@@ -259,8 +257,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           }
           deviceCodeUrl.searchParams.set("auth_method", "idc");
         }
-        const res = await fetch(deviceCodeUrl.toString());
+        const res = await fetch(deviceCodeUrl.toString(), { signal: deviceSignal });
         const data = await res.json();
+        if (deviceSignal.aborted) return;
         if (!res.ok) throw new Error(data.error);
 
         setDeviceData(data);
@@ -269,26 +268,26 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         const verifyUrl = data.verification_uri_complete || data.verification_uri;
         if (verifyUrl) window.open(verifyUrl, "_blank", "noopener,noreferrer");
 
-        // Pass extraData for Kiro (contains _clientId, _clientSecret) and
-        // Qoder (contains _qoderMachineId / _qoderNonce — needed so mapTokens
-        // can persist the machine id alongside the token).
-        const extraData = provider === "kiro"
-          ? {
-              _clientId: data._clientId,
-              _clientSecret: data._clientSecret,
-              _region: data._region,
-              _authMethod: data._authMethod,
-              _startUrl: data._startUrl,
-            }
-          : provider === "qoder"
-          ? {
-              _qoderNonce: data._qoderNonce,
-              _qoderMachineId: data._qoderMachineId,
-              _qoderVerifier: data.codeVerifier,
-            }
-          : (provider === "kimi" || provider === "kimi-coding")
-          ? { _kimiDeviceId: data._kimiDeviceId }
-          : null;
+        let extraData = null;
+        if (provider === "codex") {
+          extraData = { userCode: data.user_code };
+        } else if (provider === "kiro") {
+          extraData = {
+            _clientId: data._clientId,
+            _clientSecret: data._clientSecret,
+            _region: data._region,
+            _authMethod: data._authMethod,
+            _startUrl: data._startUrl,
+          };
+        } else if (provider === "qoder") {
+          extraData = {
+            _qoderNonce: data._qoderNonce,
+            _qoderMachineId: data._qoderMachineId,
+            _qoderVerifier: data.codeVerifier,
+          };
+        } else if (provider === "kimi" || provider === "kimi-coding") {
+          extraData = { _kimiDeviceId: data._kimiDeviceId };
+        }
         startPolling(
           data.device_code,
           data.codeVerifier,
@@ -299,6 +298,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           Number.isFinite(data.expires_in) && data.expires_in > 0
             ? data.expires_in * 1000
             : undefined,
+          deviceSignal,
         );
         return;
       }
@@ -307,7 +307,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       const appPort = window.location.port || (window.location.protocol === "https:" ? "443" : "80");
       let redirectUri;
       if (provider === "codex") {
-        redirectUri = "http://localhost:1455/auth/callback";
+        redirectUri = CODEX_CALLBACK_URL;
       } else if (provider === "xai") {
         redirectUri = "http://127.0.0.1:56121/callback";
       } else {
@@ -327,7 +327,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       // Codex: start proxy with server-side session (auto-exchange) + fallback to channels
       let codexProxyActive = false;
       let codexServerSide = false;
-      if (provider === "codex") {
+      if (provider === "codex" && isLocalhost) {
         try {
           const proxyUrl = new URL(`/api/oauth/codex/start-proxy`, window.location.origin);
           proxyUrl.searchParams.set("app_port", appPort);
@@ -338,6 +338,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           const proxyData = await proxyRes.json();
           codexProxyActive = proxyData.success;
           codexServerSide = !!proxyData.serverSide;
+          codexProxyRef.current = codexProxyActive;
         } catch {
           codexProxyActive = false;
         }
@@ -406,6 +407,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         }
       }
     } catch (err) {
+      if (deviceSignal?.aborted) return;
       setError(err.message);
       setStep("error");
     }
@@ -427,7 +429,6 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       setPasteToken("");
       setIdeStatus(null);
       setIgnoredCallback(false);
-      pollingAbortRef.current = false;
       // Best-effort IDE detection for paste-token providers (Trae/Windsurf)
       if (PASTE_TOKEN_PROVIDERS[provider]) {
         fetch(`/api/oauth/${provider}/ide-status`)
@@ -435,13 +436,17 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           .then((data) => setIdeStatus(data))
           .catch(() => setIdeStatus({ installed: false, path: null }));
       }
-      startOAuthFlow();
+      if (provider === "codex") setStep("choose");
+      else startOAuthFlow();
     } else if (!isOpen) {
       // Abort polling and cleanup proxy when modal closes
-      pollingAbortRef.current = true;
+      deviceAttemptRef.current?.abort();
       openedRef.current = false;
       if (provider === "codex") {
-        fetch("/api/oauth/codex/stop-proxy").catch(() => {});
+        if (codexProxyRef.current) {
+          codexProxyRef.current = false;
+          fetch("/api/oauth/codex/stop-proxy").catch(() => {});
+        }
       } else if (provider === "xai") {
         fetch("/api/oauth/xai/stop-proxy").catch(() => {});
       } else if (provider === "trae") {
@@ -645,8 +650,12 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
   // Clear session on modal close + cleanup proxy
   const handleClose = useCallback(() => {
+    deviceAttemptRef.current?.abort();
     if (provider === "codex") {
-      fetch("/api/oauth/codex/stop-proxy").catch(() => {});
+      if (codexProxyRef.current) {
+        codexProxyRef.current = false;
+        fetch("/api/oauth/codex/stop-proxy").catch(() => {});
+      }
     } else if (provider === "xai") {
       fetch("/api/oauth/xai/stop-proxy").catch(() => {});
     } else if (provider === "trae") {
@@ -666,13 +675,31 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const modalTitle = isXaiProvider ? "Connect Grok Build OAuth" : `Connect ${providerInfo.name}`;
   const manualPlaceholder = isXaiProvider
     ? "http://127.0.0.1:56121/callback?code=... or copied code"
-    : isKimchiProvider
-      ? `${placeholderUrl.replace("code=...", "token=...")} or copied token`
-      : placeholderUrl;
+    : provider === "codex"
+      ? `${CODEX_CALLBACK_URL}?code=...`
+      : isKimchiProvider
+        ? `${placeholderUrl.replace("code=...", "token=...")} or copied token`
+        : placeholderUrl;
 
   return (
     <Modal isOpen={isOpen} title={modalTitle} onClose={handleClose} size="lg">
       <div className="flex flex-col gap-4">
+        {provider === "codex" && step === "choose" && (
+          <>
+            <p className="text-sm text-text-muted">
+              Use a device code if 10router is running on another machine or the browser callback fails.
+              Device sign-in must be enabled in your ChatGPT security settings.
+            </p>
+            <div className="flex gap-2">
+              <Button onClick={() => { setStep("waiting"); return startOAuthFlow(); }} variant="secondary" fullWidth>
+                Sign in with browser
+              </Button>
+              <Button onClick={() => startOAuthFlow("device")} fullWidth>
+                Use device code
+              </Button>
+            </div>
+          </>
+        )}
         {ignoredCallback && (step === "waiting" || step === "input") && (
           <p className="text-xs text-text-muted">A sign-in callback that wasn&apos;t for this login was ignored.</p>
         )}
@@ -891,8 +918,18 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
             <h3 className="text-lg font-semibold mb-2">Connection Failed</h3>
             <p className="text-sm text-red-600 mb-4">{error}</p>
             <div className="flex gap-2">
-              <Button onClick={startOAuthFlow} variant="secondary" fullWidth>
-                Try Again
+              <Button onClick={() => {
+                if (provider === "codex") {
+                  setAuthData(null);
+                  setCallbackUrl("");
+                  setIsDeviceCode(false);
+                  setIgnoredCallback(false);
+                  setStep("choose");
+                } else {
+                  startOAuthFlow();
+                }
+              }} variant="secondary" fullWidth>
+                {provider === "codex" ? "Back to sign-in options" : "Try Again"}
               </Button>
               <Button onClick={handleClose} variant="ghost" fullWidth>
                 Cancel

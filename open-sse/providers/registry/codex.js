@@ -76,6 +76,10 @@ export default {
     codeChallengeMethod: "S256",
     fixedPort: 1455,
     callbackPath: "/auth/callback",
+    deviceCodeUrl: "https://auth.openai.com/api/accounts/deviceauth/usercode",
+    deviceTokenUrl: "https://auth.openai.com/api/accounts/deviceauth/token",
+    deviceVerificationUrl: "https://auth.openai.com/codex/device",
+    deviceRedirectUri: "https://auth.openai.com/deviceauth/callback",
     extraParams: {
       id_token_add_organizations: "true",
       codex_cli_simplified_flow: "true",

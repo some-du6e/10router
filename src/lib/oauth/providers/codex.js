@@ -1,11 +1,26 @@
 import { CODEX_CONFIG } from "../constants/oauth.js";
 import { extractCodexAccountInfo } from "../providerHelpers.js";
+import { pollCodexDeviceCode, requestCodexDeviceCode } from "./codexDevice.js";
 
 const codex = {
   config: CODEX_CONFIG,
   flowType: "authorization_code_pkce",
   fixedPort: CODEX_CONFIG.fixedPort,
   callbackPath: CODEX_CONFIG.callbackPath,
+  requestDeviceCode: requestCodexDeviceCode,
+  pollToken: async (config, deviceCode, _codeVerifier, extraData) => {
+    const authorization = await pollCodexDeviceCode(config, deviceCode, extraData?.userCode);
+    if (!authorization) return { ok: false, data: { error: "authorization_pending" } };
+
+    try {
+      const tokens = await codex.exchangeToken(
+        config, authorization.code, config.deviceRedirectUri, authorization.verifier
+      );
+      return { ok: true, data: tokens };
+    } catch {
+      throw new Error("Codex device code exchange failed. Start a new sign-in and try again.");
+    }
+  },
   buildAuthUrl: (config, redirectUri, state, codeChallenge) => {
     const params = {
       response_type: "code",

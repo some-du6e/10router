@@ -480,13 +480,49 @@ describe("auth flows forward the saved connection", () => {
       },
     });
     const props = { isOpen: true, provider: "codex", providerInfo: { name: "Codex" }, onSuccess: vi.fn(), onClose: vi.fn() };
+    component.render(props);
+    await button(component.render(props), "Sign in with browser").props.onClick();
     await vi.waitFor(() => {
       component.render(props);
       expect(props.onSuccess).toHaveBeenCalled();
     }, { timeout: 4000, interval: 50 });
     expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/oauth/codex/poll-status?state=state-1"));
+    expect(new URL(fetch.mock.calls[0][0]).searchParams.get("redirect_uri")).toBe("http://127.0.0.1:1455/auth/callback");
     expect(props.onSuccess).toHaveBeenCalledWith(pollResult);
     expect(reauthOutcome("saved-account", props.onSuccess.mock.calls[0][0])).toBe("confirmed");
+  });
+
+  it("uses device-code sign-in from a remote Codex dashboard", async () => {
+    const verificationUrl = "https://auth.openai.com/codex/device";
+    const result = { success: true, connection: { id: "saved-account", provider: "codex" } };
+    const fetch = vi.fn(async (url) => {
+      if (url.endsWith("/device-code")) return Response.json({
+        device_code: "device-auth-id", user_code: "ABCD-1234",
+        verification_uri: verificationUrl, interval: 1, expires_in: 900,
+      });
+      return Response.json(result);
+    });
+    const open = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    vi.stubGlobal("window", {
+      location: { hostname: "router.example.test", origin: "https://router.example.test" },
+      open,
+    });
+    const component = dashboardComponent("src/shared/components/OAuthModal.js", {
+      ...componentImports,
+      "@/shared/utils/oauthCallbackBinding.js": { PROXY_OAUTH_PROVIDERS: new Set() },
+    });
+    const props = { isOpen: true, provider: "codex", providerInfo: { name: "Codex" }, onSuccess: vi.fn(), onClose: vi.fn() };
+    await button(component.render(props), "Use device code").props.onClick();
+    expect(textContent(component.render(props))).toContain("ABCD-1234");
+    expect(open).toHaveBeenCalledWith(verificationUrl, "_blank", "noopener,noreferrer");
+    await vi.waitFor(() => expect(props.onSuccess).toHaveBeenCalledWith(result), { timeout: 2500 });
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      "https://router.example.test/api/oauth/codex/device-code", "/api/oauth/codex/poll",
+    ]);
+    expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({
+      deviceCode: "device-auth-id", extraData: { userCode: "ABCD-1234" },
+    });
   });
 
   it("forwards the connection the GitLab PAT route saved", async () => {
