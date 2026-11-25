@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/some-du6e/10router/gateway/internal/claudeprep"
@@ -200,6 +201,21 @@ func (r Resolved) Sendable(env Env, target string) error {
 	if proxy := envProxyURL(env, target); proxy != "" {
 		return declined("the system proxy (HTTP(S)_PROXY) applies")
 	}
+	// JavaScript lowercases a non-ASCII NO_PROXY entry its own way (İ is i
+	// and a combining dot): when it decides whether a set proxy applies, it is
+	// Node's call.
+	if envProxyURL(func(n string) string {
+		if n == "NO_PROXY" || n == "no_proxy" {
+			return ""
+		}
+		return env(n)
+	}, target) != "" {
+		for _, n := range []string{"NO_PROXY", "no_proxy"} {
+			if v := env(n); v != "" && !printableASCII(strings.ReplaceAll(v, " ", "")) {
+				return declined("a NO_PROXY that isn't ASCII")
+			}
+		}
+	}
 	return nil
 }
 
@@ -262,19 +278,29 @@ func PreflightKey(ctx context.Context, c *db.Connection, s Settings, pools Pools
 // MergeDroppedBetas is the key's settings with the flags an attempt learned
 // (Input.LearnedBetas) added, as Node's next read of the row has them once
 // saveDroppedBetas wrote them: a key tried again in the same pass sends
-// without them. The flags come from the beta header the attempt sent, so
-// sanitizeNodeQuirks keeps them; it keeps at most 50.
+// without them. Node's union is sanitizeNodeQuirks': each flag trimmed, kept
+// only if it is a flag name (FLAG_RE), deduplicated, at most 50.
 func MergeDroppedBetas(n claudeprep.NodeSettings, learned []string) claudeprep.NodeSettings {
 	if len(learned) == 0 {
 		return n
 	}
-	merged := appendUnique(n.DroppedBetas, learned...)
-	if len(merged) > 50 {
-		merged = merged[:50]
+	var kept []string
+	for _, f := range append(append([]string(nil), n.DroppedBetas...), learned...) {
+		if f = jsTrim(f); flagRe.MatchString(f) {
+			kept = append(kept, f)
+		}
 	}
-	n.DroppedBetas = merged
+	kept = appendUnique(kept)
+	if len(kept) > 50 {
+		kept = kept[:50]
+	}
+	n.DroppedBetas = kept
 	return n
 }
+
+// flagRe is nodeQuirks.ts's FLAG_RE (module-private, restated; ASCII only,
+// so /i is the two cases).
+var flagRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,80}$`)
 
 // envProxyURL is getEnvProxyUrl(target), normalized: the system proxy the
 // request would go through, or "".

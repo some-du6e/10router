@@ -29,7 +29,10 @@ type AttemptResult struct {
 
 // Attempt sends the request with one connection. An error is a decline
 // (the request goes to Node) or a failure the caller handles.
-type Attempt func(ctx context.Context, c *db.Connection) (AttemptResult, error)
+// onBudget is chatCore's onHeadersBudget: the sender reports each send's
+// headers budget (upstream.Input.OnHeadersBudget), which restarts a probe's
+// lease on the model, as noteProbeBudget does for this request's id.
+type Attempt func(ctx context.Context, c *db.Connection, onBudget func(ms float64)) (AttemptResult, error)
 
 // Reply is the Response Node's loop returns for a failure, to be written in
 // the client's format: errorResponse(status, message), or with Unavailable
@@ -221,7 +224,9 @@ func (a *Accounts) accountPass(ctx context.Context, in LoopInput, requestID stri
 			return a.noAccount(in, pick.AllLocked, exclude, failures, accountErrors, lastStatus, lastError, hasLast, lockedUntil), nil
 		}
 		c := conn{pick.Conn}
-		res, err := attempt(ctx, pick.Conn)
+		res, err := attempt(ctx, pick.Conn, func(ms float64) {
+			a.Hang.NoteProbeBudget(in.Provider, in.Model, requestID, ms, a.nowMs())
+		})
 		if err != nil {
 			return Outcome{}, err
 		}

@@ -591,6 +591,13 @@ func TestSelectChecksThePickBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestKeysShareOneUpstreamNeedsATransport(t *testing.T) {
+	d, _ := openKeys(t, keyRow(t, "k1", 1, `{"apiKey":"key-k1"}`))
+	if _, err := New(d).KeysShareOneUpstream(context.Background(), "openai-compatible-chat-hot", nil); !decline.Is(err) {
+		t.Fatalf("%v", err)
+	}
+}
+
 // Each RunModel call is its own request for model hang, as each
 // routeSingleModelChat has its own randomUUID: a combo that reaches the model
 // twice, with a header timeout each time, makes it hung.
@@ -600,7 +607,8 @@ func TestEachRunModelIsItsOwnRequest(t *testing.T) {
 	start := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
 	var offset atomic.Int64
 	a.Now = func() time.Time { return time.UnixMilli(start + offset.Load()) }
-	timeout := func(ctx context.Context, c *db.Connection) (AttemptResult, error) {
+	timeout := func(ctx context.Context, c *db.Connection, onBudget func(float64)) (AttemptResult, error) {
+		onBudget(240000)
 		return AttemptResult{Status: 504, Error: "[504]: upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)", HeadersTimeout: true, TimeoutStream: true}, nil
 	}
 	in := LoopInput{Provider: "openai-compatible-chat-hot", Model: "m", Body: claudeprep.Undefined(), Settings: objSettings{jsjson.NewObject()}, ByteSent: func() bool { return false }}

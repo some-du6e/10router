@@ -71,6 +71,9 @@
     "endMs": 1772366400000,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -104,6 +107,9 @@
     "startMs": 1772366400000,
     "endMs": 1772366400000,
     "events": [
+     {
+      "budget": 240000
+     },
      {
       "send": "k1"
      },
@@ -220,6 +226,9 @@
     "endMs": 1772366400000,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -233,6 +242,9 @@
        "resetsAtMs": 0,
        "headersTimeout": null
       }
+     },
+     {
+      "budget": 240000
      },
      {
       "send": "k2"
@@ -274,6 +286,9 @@
     "startMs": 1772366400000,
     "endMs": 1772366400000,
     "events": [
+     {
+      "budget": 240000
+     },
      {
       "send": "k2"
      },
@@ -409,6 +424,9 @@
     "endMs": 1772366400000,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -424,6 +442,9 @@
       }
      },
      {
+      "budget": 240000
+     },
+     {
       "send": "k2"
      },
      {
@@ -437,6 +458,9 @@
        "resetsAtMs": 0,
        "headersTimeout": null
       }
+     },
+     {
+      "budget": 240000
      },
      {
       "send": "c1"
@@ -566,6 +590,9 @@
     "endMs": 1772366408000,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -604,6 +631,9 @@
      {
       "sleep": 2000,
       "by": "combo"
+     },
+     {
+      "budget": 240000
      },
      {
       "send": "c1"
@@ -727,6 +757,9 @@
     "endMs": 1772366400000,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -740,6 +773,9 @@
        "resetsAtMs": 0,
        "headersTimeout": null
       }
+     },
+     {
+      "budget": 240000
      },
      {
       "send": "c1"
@@ -880,6 +916,9 @@
     "endMs": 1772366400000,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -893,6 +932,9 @@
        "resetsAtMs": 0,
        "headersTimeout": null
       }
+     },
+     {
+      "budget": 240000
      },
      {
       "send": "k1"
@@ -1066,6 +1108,9 @@
     "endMs": 1772366491000,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -1200,6 +1245,9 @@
     "endMs": 1772366400000,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -1213,6 +1261,9 @@
        "resetsAtMs": 0,
        "headersTimeout": null
       }
+     },
+     {
+      "budget": 240000
      },
      {
       "send": "k2"
@@ -1359,6 +1410,9 @@
     "endMs": 1772366880000,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -1378,6 +1432,9 @@
         "stream": true
        }
       }
+     },
+     {
+      "budget": 240000
      },
      {
       "send": "k2"
@@ -1436,6 +1493,9 @@
     "startMs": 1772366885000,
     "endMs": 1772367125000,
     "events": [
+     {
+      "budget": 240000
+     },
      {
       "send": "k3"
      },
@@ -1609,6 +1669,9 @@
     "endMs": 1772366400000,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -1622,6 +1685,9 @@
        "resetsAtMs": 0,
        "headersTimeout": null
       }
+     },
+     {
+      "budget": 240000
      },
      {
       "send": "k2"
@@ -1746,6 +1812,9 @@
     "endMs": 1772366400000,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -1788,6 +1857,9 @@
     "endMs": 1772366412150,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -1805,6 +1877,9 @@
      {
       "sleep": 2150,
       "by": "warm"
+     },
+     {
+      "budget": 240000
      },
      {
       "send": "k1"
@@ -1928,6 +2003,9 @@
     "endMs": 1772366400000,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -1969,6 +2047,9 @@
     "endMs": 1772366400010,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k2"
      },
      {
@@ -2009,6 +2090,9 @@
     "startMs": 1772366400020,
     "endMs": 1772366400020,
     "events": [
+     {
+      "budget": 240000
+     },
      {
       "send": "k1"
      },
@@ -2117,6 +2201,9 @@
     "startMs": 1772366400000,
     "endMs": 1772366400000,
     "events": [
+     {
+      "budget": 240000
+     },
      {
       "send": "k1"
      },
@@ -2271,6 +2358,9 @@
     "endMs": 1772366400000,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -2284,6 +2374,9 @@
        "resetsAtMs": 0,
        "headersTimeout": null
       }
+     },
+     {
+      "budget": 240000
      },
      {
       "send": "k2"
@@ -2417,6 +2510,9 @@
     "endMs": 1772366400000,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -2430,6 +2526,9 @@
        "resetsAtMs": 0,
        "headersTimeout": null
       }
+     },
+     {
+      "budget": 240000
      },
      {
       "send": "k2"
@@ -2553,6 +2652,9 @@
     "endMs": 1772366400000,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -2566,6 +2668,9 @@
        "resetsAtMs": 0,
        "headersTimeout": null
       }
+     },
+     {
+      "budget": 240000
      },
      {
       "send": "k2"
@@ -2694,6 +2799,9 @@
     "endMs": 1772366400000,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -2736,6 +2844,9 @@
     "endMs": 1772366416300,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -2755,6 +2866,9 @@
       "by": "warm"
      },
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -2772,6 +2886,9 @@
      {
       "sleep": 4150,
       "by": "warm"
+     },
+     {
+      "budget": 240000
      },
      {
       "send": "k1"
@@ -2908,6 +3025,9 @@
     "endMs": 1772366400000,
     "events": [
      {
+      "budget": 240000
+     },
+     {
       "send": "k1"
      },
      {
@@ -2923,6 +3043,9 @@
       }
      },
      {
+      "budget": 240000
+     },
+     {
       "send": "k2"
      },
      {
@@ -2936,6 +3059,9 @@
        "resetsAtMs": 0,
        "headersTimeout": null
       }
+     },
+     {
+      "budget": 240000
      },
      {
       "send": "k3"

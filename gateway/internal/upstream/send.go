@@ -157,6 +157,7 @@ func (s *Sender) Send(ctx context.Context, req *claudeprep.Request) (*http.Respo
 		// first bytes, which may come long after the response headers.
 		resp.Body = &gunzip{raw: resp.Body}
 		resp.Header.Del("Content-Length")
+		resp.ContentLength, resp.Uncompressed = -1, true
 	default:
 		resp.Body.Close()
 		return nil, fmt.Errorf("%w: content-encoding %q", ErrNetwork, enc)
@@ -201,21 +202,47 @@ func (b *idleBody) Close() error {
 	return b.ReadCloser.Close()
 }
 
-// gunzip opens the gzip stream on the first Read.
+// gunzip opens the gzip stream on the first Read. Node's fetch inflates with
+// Z_SYNC_FLUSH, so a body that ends cleanly before the gzip trailer decodes
+// up to there and ends: the same here. A body cut by the network still fails.
 type gunzip struct {
 	raw io.ReadCloser
+	src *eofSeen
 	zr  *gzip.Reader
 	err error
 }
 
+// eofSeen records whether the body under the decoder ended cleanly.
+type eofSeen struct {
+	r   io.Reader
+	eof bool
+}
+
+func (e *eofSeen) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	if err == io.EOF {
+		e.eof = true
+	}
+	return n, err
+}
+
 func (g *gunzip) Read(p []byte) (int, error) {
 	if g.zr == nil && g.err == nil {
-		g.zr, g.err = gzip.NewReader(g.raw)
+		g.src = &eofSeen{r: g.raw}
+		g.zr, g.err = gzip.NewReader(g.src)
+		if g.err == io.EOF {
+			// An empty body: nothing to decode.
+			return 0, io.EOF
+		}
 	}
 	if g.err != nil {
 		return 0, g.err
 	}
-	return g.zr.Read(p)
+	n, err := g.zr.Read(p)
+	if err == io.ErrUnexpectedEOF && g.src.eof {
+		err = io.EOF
+	}
+	return n, err
 }
 
 func (g *gunzip) Close() error { return g.raw.Close() }

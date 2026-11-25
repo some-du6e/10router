@@ -51,7 +51,9 @@ type fallbackFile []struct {
 }
 
 type event struct {
-	Send    *string `json:"send"`
+	Send *string `json:"send"`
+	// Budget: a send's headers budget, reported to model hang.
+	Budget  float64 `json:"budget"`
 	Sleep   float64 `json:"sleep"`
 	By      string  `json:"by"`
 	Attempt *struct {
@@ -73,6 +75,8 @@ func (e event) String() string {
 		return "send " + *e.Send
 	case e.Attempt != nil:
 		return fmt.Sprintf("attempt %s %d", e.Attempt.ConnectionID, e.Attempt.Status)
+	case e.Budget > 0:
+		return fmt.Sprintf("budget %v", e.Budget)
 	}
 	return fmt.Sprintf("sleep %s %v", e.By, e.Sleep)
 }
@@ -178,10 +182,13 @@ func TestFallbackMatchesNode(t *testing.T) {
 					}
 				}
 				leaf := func(ctx context.Context, provider, model string) (accounts.Outcome, error) {
-					attempt := func(ctx context.Context, c *db.Connection) (accounts.AttemptResult, error) {
+					attempt := func(ctx context.Context, c *db.Connection, onBudget func(float64)) (accounts.AttemptResult, error) {
 						for {
 							e := take("tries " + c.ID)
 							switch {
+							case e.Budget > 0:
+								// The sender reports it as it sends.
+								onBudget(e.Budget)
 							case e.Send != nil:
 								if *e.Send != c.ID {
 									t.Fatalf("request %d: Go tries %s, Node sent with %s", i, c.ID, *e.Send)
@@ -506,6 +513,24 @@ func TestPreflightCatchesStrategiesAndPrepare(t *testing.T) {
 				t.Fatalf("want a decline naming %q, got %v", c.want, err)
 			}
 		})
+	}
+}
+
+func TestRunNeedsAPreflightAndReturnsSleepErrors(t *testing.T) {
+	plan := &Target{Combo: "main", Members: []*Target{{Provider: "openai-compatible-chat-a", Model: "m"}, {Provider: "openai-compatible-chat-b", Model: "m"}}}
+	if _, err := Run(context.Background(), plan, Env{}); err == nil || !strings.Contains(err.Error(), "Preflight") {
+		t.Fatalf("Run without a preflight: %v", err)
+	}
+	// A 503 the transient wait covers, then a wait that fails on its own.
+	overloaded := accounts.Outcome{Status: 503, Reply: accounts.Reply{Status: 503, Message: "[503]: The model is overloaded"}}
+	sleepErr := errors.New("sleep failed")
+	_, err := Run(context.Background(), plan, Env{
+		Leaf:      func(context.Context, string, string) (accounts.Outcome, error) { return overloaded, nil },
+		Preflight: func(context.Context, string, string) error { return nil },
+		Sleep:     func(context.Context, float64) error { return sleepErr },
+	})
+	if !errors.Is(err, sleepErr) {
+		t.Fatalf("a failed wait with the client still there: %v", err)
 	}
 }
 

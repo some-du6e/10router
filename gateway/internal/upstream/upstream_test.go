@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -257,6 +258,8 @@ type scriptStep struct {
 	Gzip     bool   `json:"gzip"`
 	// Cut: promise more than is sent, then drop the connection.
 	Cut bool `json:"cut"`
+	// NoTrailer: the gzip body without its 8-byte trailer.
+	NoTrailer bool `json:"noTrailer"`
 }
 
 const sseOK = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
@@ -327,6 +330,9 @@ func scripted(t *testing.T, script []json.RawMessage) (*httptest.Server, *[]wire
 			_ = zw.Close()
 			out = buf.Bytes()
 			w.Header().Set("content-encoding", "gzip")
+		}
+		if step.NoTrailer {
+			out = out[:len(out)-8]
 		}
 		w.WriteHeader(step.Status)
 		_, _ = w.Write(out)
@@ -541,12 +547,45 @@ func TestStatusesNodeCantReplyWithGoToNode(t *testing.T) {
 }
 
 func TestMergeDroppedBetas(t *testing.T) {
-	n := MergeDroppedBetas(claudeprep.NodeSettings{DroppedBetas: []string{"a-1"}}, []string{"a-1", "b-2"})
+	n := MergeDroppedBetas(claudeprep.NodeSettings{DroppedBetas: []string{"a-1"}}, []string{"a-1", " b-2 ", "foo/bar", strings.Repeat("x", 82), "-lead"})
 	if !slices.Equal(n.DroppedBetas, []string{"a-1", "b-2"}) {
-		t.Fatalf("%v", n.DroppedBetas)
+		t.Fatalf("sanitizeNodeQuirks keeps flag names only: %v", n.DroppedBetas)
 	}
 	if m := MergeDroppedBetas(n, nil); !slices.Equal(m.DroppedBetas, n.DroppedBetas) {
 		t.Fatal("nothing learned changes nothing")
+	}
+	var many []string
+	for i := 0; i < 60; i++ {
+		many = append(many, fmt.Sprintf("f-%d", i))
+	}
+	if got := MergeDroppedBetas(claudeprep.NodeSettings{}, many); len(got.DroppedBetas) != 50 {
+		t.Fatalf("at most 50: %d", len(got.DroppedBetas))
+	}
+}
+
+func TestExecuteReturnsAFailedRetryWait(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
+	defer srv.Close()
+	sleepErr := errors.New("sleep failed")
+	req := &claudeprep.Request{URL: srv.URL, Body: []byte("{}")}
+	_, err := NewSender().Execute(context.Background(), Input{
+		Prepare: func(claudeprep.NodeSettings) (*claudeprep.Request, error) { return req, nil },
+		Env:     envOf(nil),
+		Sleep:   func(context.Context, float64) error { return sleepErr },
+	})
+	if !errors.Is(err, sleepErr) {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestNonASCIINoProxyIsNodesCall(t *testing.T) {
+	r := Resolved{Layer: "system"}
+	env := envOf(map[string]string{"HTTPS_PROXY": "http://proxy.test:1", "NO_PROXY": "İnternal.test"})
+	if err := r.Sendable(env, "https://internal.test/v1"); !decline.Is(err) {
+		t.Fatalf("%v", err)
+	}
+	if err := r.Sendable(envOf(map[string]string{"NO_PROXY": "İnternal.test"}), "https://internal.test/v1"); err != nil {
+		t.Fatalf("no proxy set, NO_PROXY can't matter: %v", err)
 	}
 }
 

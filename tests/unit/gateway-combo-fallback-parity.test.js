@@ -87,6 +87,12 @@ vi.mock("../../open-sse/handlers/chatCore.js", async (importOriginal) => {
   };
 });
 
+// Each send's headers budget, as the executor reports it to model hang.
+vi.mock("../../open-sse/services/modelHang.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, noteProbeBudget: (provider, model, requestId, budgetMs) => { world.events.push({ budget: budgetMs }); return actual.noteProbeBudget(provider, model, requestId, budgetMs); } };
+});
+
 const SSE_OK = [
   ["message_start", { type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: "m1", content: [], stop_reason: null, usage: { input_tokens: 10, output_tokens: 0 } } }],
   ["content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }],
@@ -263,8 +269,10 @@ function installSleepShim() {
 
 async function runScenario(scenario, dir) {
   // Routing state Node keeps on global, which outlives the module reset.
+  // modelHang.js is mocked, so its first instance (and the map it took from
+  // global) stays: that map is emptied, not replaced.
   delete global._authEvents;
-  delete global._modelHang;
+  global._modelHang?.clear();
   delete global._selectionMutexes;
   const { adapter, repos } = await openRepos("sql.js", dir);
   vi.useFakeTimers({ toFake: ["Date"] });

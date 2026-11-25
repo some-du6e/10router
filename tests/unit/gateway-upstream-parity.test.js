@@ -233,6 +233,9 @@ const WIRE = [
   { name: "a retry, then a rejected flag", script: [json(503, { error: { message: "busy" } }), rejected("fine-grained-tool-streaming-2025-05-14"), "ok"] },
   { name: "an empty 404", script: [{ status: 404, body: "" }] },
   { name: "a gzip error body", script: [{ status: 500, body: JSON.stringify({ error: { message: "zipped" } }), gzip: true }] },
+  // Fetch inflates with Z_SYNC_FLUSH: a gzip body that ends before its
+  // trailer still reads as far as it got.
+  { name: "a gzip error body without its trailer", script: [{ status: 429, body: JSON.stringify({ error: { message: "Rate limit exceeded" } }), gzip: true, noTrailer: true }] },
   { name: "an error body in broken UTF-8", script: [{ status: 500, bodyBytes: [0x7b, 0xff, 0xfe, 0x78, 0xe2, 0x82, 0x7d] }] },
   { name: "a BOM before the error", script: [{ status: 500, bodyBytes: [0xef, 0xbb, 0xbf, 0x6f, 0x6b] }] },
   // The error body breaks off: text() throws, and chatCore takes "".
@@ -277,6 +280,7 @@ function startServer(script, seen) {
         return;
       }
       if (step.gzip) { body = gzipSync(body); headers2["content-encoding"] = "gzip"; }
+      if (step.noTrailer) body = body.subarray(0, body.length - 8);
       res.writeHead(step.status, headers2);
       res.end(body);
     });
@@ -304,7 +308,9 @@ const WIRE_ENV = { UPSTREAM_STREAM_HEADERS_TIMEOUT_MS: "1500" };
 
 async function runWire(scenario, dir) {
   delete global._authEvents;
-  delete global._modelHang;
+  // modelHang.js is mocked: its first instance keeps the map it took from
+  // global, so the map is emptied rather than replaced.
+  global._modelHang?.clear();
   delete global._selectionMutexes;
   const seen = [];
   const { server, port, hung } = await startServer(scenario.script, seen);
