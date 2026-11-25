@@ -243,6 +243,39 @@ func Preflight(ctx context.Context, c *db.Connection, s Settings, pools Pools, e
 	return r.Sendable(env, node.BaseURL)
 }
 
+// PreflightKey is the whole per-key preflight accounts.CheckProvider takes:
+// Preflight, then a dry run of prepare with the key's settings. prepare must
+// be the attempt's own (the same Inputs builder for the dry run and the
+// send), so a decline Prepare would make mid-loop comes here, first.
+func PreflightKey(ctx context.Context, c *db.Connection, s Settings, pools Pools, env Env, prepare Prepare) error {
+	if err := Preflight(ctx, c, s, pools, env); err != nil {
+		return err
+	}
+	node, err := claudeprep.ParseNodeSettings(jsjson.Marshal(c.ProviderSpecificData()))
+	if err != nil {
+		return err
+	}
+	_, err = prepare(node)
+	return err
+}
+
+// MergeDroppedBetas is the key's settings with the flags an attempt learned
+// (Input.LearnedBetas) added, as Node's next read of the row has them once
+// saveDroppedBetas wrote them: a key tried again in the same pass sends
+// without them. The flags come from the beta header the attempt sent, so
+// sanitizeNodeQuirks keeps them; it keeps at most 50.
+func MergeDroppedBetas(n claudeprep.NodeSettings, learned []string) claudeprep.NodeSettings {
+	if len(learned) == 0 {
+		return n
+	}
+	merged := appendUnique(n.DroppedBetas, learned...)
+	if len(merged) > 50 {
+		merged = merged[:50]
+	}
+	n.DroppedBetas = merged
+	return n
+}
+
 // envProxyURL is getEnvProxyUrl(target), normalized: the system proxy the
 // request would go through, or "".
 func envProxyURL(env Env, target string) string {

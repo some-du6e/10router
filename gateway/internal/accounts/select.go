@@ -69,6 +69,9 @@ type SelectOptions struct {
 	MaxWarmWaitMs float64
 	// Avoid are keys to rank after every other healthy key (model hang).
 	Avoid map[string]bool
+	// Check runs on the pick before Select writes or returns it
+	// (LoopInput.Check): a decline then leaves no round-robin write behind.
+	Check func(*db.Connection) error
 }
 
 // AllLocked is getProviderCredentials' allRateLimited answer.
@@ -231,17 +234,27 @@ func (a *Accounts) Select(ctx context.Context, provider, model string, s Setting
 			}
 		}
 		if warmConn != nil {
-			return Pick{Conn: warmConn.Connection}, nil
+			return checked(o, warmConn.Connection)
 		}
 	}
 
 	switch strategy {
 	case "round-robin":
-		return a.roundRobin(ctx, available, s, provider)
+		return a.roundRobin(ctx, available, s, provider, o)
 	default:
 		pick = available[0]
 	}
-	return Pick{Conn: pick.Connection}, nil
+	return checked(o, pick.Connection)
+}
+
+// checked is the pick after o.Check.
+func checked(o SelectOptions, c *db.Connection) (Pick, error) {
+	if o.Check != nil {
+		if err := o.Check(c); err != nil {
+			return Pick{}, err
+		}
+	}
+	return Pick{Conn: c}, nil
 }
 
 // warmRetry is the warm-key wait: a warm key only briefly rate-limited, with
@@ -287,7 +300,7 @@ func (a *Accounts) warmRetry(conns []conn, model, strategy string, warm map[stri
 // roundRobin is the round-robin branch: stay on the most recently used key
 // until its consecutive uses reach the sticky limit, else move to the least
 // recently used. The counters are written before the pick returns.
-func (a *Accounts) roundRobin(ctx context.Context, available []conn, s Settings, provider string) (Pick, error) {
+func (a *Accounts) roundRobin(ctx context.Context, available []conn, s Settings, provider string, o SelectOptions) (Pick, error) {
 	limit, err := stickyLimit(s, provider)
 	if err != nil {
 		return Pick{}, err
@@ -338,7 +351,13 @@ func (a *Accounts) roundRobin(ctx context.Context, available []conn, s Settings,
 		})
 		pick, nextCount = oldest[0], 1
 	}
-	if _, err := a.Store.UpdateConnection(ctx, pick.ID, db.ConnectionUpdate{Set: []jsjson.Member{
+	if o.Check != nil {
+		if err := o.Check(pick.Connection); err != nil {
+			return Pick{}, err
+		}
+	}
+	// Node writes the counters whether or not the client is still there.
+	if _, err := a.Store.UpdateConnection(context.WithoutCancel(ctx), pick.ID, db.ConnectionUpdate{Set: []jsjson.Member{
 		{Key: "lastUsedAt", Value: nowISO}, {Key: "consecutiveUseCount", Value: nextCount},
 	}}); err != nil {
 		return Pick{}, err

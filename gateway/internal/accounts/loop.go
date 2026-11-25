@@ -3,6 +3,8 @@ package accounts
 import (
 	"context"
 	"fmt"
+	"crypto/rand"
+	"encoding/hex"
 	"math"
 	"strings"
 	"time"
@@ -86,9 +88,8 @@ type LoopInput struct {
 	// Headers are the client's headers, lowercase names.
 	Headers map[string]string
 	// Tenant is the client's key ("" for none).
-	Tenant    string
-	Settings  Settings
-	RequestID string
+	Tenant   string
+	Settings Settings
 	// ByteSent reports whether a byte of the reply has gone to the client:
 	// until then a failure the gateway doesn't model can still go to Node.
 	ByteSent func() bool
@@ -97,10 +98,18 @@ type LoopInput struct {
 	// Transport is a connection's network path (upstream.Resolved.Transport),
 	// for keysShareOneUpstream.
 	Transport func(*db.Connection) (string, error)
-	// Check runs on each picked key before its attempt: the preflight's
-	// check again (upstream.Preflight), for a row that changed since. Nil:
-	// none.
+	// Check runs on each pick before Select writes or returns it: the
+	// preflight's check again (upstream.Preflight), for a row that changed
+	// since. Nil: none.
 	Check func(*db.Connection) error
+}
+
+// newRequestID is routeSingleModelChat's randomUUID(): one per call, so a
+// combo that reaches a model twice counts as two requests for model hang.
+func newRequestID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 // Handoff is a failure Node must see again for itself: the request goes to
@@ -116,16 +125,17 @@ func (a *Accounts) RunModel(ctx context.Context, in LoopInput, attempt Attempt) 
 		return Outcome{}, declined("a model id Node refuses (modelIdProblem)")
 	}
 	now := a.nowMs()
-	hang := a.Hang.Check(in.Provider, in.Model, in.RequestID, now)
+	requestID := newRequestID()
+	hang := a.Hang.Check(in.Provider, in.Model, requestID, now)
 	if hang.Blocked {
 		return a.hungOutcome(in, hang), nil
 	}
-	defer a.Hang.ReleaseProbe(in.Provider, in.Model, in.RequestID)
+	defer a.Hang.ReleaseProbe(in.Provider, in.Model, requestID)
 	avoid := map[string]bool{}
 	for _, k := range hang.AvoidKeys {
 		avoid[k] = true
 	}
-	return a.accountPass(ctx, in, attempt, avoid)
+	return a.accountPass(ctx, in, requestID, attempt, avoid)
 }
 
 // hungOutcome is modelHungResult: a 504 without calling the upstream.
@@ -151,7 +161,7 @@ type accountFailure struct {
 	err     string
 }
 
-func (a *Accounts) accountPass(ctx context.Context, in LoopInput, attempt Attempt, avoid map[string]bool) (Outcome, error) {
+func (a *Accounts) accountPass(ctx context.Context, in LoopInput, requestID string, attempt Attempt, avoid map[string]bool) (Outcome, error) {
 	cacheKey, err := CacheAffinityKey(in.Provider, in.Model, in.Body, in.Headers, in.Tenant)
 	if err != nil {
 		return Outcome{}, err
@@ -183,7 +193,7 @@ func (a *Accounts) accountPass(ctx context.Context, in LoopInput, attempt Attemp
 		}
 		now := a.nowMs()
 		warm := a.Warm.Get(cacheKey, now)
-		opts := SelectOptions{Exclude: exclude, Warm: warm, Avoid: avoid}
+		opts := SelectOptions{Exclude: exclude, Warm: warm, Avoid: avoid, Check: in.Check}
 		if len(warm) > 0 {
 			opts.MaxWarmWaitMs = waitBudget()
 		}
@@ -199,6 +209,9 @@ func (a *Accounts) accountPass(ctx context.Context, in LoopInput, attempt Attemp
 				sleep = SleepCtx
 			}
 			if err := sleep(ctx, wait); err != nil {
+				if ctx.Err() == nil {
+					return Outcome{}, err
+				}
 				continue
 			}
 			cacheWaited += math.Max(wait, a.nowMs()-slept)
@@ -208,13 +221,6 @@ func (a *Accounts) accountPass(ctx context.Context, in LoopInput, attempt Attemp
 			return a.noAccount(in, pick.AllLocked, exclude, failures, accountErrors, lastStatus, lastError, hasLast, lockedUntil), nil
 		}
 		c := conn{pick.Conn}
-		if in.Check != nil {
-			// Selection re-reads the rows: one changed mid-request (a proxy
-			// pool set) is caught before Go sends where Node wouldn't.
-			if err := in.Check(pick.Conn); err != nil {
-				return Outcome{}, err
-			}
-		}
 		res, err := attempt(ctx, pick.Conn)
 		if err != nil {
 			return Outcome{}, err
@@ -242,7 +248,8 @@ func (a *Accounts) accountPass(ctx context.Context, in LoopInput, attempt Attemp
 		cooldown := 0.0
 		// A request error on a custom endpoint tries the next key but locks nothing.
 		if !IsRequestError(res.Status, res.Error) {
-			m, err := a.MarkUnavailable(ctx, c.ID, in.Provider, res.Status, res.Error, in.Model, res.ResetsAtMs)
+			// The lock is written whether or not the client is still there.
+			m, err := a.MarkUnavailable(context.WithoutCancel(ctx), c.ID, in.Provider, res.Status, res.Error, in.Model, res.ResetsAtMs)
 			if err != nil {
 				return Outcome{}, err
 			}
@@ -260,7 +267,7 @@ func (a *Accounts) accountPass(ctx context.Context, in LoopInput, attempt Attemp
 		var hangSt HangStatus
 		hung := false
 		if res.HeadersTimeout {
-			hangSt, hung = a.Hang.NoteHeadersTimeout(in.Provider, in.Model, in.RequestID, c.ID, res.TimeoutStream, statusPrefixRe.ReplaceAllLiteralString(res.Error, ""), now)
+			hangSt, hung = a.Hang.NoteHeadersTimeout(in.Provider, in.Model, requestID, c.ID, res.TimeoutStream, statusPrefixRe.ReplaceAllLiteralString(res.Error, ""), now)
 		}
 		if keysSinceTimeout > 0 || res.HeadersTimeout {
 			keysSinceTimeout++

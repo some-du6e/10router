@@ -155,7 +155,10 @@ func (s *Sender) execute(ctx context.Context, in Input, req *claudeprep.Request)
 			used++
 			resp.Body.Close()
 			if err := in.Sleep(ctx, delay); err != nil {
-				return attempt{}, ctx.Err()
+				if ctx.Err() != nil {
+					return attempt{}, ctx.Err()
+				}
+				return attempt{}, err
 			}
 			continue
 		}

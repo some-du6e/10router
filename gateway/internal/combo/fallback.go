@@ -2,8 +2,10 @@ package combo
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/some-du6e/10router/gateway/internal/accounts"
 	"github.com/some-du6e/10router/gateway/internal/claudeprep"
@@ -217,7 +219,18 @@ type Result struct {
 // handleComboChat's fallback over a combo's members. Every provider the tree
 // reaches is preflighted first, so a decline comes before any write.
 func Run(ctx context.Context, t *Target, env Env) (Result, error) {
-	if env.Preflight != nil {
+	if env.Sleep == nil {
+		env.Sleep = accounts.SleepCtx
+	}
+	if env.NowMs == nil {
+		env.NowMs = func() float64 { return float64(time.Now().UnixMilli()) }
+	}
+	// Without the preflight a member could decline after an earlier one wrote
+	// locks: a caller error, not a request to serve.
+	if env.Preflight == nil {
+		return Result{}, errors.New("combo: Run needs a Preflight")
+	}
+	{
 		seen := map[string]bool{}
 		var walk func(*Target) error
 		walk = func(t *Target) error {
@@ -283,6 +296,9 @@ func runCombo(ctx context.Context, t *Target, env Env) (Result, error) {
 		cooldown := accounts.CheckFallbackError(status, text, 0).CooldownMs
 		if cooldown > 0 && cooldown <= maxTransientWaitMs && transientStatuses[status] {
 			if err := env.Sleep(ctx, cooldown); err != nil {
+				if ctx.Err() == nil {
+					return Result{}, err
+				}
 				return Result{ClientGone: true}, nil
 			}
 		}

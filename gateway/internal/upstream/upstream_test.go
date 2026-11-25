@@ -502,6 +502,54 @@ func TestPreflightDeclinesWhatTheSenderWould(t *testing.T) {
 	}
 }
 
+func TestIdleBodyFailsASilentRead(t *testing.T) {
+	r, w := io.Pipe()
+	defer w.Close()
+	body := newIdleBody(r, 50*time.Millisecond)
+	go func() { _, _ = w.Write([]byte("a")) }()
+	buf := make([]byte, 4)
+	if n, err := body.Read(buf); n != 1 || err != nil {
+		t.Fatalf("first read: %d %v", n, err)
+	}
+	if _, err := body.Read(buf); err == nil {
+		t.Fatal("a body silent past the idle limit must fail its read")
+	}
+}
+
+func TestErrorsDontQuoteTheURL(t *testing.T) {
+	s := NewSender()
+	// A closed port: the connect fails at once.
+	srv := httptest.NewServer(http.NotFoundHandler())
+	target := srv.URL + "/v1/messages?key=secret-in-query"
+	srv.Close()
+	_, err := s.Send(context.Background(), &claudeprep.Request{URL: target, Body: []byte("{}")})
+	if err == nil || strings.Contains(err.Error(), "secret-in-query") || !strings.Contains(err.Error(), "network") {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestStatusesNodeCantReplyWithGoToNode(t *testing.T) {
+	s := NewSender()
+	for _, status := range []int{204, 205, 304, 999} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(status) }))
+		_, err := s.Send(context.Background(), &claudeprep.Request{URL: srv.URL, Body: []byte("{}")})
+		srv.Close()
+		if err == nil || !strings.Contains(err.Error(), "network") {
+			t.Fatalf("status %d: %v", status, err)
+		}
+	}
+}
+
+func TestMergeDroppedBetas(t *testing.T) {
+	n := MergeDroppedBetas(claudeprep.NodeSettings{DroppedBetas: []string{"a-1"}}, []string{"a-1", "b-2"})
+	if !slices.Equal(n.DroppedBetas, []string{"a-1", "b-2"}) {
+		t.Fatalf("%v", n.DroppedBetas)
+	}
+	if m := MergeDroppedBetas(n, nil); !slices.Equal(m.DroppedBetas, n.DroppedBetas) {
+		t.Fatal("nothing learned changes nothing")
+	}
+}
+
 func TestPrepareTwiceIsByteEqual(t *testing.T) {
 	var file wireFile
 	readJSON(t, "testdata/wire.json", &file)

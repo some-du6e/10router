@@ -1,6 +1,7 @@
 package accounts
 
 import (
+	"math"
 	"strings"
 	"time"
 
@@ -64,8 +65,14 @@ func (c conn) checkDates() error {
 	// there would be concatenated or coerced.
 	for _, key := range []string{"errorCode", "backoffLevel", "consecutiveUseCount"} {
 		if v := c.get(key); v != nil {
-			if _, ok := v.(float64); !ok {
+			f, ok := v.(float64)
+			if !ok {
 				return declined("connection %s has a %s that isn't a number", c.ID, key)
+			}
+			// Go reads errorCode and backoffLevel as ints; Node's arithmetic on
+			// a fraction or a huge value would differ.
+			if key != "consecutiveUseCount" && (f != math.Trunc(f) || f < 0 || f > 1e9) {
+				return declined("connection %s has a %s that isn't a small whole number", c.ID, key)
 			}
 		}
 	}

@@ -206,8 +206,7 @@ func TestFallbackMatchesNode(t *testing.T) {
 					}
 					return a.RunModel(ctx, accounts.LoopInput{
 						Provider: provider, Model: model, Body: body, Headers: ccHeaders, Settings: snap.Settings,
-						RequestID: fmt.Sprintf("%s-%d", sc.Name, i),
-						ByteSent:  func() bool { return false },
+						ByteSent: func() bool { return false },
 						Sleep:     sleeper("warm"),
 						Transport: func(c *db.Connection) (string, error) {
 							r, err := upstream.ResolveRoute(ctx, c.ProviderSpecificData(), c.Provider, snap.Settings, d)
@@ -412,17 +411,11 @@ func realPreflight(t *testing.T, a *accounts.Accounts, s db.Settings, d *db.DB, 
 	raw := claudeprep.Marshal(body)
 	return func(ctx context.Context, provider, model string) error {
 		return a.CheckProvider(ctx, provider, s, func(c *db.Connection) error {
-			if err := upstream.Preflight(ctx, c, s, d, noEnv); err != nil {
-				return err
-			}
-			node, err := claudeprep.ParseNodeSettings(jsjson.Marshal(c.ProviderSpecificData()))
-			if err != nil {
-				return err
-			}
 			key, _ := c.Data.Get("apiKey")
 			apiKey, _ := key.(string)
-			_, err = claudeprep.Prepare(raw, claudeprep.Inputs{Provider: provider, Model: model, ClientHeaders: ccHeaders, Connection: claudeprep.Connection{APIKey: apiKey, Node: node}})
-			return err
+			return upstream.PreflightKey(ctx, c, s, d, noEnv, func(n claudeprep.NodeSettings) (*claudeprep.Request, error) {
+				return claudeprep.Prepare(raw, claudeprep.Inputs{Provider: provider, Model: model, ClientHeaders: ccHeaders, Connection: claudeprep.Connection{APIKey: apiKey, Node: n}})
+			})
 		})
 	}
 }

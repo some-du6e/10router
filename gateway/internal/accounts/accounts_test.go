@@ -510,7 +510,7 @@ func TestCheckProviderDeclinesWhatTheLoopWould(t *testing.T) {
 	}{
 		{name: "plain", data: ok},
 		{name: "demotion", data: `{"authDemote_m":{"count":3},"providerSpecificData":{}}`, want: "demotion"},
-		{name: "a date Node reads its own way", data: `{"lastUsedAt":"yesterday","providerSpecificData":{}}`, want: "accounts"},
+		{name: "a date Node reads its own way", data: `{"lastUsedAt":"yesterday","providerSpecificData":{}}`, want: "Date parser"},
 		{name: "a base URL WHATWG rewrites", data: `{"providerSpecificData":{"baseUrl":"https://bücher.test/v1"}}`, want: "base URL"},
 		{name: "soonest-reset", data: ok, settings: `{"fallbackStrategy":"soonest-reset"}`, want: "soonest-reset"},
 		{name: "the sender's check", data: ok, check: decline.New("upstream", "a proxy pool"), want: "proxy pool"},
@@ -538,6 +538,82 @@ func TestCheckProviderDeclinesWhatTheLoopWould(t *testing.T) {
 				t.Fatalf("want a decline naming %q, got %v", c.want, err)
 			}
 		})
+	}
+}
+
+// openKeys is a database with these connection rows for the provider.
+func openKeys(t *testing.T, rows ...map[string]any) (*db.DB, func(ms int64)) {
+	t.Helper()
+	var clock atomic.Int64
+	clock.Store(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC).UnixMilli())
+	path, node := dbtest.New(t, dbtest.Options{})
+	dbtest.InsertRows(t, node, map[string][]map[string]any{"providerConnections": rows})
+	d, err := db.Open(path, db.Options{Now: func() time.Time { return time.UnixMilli(clock.Load()) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	return d, func(ms int64) { clock.Add(ms) }
+}
+
+func keyRow(t *testing.T, id string, priority float64, data string) map[string]any {
+	t.Helper()
+	var file scenarioFile
+	readJSON(t, "testdata/scenarios.json", &file)
+	r := map[string]any{}
+	for k, v := range file[0].Initial[0] {
+		r[k] = v
+	}
+	r["id"], r["name"], r["priority"], r["data"] = id, id, priority, data
+	return r
+}
+
+// A pick the check refuses leaves no round-robin write behind, and a stored
+// counter Go reads as an int must be one.
+func TestSelectChecksThePickBeforeWriting(t *testing.T) {
+	d, _ := openKeys(t, keyRow(t, "k1", 1, `{"apiKey":"key-k1"}`))
+	a := New(d)
+	rr, _ := jsjson.ParseObject([]byte(`{"fallbackStrategy":"round-robin"}`))
+	_, err := a.Select(context.Background(), "openai-compatible-chat-hot", "m", objSettings{rr}, SelectOptions{
+		Check: func(*db.Connection) error { return decline.New("upstream", "a proxy pool") },
+	})
+	if !decline.Is(err) {
+		t.Fatalf("want the check's decline, got %v", err)
+	}
+	rows, err := d.ListConnections(context.Background(), "openai-compatible-chat-hot", nil)
+	if err != nil || len(rows) != 1 || rows[0].Data.String() != `{"apiKey":"key-k1"}` {
+		t.Fatalf("the declined pick was written: %v %v", rows, err)
+	}
+
+	d2, _ := openKeys(t, keyRow(t, "k1", 1, `{"apiKey":"key-k1","backoffLevel":2.5}`))
+	if _, err := New(d2).Select(context.Background(), "openai-compatible-chat-hot", "m", objSettings{jsjson.NewObject()}, SelectOptions{}); !decline.Is(err) {
+		t.Fatalf("a fractional backoffLevel is Node's: %v", err)
+	}
+}
+
+// Each RunModel call is its own request for model hang, as each
+// routeSingleModelChat has its own randomUUID: a combo that reaches the model
+// twice, with a header timeout each time, makes it hung.
+func TestEachRunModelIsItsOwnRequest(t *testing.T) {
+	d, advance := openKeys(t, keyRow(t, "k1", 1, `{"apiKey":"key-k1"}`), keyRow(t, "k2", 2, `{"apiKey":"key-k2"}`))
+	a := New(d)
+	start := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
+	var offset atomic.Int64
+	a.Now = func() time.Time { return time.UnixMilli(start + offset.Load()) }
+	timeout := func(ctx context.Context, c *db.Connection) (AttemptResult, error) {
+		return AttemptResult{Status: 504, Error: "[504]: upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)", HeadersTimeout: true, TimeoutStream: true}, nil
+	}
+	in := LoopInput{Provider: "openai-compatible-chat-hot", Model: "m", Body: claudeprep.Undefined(), Settings: objSettings{jsjson.NewObject()}, ByteSent: func() bool { return false }}
+	first, err := a.RunModel(context.Background(), in, timeout)
+	if err != nil || strings.Contains(first.Error, "not responding") {
+		t.Fatalf("first: %+v %v", first, err)
+	}
+	// Past the keys' locks, still inside the hang window.
+	offset.Add(5 * 60 * 1000)
+	advance(5 * 60 * 1000)
+	second, err := a.RunModel(context.Background(), in, timeout)
+	if err != nil || !strings.Contains(second.Error, "is not responding upstream") {
+		t.Fatalf("the second call should find the model hung: %+v %v", second, err)
 	}
 }
 

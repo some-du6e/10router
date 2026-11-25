@@ -140,10 +140,15 @@ func (s *Sender) Send(ctx context.Context, req *claudeprep.Request) (*http.Respo
 		return nil, fmt.Errorf("%w: %v", ErrNetwork, err)
 	}
 	resp.Body = newIdleBody(resp.Body, bodyIdleTimeout)
-	switch resp.StatusCode {
-	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect, http.StatusMisdirectedRequest:
+	switch st := resp.StatusCode; {
+	case st == http.StatusMovedPermanently || st == http.StatusFound || st == http.StatusSeeOther || st == http.StatusTemporaryRedirect || st == http.StatusPermanentRedirect || st == http.StatusMisdirectedRequest:
 		resp.Body.Close()
-		return nil, fmt.Errorf("%w: status %d (fetch follows or re-sends it)", ErrNetwork, resp.StatusCode)
+		return nil, fmt.Errorf("%w: status %d (fetch follows or re-sends it)", ErrNetwork, st)
+	case st < 200 || st > 599 || st == http.StatusNoContent || st == http.StatusResetContent || st == http.StatusNotModified:
+		// Node's Response constructor refuses these with a body (or at all),
+		// so chatCore's reply for them is Node's own.
+		resp.Body.Close()
+		return nil, fmt.Errorf("%w: status %d", ErrNetwork, st)
 	}
 	switch enc := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding"))); enc {
 	case "", "identity":
@@ -168,21 +173,32 @@ const connectTimeout = 10 * time.Second
 const bodyIdleTimeout = 300 * time.Second
 
 // idleBody fails a Read that waits longer than idle for data, by closing the
-// body under it.
+// body under it. One timer, reset on each Read.
 type idleBody struct {
 	io.ReadCloser
-	idle time.Duration
+	idle  time.Duration
+	timer *time.Timer
 }
 
-func newIdleBody(b io.ReadCloser, idle time.Duration) io.ReadCloser { return &idleBody{b, idle} }
+func newIdleBody(b io.ReadCloser, idle time.Duration) io.ReadCloser {
+	body := &idleBody{ReadCloser: b, idle: idle}
+	body.timer = time.AfterFunc(idle, func() { _ = b.Close() })
+	body.timer.Stop()
+	return body
+}
 
 func (b *idleBody) Read(p []byte) (int, error) {
-	t := time.AfterFunc(b.idle, func() { _ = b.ReadCloser.Close() })
+	b.timer.Reset(b.idle)
 	n, err := b.ReadCloser.Read(p)
-	if !t.Stop() && err == nil {
+	if !b.timer.Stop() && err == nil {
 		err = errors.New("upstream: body timeout")
 	}
 	return n, err
+}
+
+func (b *idleBody) Close() error {
+	b.timer.Stop()
+	return b.ReadCloser.Close()
 }
 
 // gunzip opens the gzip stream on the first Read.

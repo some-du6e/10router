@@ -172,6 +172,9 @@ var trailingSlashes = regexp.MustCompile(`/+$`)
 // connectionUpstream) the same way. transport is networkPath(connection)'s
 // transport, which the sender resolves.
 func (a *Accounts) KeysShareOneUpstream(ctx context.Context, provider string, transport func(*db.Connection) (string, error)) (bool, error) {
+	if transport == nil {
+		return false, declined("no transport to compare keys' network paths by")
+	}
 	rows, err := a.Store.ListConnections(ctx, provider, nil)
 	if err != nil {
 		return false, err

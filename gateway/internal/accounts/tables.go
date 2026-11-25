@@ -132,7 +132,9 @@ func init() {
 	}
 	h, c := tbl.HeadersTimeout, tbl.CacheAffinity
 	if len(tbl.ErrorRules) == 0 || h.Text == "" || len(h.HungWindowMs) == 0 || h.MaxKeysPerRequest <= 0 ||
-		c.MaxWarmKeys <= 0 || c.MaxEntries <= 0 || tbl.SameRequestError.StopAfter <= 0 || tbl.Backoff.Base <= 0 {
+		h.HungAfterRequests <= 0 || h.HungAfterKeys <= 0 || c.MaxWarmKeys <= 0 || c.MaxEntries <= 0 ||
+		tbl.SameRequestError.StopAfter <= 0 || tbl.SameRequestError.MaxText <= 0 || tbl.Backoff.Base <= 0 ||
+		tbl.Backoff.Max <= 0 || tbl.MaxRateLimitCooldownMs <= 0 || tbl.UpstreamStreamHeadersTimeoutMs <= 0 {
 		loadErr = errors.Join(loadErr, errors.New("accounts: tables.json is incomplete"))
 		return
 	}
