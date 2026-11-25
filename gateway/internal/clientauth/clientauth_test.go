@@ -17,6 +17,7 @@ import (
 	"github.com/some-du6e/10router/gateway/internal/db/dbtest"
 	"github.com/some-du6e/10router/gateway/internal/db/jsjson"
 	"github.com/some-du6e/10router/gateway/internal/decline"
+	"github.com/some-du6e/10router/gateway/internal/route"
 )
 
 // fixture is testdata/cases.json, recorded from Node by
@@ -26,7 +27,11 @@ type fixture struct {
 	Rows            map[string][]map[string]any `json:"rows"`
 	ComboStrategies json.RawMessage             `json:"comboStrategies"`
 	Cases           []struct {
-		Name          string            `json:"name"`
+		Name string `json:"name"`
+		// Path is the request path Node's gate saw ("" for /v1/messages):
+		// Check doesn't read it, so every path the native route takes must
+		// be decided the same.
+		Path          string            `json:"path"`
 		SocketIP      string            `json:"socketIp"`
 		Headers       map[string]string `json:"headers"`
 		Query         string            `json:"query"`
@@ -97,6 +102,20 @@ func TestChecksParityWithNode(t *testing.T) {
 	}
 	policy := func(key string) (*db.APIKey, error) { return d.APIKeyByKey(context.Background(), key) }
 	rule := clientip.NewRule("")
+	paths := map[string]int{}
+	for _, tc := range f.Cases {
+		path := tc.Path
+		if path == "" {
+			path = "/v1/messages"
+		}
+		if !route.Match(http.MethodPost, path) {
+			t.Fatalf("%s: %s is not a path the native route takes", tc.Name, path)
+		}
+		paths[path]++
+	}
+	if len(paths) != 3 {
+		t.Fatalf("cases cover the paths %v; the native route takes three", paths)
+	}
 	for _, tc := range f.Cases {
 		t.Run(tc.Name, func(t *testing.T) {
 			settings := jsjson.NewObject()

@@ -11,6 +11,8 @@ on:
       - "src/app/api/auth/setup/**"
       - "src/app/api/auth/saml/acs/**"
       - "src/app/api/health/**"
+      - "src/app/api/internal/gateway/**"
+      - "src/lib/gatewayEvents.ts"
       - "src/lib/launchProof.js"
       - "cli/src/cli/utils/serverProcess.js"
       - "server-drain.js"
@@ -39,6 +41,8 @@ on:
       - "tests/unit/login-route-limiter.test.js"
       - "tests/unit/local-request-peer-trust-3294.test.js"
       - "tests/unit/launch-proof.test.js"
+      - "tests/unit/gateway-events-route.test.js"
+      - "tests/unit/gateway-shadow-tap.test.js"
       - ".github/workflows/security-network-trust.yml"
   workflow_dispatch:
 
@@ -74,6 +78,8 @@ jobs:
           unit/login-route-limiter.test.js
           unit/local-request-peer-trust-3294.test.js
           unit/launch-proof.test.js
+          unit/gateway-events-route.test.js
+          unit/gateway-shadow-tap.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint

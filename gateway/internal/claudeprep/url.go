@@ -194,6 +194,17 @@ func urlHostname(s string) string {
 	return h
 }
 
+// CanonicalURL is the URL fetch sends for s, as new URL(s).href: the host
+// lowercased, a default port dropped, an empty path as "/". ok is false for
+// a URL Prepare would have declined.
+func CanonicalURL(s string) (string, bool) {
+	u, ok := parseURL(s)
+	if !ok {
+		return "", false
+	}
+	return u.String(), true
+}
+
 func (u parsedURL) String() string {
 	s := u.scheme + "://" + u.host
 	if u.port != "" {

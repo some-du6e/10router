@@ -4287,6 +4287,392 @@
     "key": "sk-allow-suffix-member",
     "hasBudget": false
    }
+  },
+  {
+   "name": "/v1/v1/messages: no key local requireApiKey=true",
+   "path": "/v1/v1/messages",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 401
+   }
+  },
+  {
+   "name": "/v1/v1/messages: no key remote requireApiKey=true",
+   "path": "/v1/v1/messages",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "/v1/v1/messages: active key remote requireApiKey=true",
+   "path": "/v1/v1/messages",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-active"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-active",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "/v1/v1/messages: inactive key remote requireApiKey=true",
+   "path": "/v1/v1/messages",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-inactive"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "/v1/v1/messages: no key local requireApiKey=false",
+   "path": "/v1/v1/messages",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": null,
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "/v1/v1/messages: no key remote requireApiKey=false",
+   "path": "/v1/v1/messages",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "/v1/v1/messages: active key remote requireApiKey=false",
+   "path": "/v1/v1/messages",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-active"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-active",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "/v1/v1/messages: inactive key remote requireApiKey=false",
+   "path": "/v1/v1/messages",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-inactive"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "/v1/v1/messages: management key local",
+   "path": "/v1/v1/messages",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "10r-mgmt-abc"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "/v1/v1/messages: local with a foreign origin",
+   "path": "/v1/v1/messages",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "origin": "https://other.example.test"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "/v1/v1/messages: local cross-site fetch",
+   "path": "/v1/v1/messages",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "sec-fetch-site": "cross-site"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "/api/v1/messages: no key local requireApiKey=true",
+   "path": "/api/v1/messages",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": 401
+   }
+  },
+  {
+   "name": "/api/v1/messages: no key remote requireApiKey=true",
+   "path": "/api/v1/messages",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "/api/v1/messages: active key remote requireApiKey=true",
+   "path": "/api/v1/messages",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-active"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-active",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "/api/v1/messages: inactive key remote requireApiKey=true",
+   "path": "/api/v1/messages",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-inactive"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": true,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "/api/v1/messages: no key local requireApiKey=false",
+   "path": "/api/v1/messages",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": null,
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "/api/v1/messages: no key remote requireApiKey=false",
+   "path": "/api/v1/messages",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "/api/v1/messages: active key remote requireApiKey=false",
+   "path": "/api/v1/messages",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-active"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": "next",
+    "chat": "pass",
+    "key": "sk-active",
+    "hasBudget": false
+   }
+  },
+  {
+   "name": "/api/v1/messages: inactive key remote requireApiKey=false",
+   "path": "/api/v1/messages",
+   "socketIp": "203.0.113.7",
+   "headers": {
+    "host": "router.example.test",
+    "x-api-key": "sk-inactive"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "/api/v1/messages: management key local",
+   "path": "/api/v1/messages",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "x-api-key": "10r-mgmt-abc"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "/api/v1/messages: local with a foreign origin",
+   "path": "/api/v1/messages",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "origin": "https://other.example.test"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
+  },
+  {
+   "name": "/api/v1/messages: local cross-site fetch",
+   "path": "/api/v1/messages",
+   "socketIp": "127.0.0.1",
+   "headers": {
+    "host": "localhost:20128",
+    "sec-fetch-site": "cross-site"
+   },
+   "query": "",
+   "model": "main",
+   "requireApiKey": false,
+   "comboStrategy": "fallback",
+   "conservative": "",
+   "node": {
+    "gate": 401
+   }
   }
  ]
 }

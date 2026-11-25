@@ -28,7 +28,11 @@ import (
 	"github.com/some-du6e/10router/gateway/internal/config"
 	"github.com/some-du6e/10router/gateway/internal/db"
 	"github.com/some-du6e/10router/gateway/internal/drain"
+	"github.com/some-du6e/10router/gateway/internal/native"
+	"github.com/some-du6e/10router/gateway/internal/nodeevents"
 	"github.com/some-du6e/10router/gateway/internal/proxy"
+	"github.com/some-du6e/10router/gateway/internal/route"
+	"github.com/some-du6e/10router/gateway/internal/shadow"
 	"github.com/some-du6e/10router/gateway/internal/supervisor"
 )
 
@@ -159,6 +163,11 @@ type Gateway struct {
 	native       *db.DB
 	nativeErr    string
 	nativeClosed bool
+	// nativeRoute is the native /v1/messages over native (nil until then).
+	nativeRoute *native.Native
+
+	// shadow is the shadow compare (GATEWAY_SHADOW=1), nil when off.
+	shadow *shadow.Shadow
 
 	// nativeOff is gatewayfiles.NativeOff (tests replace it).
 	nativeOff func() string
@@ -170,6 +179,10 @@ func (g *Gateway) nativeStatus() (ready bool, reason string) {
 	// native route proxied.
 	if off := g.nativeOff(); off != "" {
 		return false, off
+	}
+	// A package whose embedded tables didn't load reports it here.
+	if err := native.Ready(); err != nil {
+		return false, err.Error()
 	}
 	g.nativeMu.Lock()
 	d, openErr := g.native, g.nativeErr
@@ -195,6 +208,19 @@ func (g *Gateway) nativeStatus() (ready bool, reason string) {
 		return false, reason
 	}
 	return st.Ready, st.Reason
+}
+
+// readyRoute is the native route when it is ready, else nil and why not.
+func (g *Gateway) readyRoute() (*native.Native, string) {
+	if ready, reason := g.nativeStatus(); !ready {
+		return nil, reason
+	}
+	g.nativeMu.Lock()
+	defer g.nativeMu.Unlock()
+	if g.nativeRoute == nil {
+		return nil, "the native route has not been built"
+	}
+	return g.nativeRoute, ""
 }
 
 // nativeRetry is how often a database that didn't open is tried again.
@@ -255,8 +281,12 @@ func (g *Gateway) tryOpenNative(ctx context.Context, getenv func(string) string)
 				},
 			})
 			if err == nil {
+				nr := native.New(d, g.rule, getenv, native.CatalogFile(path))
+				nr.Events = nodeevents.New(g.cfg.AppPort, g.cfg.PeerToken)
+				nr.Logger = g.logger
 				g.nativeMu.Lock()
 				g.native = d
+				g.nativeRoute = nr
 				g.nativeErr = ""
 				closed := g.nativeClosed
 				g.nativeMu.Unlock()
@@ -283,6 +313,7 @@ func (g *Gateway) closeNative() {
 	g.nativeMu.Lock()
 	d := g.native
 	g.native = nil
+	g.nativeRoute = nil
 	g.nativeClosed = true
 	g.nativeMu.Unlock()
 	if d != nil {
@@ -297,7 +328,7 @@ func New(cfg config.Config, logger *log.Logger, version string) *Gateway {
 	if a, err := netip.ParseAddr(cfg.ListenHost); err == nil && a.Is6() && !a.Is4In6() {
 		listenIPv6 = true
 	}
-	return &Gateway{
+	g := &Gateway{
 		cfg:        cfg,
 		logger:     logger,
 		tracker:    drain.NewTracker(),
@@ -316,6 +347,30 @@ func New(cfg config.Config, logger *log.Logger, version string) *Gateway {
 			Logger:         logger,
 		}),
 	}
+	if cfg.Shadow {
+		g.shadow = &shadow.Shadow{Native: g.readyRoute, Token: cfg.PeerToken, Logger: logger}
+	}
+	return g
+}
+
+// ShadowURL is where the Node server reports its sends in shadow mode: the
+// gateway's own port on 127.0.0.1 or ::1 (custom-server.js takes no other).
+// "" unless the gateway listens on every address or on that one: a name, or
+// another address, may not be reachable there.
+func ShadowURL(cfg config.Config) string {
+	a, err := netip.ParseAddr(cfg.ListenHost)
+	host := ""
+	switch {
+	case err != nil:
+	case a.IsUnspecified(), a.Unmap() == netip.AddrFrom4([4]byte{127, 0, 0, 1}):
+		host = "127.0.0.1"
+	case a == netip.IPv6Loopback():
+		host = "::1"
+	}
+	if host == "" {
+		return ""
+	}
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(cfg.ListenPort)) + shadow.ReportPath
 }
 
 // listenNetwork is "tcp4" for an IPv4 address such as the default 0.0.0.0:
@@ -334,6 +389,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.health(w, r)
 		return
 	}
+	// Node's reports in shadow mode; the path is Node's otherwise.
+	if g.shadow != nil && r.URL.Path == shadow.ReportPath {
+		g.shadow.ServeReport(w, r)
+		return
+	}
 	r2, done, ok := g.tracker.Admit(r)
 	if !ok {
 		drain.Reject(w, r)
@@ -341,6 +401,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Deferred: ReverseProxy aborts a broken stream by panicking.
 	defer done()
+	if g.shadow != nil {
+		// Only the shadow tags a request; Node trusts the id on any request
+		// the gateway relays.
+		r2.Header.Del(shadow.IDHeader)
+	}
+	if g.shadow != nil && route.Match(r2.Method, r2.RequestURI) {
+		peer, _ := proxy.PeerOf(r2.RemoteAddr, g.listenIPv6)
+		var finish func()
+		r2, finish = g.shadow.Observe(r2, peer)
+		defer finish()
+	}
 	g.proxy.ServeHTTP(w, r2)
 }
 
@@ -381,6 +452,9 @@ func (g *Gateway) health(w http.ResponseWriter, r *http.Request) {
 		if !ready && local {
 			body["nativeReason"] = reason
 		}
+	}
+	if local && g.shadow != nil {
+		body["shadow"] = g.shadow.Snapshot()
 	}
 	if local {
 		body["inflight"] = g.tracker.Inflight()
@@ -526,7 +600,21 @@ func Run(o Options) int {
 		logger.Printf("[Gateway] GATEWAY_PEER_TOKEN must be at least %d characters (it proves the client's address to the app server); not starting", config.MinPeerTokenLength)
 		return 2
 	}
-	if cfg.Mode == config.ModeNative {
+	shadowURL := ""
+	if cfg.Shadow {
+		switch shadowURL = ShadowURL(cfg); {
+		case shadowURL == "":
+			logger.Printf("[Gateway] GATEWAY_SHADOW=1: HOSTNAME=%s isn't 0.0.0.0, ::, 127.0.0.1 or ::1, so the app server can't report its sends over loopback; shadow compare off", cfg.ListenHost)
+			cfg.Shadow = false
+		case len(o.Command) == 0:
+			logger.Printf("[Gateway] GATEWAY_SHADOW=1: the gateway didn't start the app server, so it can't tell it where to report; shadow compare off")
+			cfg.Shadow, shadowURL = false, ""
+		}
+	}
+	switch {
+	case cfg.Shadow:
+		logger.Printf("[Gateway] GATEWAY_MODE=native with GATEWAY_SHADOW=1: the app server serves every request; the gateway compares the upstream request it would send for each /v1/messages with the app server's, and sends nothing")
+	case cfg.Mode == config.ModeNative:
 		logger.Printf("[Gateway] GATEWAY_MODE=native: this build serves no route natively yet; every request goes to the app server")
 	}
 	// How long the app server may take to stop: its drain, then its listeners.
@@ -543,6 +631,10 @@ func Run(o Options) int {
 			// value its own way (JS and Go trim and lowercase some Unicode
 			// differently) and end up ignoring the handoff.
 			"GATEWAY_MODE": string(cfg.Mode),
+			// Shadow mode only as the gateway settled it, so a GATEWAY_SHADOW in
+			// the environment alone never makes Node report.
+			"GATEWAY_SHADOW":     map[bool]string{true: "1", false: ""}[cfg.Shadow],
+			"GATEWAY_SHADOW_URL": shadowURL,
 		})
 		var err error
 		child, err = supervisor.Start(o.Command, env)

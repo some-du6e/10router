@@ -289,11 +289,20 @@ function sendableAgain(init) {
 // body diagnostics channels). Kept as a global so the engine imports nothing
 // from the app.
 const FETCH_TAP = Symbol.for("10router.fetchTap");
+// The Go gateway's shadow compare (custom-server.js, CI only): told each send
+// as the executor made it. It never changes the send.
+const GATEWAY_SHADOW = Symbol.for("10router.gatewayShadow");
 
 // headersTimeoutMs: the caller's own limit on waiting for response headers. At
 // UNDICI_HEADERS_TIMEOUT_MS or more, undici's would end the fetch first, so the
 // fetch goes through a dispatcher with it off.
-export async function proxyAwareFetch(url, options = {}, proxyOptions = null, { headersTimeoutMs = 0 } = {}) {
+export async function proxyAwareFetch(url, options = {}, proxyOptions = null, timeouts = {}) {
+  const shadow = globalThis[GATEWAY_SHADOW];
+  if (!shadow) return observedFetch(url, options, proxyOptions, timeouts);
+  return shadow.around(typeof url === "string" ? url : url.toString(), options, () => observedFetch(url, options, proxyOptions, timeouts));
+}
+
+async function observedFetch(url, options, proxyOptions, { headersTimeoutMs = 0 } = {}) {
   const noHeadersTimeout = headersTimeoutMs >= UNDICI_HEADERS_TIMEOUT_MS;
   const tap = globalThis[FETCH_TAP];
   const seen = tap ? tap.start(typeof url === "string" ? url : url.toString(), options) : null;

@@ -742,10 +742,96 @@ function gatewayPeer(req, socketIp) {
   for (const name of GATEWAY_HEADERS) delete headers[name];
   if (!isLoopbackHost(socketIp)) return null;
   if (!sent) return mayHaveLostHeaders(req) ? UNPROVEN_PEER : null;
-  if (!GATEWAY_TOKEN || typeof token !== "string" || !net.isIP(ip)) return UNPROVEN_PEER;
-  const given = Buffer.from(token);
-  if (given.length !== GATEWAY_TOKEN.length || !crypto.timingSafeEqual(given, GATEWAY_TOKEN)) return UNPROVEN_PEER;
+  if (!verifyGatewayToken(token) || !net.isIP(ip)) return UNPROVEN_PEER;
   return { ip, port };
+}
+
+// Whether token is the one the gateway started this process with, for the
+// gateway's own calls into the app (src/lib/gatewayEvents.ts). Only behind
+// the gateway; the token itself stays in this module.
+function verifyGatewayToken(token) {
+  if (!GATEWAY_ON || !GATEWAY_TOKEN || typeof token !== "string") return false;
+  const given = Buffer.from(token);
+  return given.length === GATEWAY_TOKEN.length && crypto.timingSafeEqual(given, GATEWAY_TOKEN);
+}
+if (GATEWAY_ON) globalThis[Symbol.for("10router.verifyGatewayToken")] = verifyGatewayToken;
+
+// ─── Shadow compare (GATEWAY_SHADOW=1 with GATEWAY_MODE=native, CI only) ─────
+//
+// The gateway tags each /v1/messages it shadows with x-9r-shadow-id
+// (gateway/internal/shadow). A request the gateway proved runs with that id
+// in an AsyncLocalStorage, and proxyFetch.js's proxyAwareFetch hands each
+// upstream send to around(), which reports the URL, the headers object's
+// entries and the body to the gateway. Reporting never changes the send and
+// doesn't wait for the gateway. The id is removed from every request either
+// way.
+const SHADOW_HEADER = "x-9r-shadow-id";
+const SHADOW_URL = String(process.env.GATEWAY_SHADOW_URL || "");
+const SHADOW_ON = GATEWAY_ON && !!GATEWAY_TOKEN && process.env.GATEWAY_MODE === "native" && process.env.GATEWAY_SHADOW === "1" && /^http:\/\/(127\.0\.0\.1|\[::1\]):\d+\//.test(SHADOW_URL);
+delete process.env.GATEWAY_SHADOW_URL;
+const shadowAls = SHADOW_ON ? new (require("async_hooks").AsyncLocalStorage)() : null;
+
+// What a value is, for a report that can't carry it: "null", "undefined",
+// a class name, or a typeof.
+function kindOf(value) {
+  if (value === null || value === undefined) return String(value);
+  if (typeof value !== "object") return typeof value;
+  const proto = Object.getPrototypeOf(value);
+  return (proto && proto.constructor && proto.constructor.name) || "a null-prototype object";
+}
+
+function shadowReport(id, url, options) {
+  const headers = options && options.headers;
+  // A literal or a null-prototype object: its own entries, in order.
+  const proto = headers !== null && typeof headers === "object" && !Array.isArray(headers) ? Object.getPrototypeOf(headers) : undefined;
+  const plain = proto === Object.prototype || proto === null;
+  const body = options && options.body;
+  const bytes = typeof body === "string" ? Buffer.from(body, "utf8") : ArrayBuffer.isView(body) ? Buffer.from(body.buffer, body.byteOffset, body.byteLength) : null;
+  const report = JSON.stringify({
+    id,
+    url,
+    method: String((options && options.method) || "GET").toUpperCase(),
+    headersKind: plain ? "object" : kindOf(headers),
+    headers: plain ? Object.entries(headers).map(([k, v]) => [k, String(v)]) : [],
+    bodyKind: typeof body === "string" ? "string" : bytes ? "bytes" : kindOf(body),
+    body: bytes ? bytes.toString("base64") : "",
+  });
+  const req = http.request(SHADOW_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json", "content-length": Buffer.byteLength(report), "x-9r-shadow-token": GATEWAY_TOKEN_TEXT },
+  });
+  req.on("error", () => {});
+  req.on("response", (res) => res.resume());
+  req.end(report);
+}
+
+if (SHADOW_ON) {
+  globalThis[Symbol.for("10router.gatewayShadow")] = {
+    // run is the send. One send can pass through proxyAwareFetch twice (a
+    // second copy of the module patched fetch over the first), so only the
+    // outermost call, the executor's, is reported.
+    around(url, options, run) {
+      const store = shadowAls.getStore();
+      if (!store || store.inSend) return run();
+      try {
+        shadowReport(store.id, url, options);
+      } catch (error) {
+        console.warn("[Gateway] shadow report failed:", error && error.message ? error.message : error);
+      }
+      return shadowAls.run({ ...store, inSend: true }, run);
+    },
+  };
+}
+
+// The handler run for req: in the shadow's context when the gateway proved
+// the request and tagged it.
+function withShadow(req, handed, run) {
+  const id = req.headers[SHADOW_HEADER];
+  delete req.headers[SHADOW_HEADER];
+  if (shadowAls && handed && handed !== UNPROVEN_PEER && typeof id === "string" && /^[0-9a-f]{32}$/.test(id)) {
+    return shadowAls.run({ id }, run);
+  }
+  return run();
 }
 
 // The peer of an upgrade (the Codex WebSocket), the same way.
@@ -842,7 +928,7 @@ http.createServer = (...args) => {
     if (!local) req.headers["x-9r-via-proxy"] = "1";
     if (proxyHop) req.headers["x-9r-proxy-hop"] = proxyHop;
     if (viaTunnel) req.headers["x-9r-via-tunnel"] = "1";
-    return handler(req, res);
+    return withShadow(req, handed, () => handler(req, res));
   };
   // Behind the gateway, room for the peer headers it adds to a client's
   // full --max-http-header-size, so the gateway is the one that answers 431.

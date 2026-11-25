@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -75,6 +76,13 @@ type vectorFile struct {
 		Given   [][2]string `json:"given"`
 		Headers [][2]string `json:"headers"`
 	} `json:"fetchDefaults"`
+	// FetchTargets: where Node's fetch sends a URL (its dispatcher's origin
+	// and path).
+	FetchTargets []struct {
+		URL    string `json:"url"`
+		Origin string `json:"origin"`
+		Path   string `json:"path"`
+	} `json:"fetchTargets"`
 	// EnvProxies: getEnvProxyUrl(target) under an environment.
 	EnvProxies []struct {
 		Env    map[string]string `json:"env"`
@@ -98,6 +106,15 @@ func TestVectorsMatchNode(t *testing.T) {
 	readJSON(t, "testdata/vectors.json", &v)
 	if len(v.Budgets) < 40 || len(v.Rejections) < 10 || len(v.Proxies) < 15 || len(v.FetchDefaults) < 2 || len(v.EnvProxies) < 10 {
 		t.Fatal("too few vectors")
+	}
+	if len(v.FetchTargets) < 5 {
+		t.Fatal("too few fetch targets")
+	}
+	for _, c := range v.FetchTargets {
+		got, ok := claudeprep.CanonicalURL(c.URL)
+		if !ok || got != c.Origin+c.Path {
+			t.Errorf("CanonicalURL(%s) = %q %v, Node's fetch sends %s%s", c.URL, got, ok, c.Origin, c.Path)
+		}
 	}
 	for _, c := range v.FetchDefaults {
 		var h []claudeprep.HeaderField
@@ -225,9 +242,12 @@ type wireFile []struct {
 	Provider      string            `json:"provider"`
 	ClientHeaders map[string]string `json:"clientHeaders"`
 	ClientBody    string            `json:"clientBody"`
-	PSD           json.RawMessage   `json:"psd"`
-	Requests      []wireRequest     `json:"requests"`
-	Events        []struct {
+	// BaseHost and PortPad spell the base URL's host and port as stored.
+	BaseHost string          `json:"baseHost"`
+	PortPad  string          `json:"portPad"`
+	PSD      json.RawMessage `json:"psd"`
+	Requests []wireRequest   `json:"requests"`
+	Events   []struct {
 		Budget  float64 `json:"budget"`
 		Sleep   float64 `json:"sleep"`
 		Attempt *struct {
@@ -262,6 +282,8 @@ type scriptStep struct {
 	NoTrailer bool `json:"noTrailer"`
 	// PadZeros: zero bytes after the gzip body.
 	PadZeros int `json:"padZeros"`
+	// GzipBytes: a gzip-encoded body, byte for byte.
+	GzipBytes []int `json:"gzipBytes"`
 }
 
 const sseOK = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
@@ -277,7 +299,9 @@ func scripted(t *testing.T, script []json.RawMessage) (*httptest.Server, func() 
 	stop := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		var headers [][2]string
+		// Host, with this run's port kept as <port> as the recorder keeps it.
+		_, port, _ := net.SplitHostPort(r.Context().Value(http.LocalAddrContextKey).(net.Addr).String())
+		headers := [][2]string{{"host", strings.ReplaceAll(r.Host, port, "<port>")}}
 		for name, values := range r.Header {
 			for _, v := range values {
 				headers = append(headers, [2]string{strings.ToLower(name), v})
@@ -316,6 +340,16 @@ func scripted(t *testing.T, script []json.RawMessage) (*httptest.Server, func() 
 			}
 		}
 		w.Header().Set("content-type", "application/json")
+		if step.GzipBytes != nil {
+			raw := make([]byte, len(step.GzipBytes))
+			for i, b := range step.GzipBytes {
+				raw[i] = byte(b)
+			}
+			w.Header().Set("content-encoding", "gzip")
+			w.WriteHeader(step.Status)
+			_, _ = w.Write(raw)
+			return
+		}
 		if step.Cut {
 			conn, buf, err := w.(http.Hijacker).Hijack()
 			if err != nil {
@@ -368,7 +402,9 @@ func TestWireMatchesNode(t *testing.T) {
 	for _, sc := range file {
 		t.Run(sc.Name, func(t *testing.T) {
 			srv, seen := scripted(t, sc.Script)
-			psdJSON := strings.ReplaceAll(string(sc.PSD), "<base>", srv.URL+"/v1")
+			_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+			base := "http://" + sc.BaseHost + ":" + sc.PortPad + port + "/v1"
+			psdJSON := strings.ReplaceAll(string(sc.PSD), "<base>", base)
 			node, err := claudeprep.ParseNodeSettings([]byte(psdJSON))
 			if err != nil {
 				t.Fatal(err)
@@ -518,6 +554,62 @@ func TestPreflightDeclinesWhatTheSenderWould(t *testing.T) {
 	}
 }
 
+// A gzip member's decoded bytes reach the reader as soon as the member is
+// in, as zlib hands them over, not when the next raw byte comes.
+func TestGzipMemberIsDeliveredBeforeMoreBytesCome(t *testing.T) {
+	var member bytes.Buffer
+	zw := gzip.NewWriter(&member)
+	_, _ = io.WriteString(zw, "event: ping\n\n")
+	_ = zw.Close()
+	r, w := io.Pipe()
+	defer w.Close()
+	go func() { _, _ = w.Write(member.Bytes()) }()
+	g := &gunzip{raw: r}
+	got := make(chan string, 1)
+	go func() {
+		var out []byte
+		buf := make([]byte, 64)
+		for len(out) < len("event: ping\n\n") {
+			n, err := g.Read(buf)
+			out = append(out, buf[:n]...)
+			if err != nil {
+				break
+			}
+		}
+		got <- string(out)
+	}()
+	select {
+	case s := <-got:
+		if s != "event: ping\n\n" {
+			t.Fatalf("%q", s)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the decoded bytes waited for more of the body")
+	}
+}
+
+// zlib checks the magic number as soon as its two bytes are here: a body
+// that can't be gzip fails then, not once two more bytes come.
+func TestGzipBadMagicFailsWithoutWaiting(t *testing.T) {
+	r, w := io.Pipe()
+	defer w.Close()
+	go func() { _, _ = w.Write([]byte{0x1f, 0x00}) }()
+	g := &gunzip{raw: r}
+	got := make(chan error, 1)
+	go func() {
+		_, err := g.Read(make([]byte, 16))
+		got <- err
+	}()
+	select {
+	case err := <-got:
+		if !errors.Is(err, gzip.ErrHeader) {
+			t.Fatalf("got %v, want gzip.ErrHeader", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a bad magic number waited for more of the body")
+	}
+}
+
 func TestIdleBodyFailsASilentRead(t *testing.T) {
 	r, w := io.Pipe()
 	defer w.Close()
@@ -589,7 +681,7 @@ func TestExecuteReturnsAFailedRetryWait(t *testing.T) {
 }
 
 func TestHeadersUndiciHandlesItsOwnWayAreDeclined(t *testing.T) {
-	for _, h := range [][2]string{{"Expect", "100-continue"}, {"Host", "api.internal"}, {"Transfer-Encoding", "chunked"}, {"keep-alive", "timeout=5"}, {"Upgrade", "h2c"}, {"Connection", "close"}} {
+	for _, h := range [][2]string{{"Expect", "100-continue"}, {"Host", "api.internal"}, {"Transfer-Encoding", "chunked"}, {"keep-alive", "timeout=5"}, {"Upgrade", "h2c"}, {"Connection", "close"}, {"Content-Length", "12"}} {
 		if err := CheckHeaders([]claudeprep.HeaderField{{Name: h[0], Value: h[1]}}); !decline.Is(err) {
 			t.Errorf("%s: %v", h[0], err)
 		}

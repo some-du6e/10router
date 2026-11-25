@@ -1754,6 +1754,38 @@
    ]
   }
  ],
+ "fetchTargets": [
+  {
+   "url": "https://API.Example.test:443/v1/messages",
+   "origin": "https://api.example.test",
+   "path": "/v1/messages"
+  },
+  {
+   "url": "http://Up.Test:80/v1/messages",
+   "origin": "http://up.test",
+   "path": "/v1/messages"
+  },
+  {
+   "url": "https://up.test:0443/v1/messages?beta=true",
+   "origin": "https://up.test",
+   "path": "/v1/messages?beta=true"
+  },
+  {
+   "url": "http://UP.test:08080/v1/messages",
+   "origin": "http://up.test:8080",
+   "path": "/v1/messages"
+  },
+  {
+   "url": "https://up.test./v1/messages",
+   "origin": "https://up.test.",
+   "path": "/v1/messages"
+  },
+  {
+   "url": "https://up.test",
+   "origin": "https://up.test",
+   "path": "/"
+  }
+ ],
  "envProxies": [
   {
    "env": {},

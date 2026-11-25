@@ -290,8 +290,9 @@ func (p *prep) resolveRoute() {
 	// (or on a blocked port). Only plain http(s)://host[:port]/path?query URLs
 	// go native: none without a scheme, on a bad or blocked port, with a dot
 	// segment, backslash, bad escape or a character the parser would
-	// percent-encode. Request.URL stays the string Node passes; case and a
-	// default port are normalized by the sender, as fetch does.
+	// percent-encode. Request.URL stays the string Node passes; the sender
+	// sends CanonicalURL(Request.URL) (host case and a default port
+	// normalized), as fetch does.
 	if _, ok := parseURL(u); !ok {
 		decline("a base URL the WHATWG parser would reject or rewrite")
 	}

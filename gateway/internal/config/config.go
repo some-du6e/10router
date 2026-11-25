@@ -92,6 +92,10 @@ type Config struct {
 	PeerToken string
 	// TrustProxy is TRUST_PROXY, read by the client-IP rule.
 	TrustProxy string
+	// Shadow is GATEWAY_SHADOW=1 with GATEWAY_MODE=native (CI only): Node
+	// serves every request, and the gateway compares the upstream request it
+	// would send for each /v1/messages with the one Node sent. It never sends.
+	Shadow bool
 
 	Warnings []string
 }
@@ -129,6 +133,15 @@ func Load(getenv func(string) string) Config {
 	c.IdleTimeout = ParseKeepAlive(getenv("KEEP_ALIVE_TIMEOUT"))
 	c.PeerToken = strings.TrimSpace(getenv("GATEWAY_PEER_TOKEN"))
 	c.TrustProxy = getenv("TRUST_PROXY")
+	switch shadow := strings.TrimSpace(getenv("GATEWAY_SHADOW")); {
+	case shadow == "" || shadow == "0":
+	case shadow != "1":
+		c.Warnings = append(c.Warnings, fmt.Sprintf("GATEWAY_SHADOW=%q is not 1 or 0; shadow compare off", shadow))
+	case c.Mode != ModeNative:
+		c.Warnings = append(c.Warnings, "GATEWAY_SHADOW=1 needs GATEWAY_MODE=native; shadow compare off")
+	default:
+		c.Shadow = true
+	}
 	return c
 }
 

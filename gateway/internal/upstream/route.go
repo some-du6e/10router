@@ -281,7 +281,10 @@ func PreflightKey(ctx context.Context, c *db.Connection, s Settings, pools Pools
 // undiciHeaders are the names undici refuses on a request or takes over
 // itself (lib/core/request.js): Node fails such a request, or sends it its
 // own way, so one an endpoint's header lines add is Node's.
-var undiciHeaders = map[string]bool{"host": true, "transfer-encoding": true, "keep-alive": true, "upgrade": true, "expect": true}
+// content-length too: undici fails a request whose content-length doesn't
+// match its body (RequestContentLengthMismatchError), where Go would send
+// the real length.
+var undiciHeaders = map[string]bool{"host": true, "transfer-encoding": true, "keep-alive": true, "upgrade": true, "expect": true, "content-length": true}
 
 // CheckHeaders declines headers undici handles its own way: those names,
 // and a connection header other than keep-alive.

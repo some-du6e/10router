@@ -3,6 +3,7 @@ package claudeprep
 import (
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -118,7 +119,23 @@ var (
 	visionRe  *regexp.Regexp
 )
 
-func init() {
+// loadErr is why tables.json didn't load: Ready reports it, so the gateway
+// (which links this package in every mode) turns the native route off
+// instead of failing to start.
+var loadErr error
+
+func init() { loadErr = loadTables() }
+
+// Ready is nil when the embedded tables loaded; nothing else here may be
+// called otherwise.
+func Ready() error { return loadErr }
+
+func loadTables() (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
 	if err := json.Unmarshal(tablesJSON, &tbl); err != nil {
 		panic("claudeprep: tables.json: " + err.Error())
 	}
@@ -149,6 +166,7 @@ func init() {
 		len(tbl.LevelToBudget) == 0 || len(tbl.GAThinkingDisplays) == 0 || len(tbl.ModelCapabilities) == 0 || len(tbl.PatternCapabilities) == 0 {
 		panic("claudeprep: tables.json is missing a table")
 	}
+	return nil
 }
 
 // Node's constants, from tables.json.

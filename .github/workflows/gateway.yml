@@ -7,12 +7,20 @@ name: Go gateway
 #               rule held to the same table as the Go port
 #   no-new-failures  the whole vitest suite, base vs this branch
 #   e2e         the built image as shipped (GATEWAY_MODE unset) and with
-#               GATEWAY_MODE=proxy, the same checks on both
+#               GATEWAY_MODE=proxy, the same checks on both; then
+#               GATEWAY_MODE=native with GATEWAY_SHADOW=1, where Go's upstream
+#               request must match every one Node sends for the corpus
 on:
   pull_request:
     paths:
       - "gateway/**"
       - "custom-server.js"
+      - "open-sse/utils/proxyFetch.js"
+      - "src/lib/gatewayEvents.ts"
+      - "src/app/api/internal/gateway/**"
+      - "tests/helpers/claudeprepCorpus.js"
+      - "tests/unit/gateway-shadow-tap.test.js"
+      - "tests/unit/gateway-events-route.test.js"
       - "server-drain.js"
       - "Dockerfile"
       - ".dockerignore"
@@ -122,15 +130,25 @@ jobs:
           unit/server-drain.test.js
           unit/server-drain-wiring.test.js
           unit/server-drain-entry.test.js
+          unit/gateway-shadow-tap.test.js
+          unit/gateway-events-route.test.js
       - name: Lint
         run: >
           ./node_modules/.bin/eslint
           custom-server.js
+          open-sse/utils/proxyFetch.js
+          src/lib/gatewayEvents.ts
+          src/app/api/internal/gateway/events/route.ts
           tests/unit/gateway-peer-handoff.test.js
           tests/unit/gateway-clientip-parity.test.js
+          tests/unit/gateway-shadow-tap.test.js
+          tests/unit/gateway-events-route.test.js
           gateway/bench/upstream.mjs
           .github/e2e/gateway/stream-probe.mjs
           .github/e2e/gateway/ws-probe.mjs
+          .github/e2e/gateway/shadow-upstream.mjs
+          .github/e2e/gateway/shadow-seed.mjs
+          .github/e2e/gateway/shadow-drive.mjs
           .github/e2e/early-headers/mock-upstream.mjs
 
   # The suite is not all-green on master (see AGENTS.md), so this runs it on
@@ -220,12 +238,20 @@ jobs:
         run: |
           set -o pipefail
           bash .github/e2e/gateway/run.sh 2>&1 | tee e2e.txt
+      - name: Shadow compare E2E (GATEWAY_MODE=native, GATEWAY_SHADOW=1)
+        if: success() || failure()
+        env:
+          IMAGE: 10router:e2e
+          OUT_DIR: ${{ github.workspace }}/e2e-out
+        run: |
+          set -o pipefail
+          bash .github/e2e/gateway/shadow.sh 2>&1 | tee e2e-shadow.txt
       - name: Summary
         if: always()
         run: |
           {
             echo '```'
-            grep -E '^(PASS|FAIL)' e2e.txt | head -100
+            grep -E '^(PASS|FAIL)' e2e.txt e2e-shadow.txt | head -120
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
@@ -234,6 +260,9 @@ jobs:
           name: gateway-e2e
           path: |
             e2e.txt
+            e2e-shadow.txt
+            e2e-out/shadow/*.json
+            e2e-out/shadow/*.log
             e2e-out/*.json
             e2e-out/*.log
             e2e-out/*.ps
