@@ -126,6 +126,8 @@ import p122 from "./xquik.js";
 
 import p124 from "./opencode-zen.js";
 
+import p125 from "./hackclub-exa.js";
+
 export default [
   p0,
   p1,
@@ -250,4 +252,5 @@ export default [
   p121,
   p122,
   p124,
+  p125,
 ];

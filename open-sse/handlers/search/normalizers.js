@@ -4,6 +4,8 @@
  * Each normalizer maps a provider-specific response into the unified SearchResult shape.
  */
 
+import { exaSnippet } from "./exa.js";
+
 /** Build a unified SearchResult object. */
 function makeResult(providerId, item, idx, now) {
   const url = item.url || "";
@@ -68,15 +70,15 @@ function normalizePerplexity(data, _query, _searchType) {
   return { results, totalResults: results.length };
 }
 
-function normalizeExa(data, _query, _searchType) {
+function normalizeExa(data, _query, _searchType, providerId = "exa") {
   const now = new Date().toISOString();
   const items = data.results;
   if (!Array.isArray(items)) return { results: [], totalResults: null };
   const results = items.map((item, idx) =>
-    makeResult("exa", {
+    makeResult(providerId, {
       title: item.title,
       url: item.url,
-      snippet: item.highlights?.[0] || item.text?.slice(0, 300) || "",
+      snippet: exaSnippet(item),
       score: item.score,
       published_at: item.publishedDate,
       favicon_url: item.favicon,
@@ -299,10 +301,11 @@ const NORMALIZERS = {
 };
 
 /**
- * Dispatch to the appropriate normalizer based on providerId.
+ * Dispatch to the normalizer of the API the provider serves (`api`, default
+ * its own id). Results are credited to `providerId`.
  * @returns {{results: Array, totalResults: number|null, pagination?: object}}
  */
-export function normalizeSearchResponse(providerId, data, query, searchType) {
-  const fn = NORMALIZERS[providerId];
-  return fn ? fn(data, query, searchType) : { results: [], totalResults: null };
+export function normalizeSearchResponse(providerId, data, query, searchType, api = providerId) {
+  const fn = NORMALIZERS[api];
+  return fn ? fn(data, query, searchType, providerId) : { results: [], totalResults: null };
 }

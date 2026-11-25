@@ -40,6 +40,7 @@ describe("Claude built-in web search on non-Claude providers", () => {
       query: "router",
       max_results: 5,
       domain_filter: ["example.com", "-spam.example", "-ads.example"],
+      content_options: { full_page: false },
     });
   });
 

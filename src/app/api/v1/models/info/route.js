@@ -34,6 +34,10 @@ function buildInfo({ alias, providerId, model, kind, providerInfo }) {
   if (kind === "webSearch" && providerInfo?.searchConfig) {
     const cfg = providerInfo.searchConfig;
     if (cfg.searchTypes) out.searchTypes = cfg.searchTypes;
+    if (cfg.modes) {
+      out.modes = cfg.modes;
+      out.defaultMode = cfg.defaultMode;
+    }
     if (cfg.maxMaxResults) out.maxResults = cfg.maxMaxResults;
     if (cfg.requiredOptions) out.required = cfg.requiredOptions;
   }

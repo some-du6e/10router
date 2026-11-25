@@ -62,6 +62,8 @@ export function buildGatewaySearchBody(model, searchRequest) {
     query: searchRequest.query,
     max_results: searchRequest.maxResults,
     domain_filter: [...allowedDomains, ...blockedDomains],
+    // Claude gets only each result's snippet, so skip fetching page text.
+    content_options: { full_page: false },
   };
 }
 

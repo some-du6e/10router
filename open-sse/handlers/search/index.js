@@ -79,6 +79,7 @@ async function tryDedicatedProvider({ provider, providerConfig, body, credential
     language: body.language,
     timeRange: body.time_range,
     offset: body.offset,
+    searchMode: body.search_mode,
     domainFilter: body.domain_filter,
     contentOptions: body.content_options,
     providerOptions: body.provider_options,
@@ -89,7 +90,8 @@ async function tryDedicatedProvider({ provider, providerConfig, body, credential
   try {
     ({ url, init } = buildSearchRequest({ id: provider.id, ...providerConfig }, params));
   } catch (err) {
-    return { success: false, status: 400, error: err?.message || `Invalid request for ${provider.id}` };
+    // Refused before anything was sent: the request is at fault, not the account.
+    return { success: false, status: 400, error: err?.message || `Invalid request for ${provider.id}`, requestError: true };
   }
 
   // Timeout = min(provider timeout, remaining global)
@@ -109,7 +111,7 @@ async function tryDedicatedProvider({ provider, providerConfig, body, credential
       return { success: false, status: resp.status, error: `${provider.id} returned ${resp.status}: ${errText.slice(0, 200)}` };
     }
     const data = await resp.json();
-    const normalized = normalizeSearchResponse(provider.id, data, params.query, params.searchType);
+    const normalized = normalizeSearchResponse(provider.id, data, params.query, params.searchType, providerConfig.api);
     const results = normalized.results.slice(0, params.maxResults);
     const duration = Date.now() - startTime;
     const usage = {
@@ -206,5 +208,6 @@ export async function handleSearchCore({ body, provider, providerConfig, credent
     if (fallback.success) return successResult(fallback.data);
   }
 
-  return errorResult(result.status || 502, result.error || "Search failed");
+  const failure = errorResult(result.status || 502, result.error || "Search failed");
+  return result.requestError ? { ...failure, requestError: true } : failure;
 }

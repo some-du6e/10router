@@ -1,0 +1,146 @@
+name: Web search
+
+on:
+  pull_request:
+    paths:
+      - "open-sse/handlers/search/**"
+      - "open-sse/providers/registry/**"
+      - "open-sse/providers/shared.js"
+      - "open-sse/services/combo.js"
+      - "open-sse/utils/ssrfGuard.js"
+      - "src/sse/handlers/search.js"
+      - "src/sse/services/claudeBuiltinSearch.js"
+      - "src/sse/services/claudeSearchShortcut.ts"
+      - "src/shared/utils/searchModel.ts"
+      - "src/shared/components/ModelSelectModal.js"
+      - "src/shared/components/ProviderInfoCard.js"
+      - "src/app/api/providers/validate/route.js"
+      - "src/app/api/v1/models/info/route.js"
+      - "tests/package.json"
+      - "tests/vitest.config.js"
+      - "tests/unit/hackclub-exa-search.test.js"
+      - "tests/unit/search-key-validation.test.js"
+      - "tests/unit/xquik-search-provider.test.js"
+      - "tests/unit/search-ssrf-guard.test.js"
+      - "tests/unit/searxng-provider-config.test.js"
+      - "tests/unit/claude-builtin-search*.test.js"
+      - "tests/unit/claude-search-shortcut.test.js"
+      - "tests/__baseline__/**"
+      - ".github/workflows/web-search.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: |
+          bun install --ignore-scripts
+          cd tests && bun install --ignore-scripts
+      - name: Unit tests
+        working-directory: tests
+        run: >
+          ./node_modules/.bin/vitest run
+          unit/hackclub-exa-search.test.js
+          unit/search-key-validation.test.js
+          unit/xquik-search-provider.test.js
+          unit/search-ssrf-guard.test.js
+          unit/searxng-provider-config.test.js
+          unit/claude-builtin-search.test.js
+          unit/claude-builtin-search-resolver.test.js
+          unit/claude-search-shortcut.test.js
+          unit/gateway-request-validation.test.js
+          unit/gateway-refresh-persistence.test.js
+      # A registry change must leave the transport and alias snapshots alone.
+      - name: Provider and alias snapshots
+        run: |
+          node tests/__baseline__/verify-providers.mjs
+          node tests/__baseline__/verify-alias.mjs
+      - name: Lint
+        run: >
+          ./node_modules/.bin/eslint
+          open-sse/handlers/search/exa.ts
+          open-sse/handlers/search/callers.js
+          open-sse/handlers/search/normalizers.js
+          open-sse/handlers/search/index.js
+          open-sse/providers/shared.js
+          open-sse/providers/registry/exa.js
+          open-sse/providers/registry/hackclub-exa.js
+          src/shared/utils/searchModel.ts
+          src/sse/handlers/search.js
+          src/sse/services/claudeBuiltinSearch.js
+          src/shared/components/ModelSelectModal.js
+          src/shared/components/ProviderInfoCard.js
+          src/app/api/providers/validate/route.js
+          src/app/api/v1/models/info/route.js
+          tests/unit/hackclub-exa-search.test.js
+          tests/unit/search-key-validation.test.js
+
+  # The suite is not all-green on master (see AGENTS.md), so this runs it on
+  # both the base and this branch and fails only on tests that pass on the base
+  # and fail here.
+  no-new-failures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Check out the base branch next to this one
+        run: git worktree add ../base "origin/${{ github.base_ref || 'master' }}"
+      - name: Install dependencies (branch and base)
+        run: |
+          for dir in . ../base; do
+            (cd "$dir" && bun install --ignore-scripts && cd tests && bun install --ignore-scripts)
+          done
+      - name: Run the suite on the base
+        working-directory: ../base/tests
+        # Each run gets its own HOME: tests without a DATA_DIR use ~/.9router,
+        # and one run's database must not leak into the other.
+        run: |
+          mkdir -p "$RUNNER_TEMP/home-base"
+          HOME="$RUNNER_TEMP/home-base" ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/base.json" > /dev/null 2>&1 || true
+      - name: Run the suite on this branch
+        working-directory: tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/home-head"
+          HOME="$RUNNER_TEMP/home-head" ./node_modules/.bin/vitest run --reporter=json --outputFile="$RUNNER_TEMP/head.json" > /dev/null 2>&1 || true
+      - name: Compare
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const load = (file, root) => {
+              const r = JSON.parse(readFileSync(file, "utf8"));
+              const status = new Map();
+              for (const f of r.testResults) {
+                const rel = f.name.slice(f.name.indexOf("/tests/") + 1);
+                for (const a of f.assertionResults) status.set(`${rel} :: ${a.fullName}`, a.status);
+                // A file that failed to load has no assertions; count it as one failure.
+                if (!f.assertionResults.length && f.status === "failed") status.set(`${rel} :: (file failed to load)`, "failed");
+              }
+              return { status, total: r.numTotalTests, failed: r.numFailedTests };
+            };
+            const base = load(process.env.RUNNER_TEMP + "/base.json");
+            const head = load(process.env.RUNNER_TEMP + "/head.json");
+            console.log(`base: ${base.failed}/${base.total} failed, head: ${head.failed}/${head.total} failed`);
+            const regressions = [...head.status].filter(([k, s]) => s === "failed" && base.status.get(k) === "passed").map(([k]) => k);
+            const fixed = [...base.status].filter(([k, s]) => s === "failed" && head.status.get(k) === "passed").map(([k]) => k);
+            const newFailing = [...head.status].filter(([k, s]) => s === "failed" && !base.status.has(k)).map(([k]) => k);
+            if (fixed.length) console.log("Now passing:\n  " + fixed.join("\n  "));
+            if (newFailing.length) console.log("New tests failing:\n  " + newFailing.join("\n  "));
+            if (regressions.length) console.log("Passed on the base, fail here:\n  " + regressions.join("\n  "));
+            if (regressions.length || newFailing.length) process.exit(1);
+          '

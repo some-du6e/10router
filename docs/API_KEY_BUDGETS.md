@@ -148,7 +148,9 @@ them. A backup carries the totals, so a key restored onto another install
   `web_search` tool on a provider without native search, 10router answers it
   with a side call to `/v1/search` using the same key. With an allowlist, add
   the search provider (for example `tavily`) to the list, or that side call is
-  refused and the search goes to the model's provider instead.
+  refused and the search goes to the model's provider instead. A provider with
+  a search mode is its own entry: `exa` on the list doesn't allow `exa/instant`,
+  so add the Web Search combo or each member as it is spelled.
 - **Rate-limit hold.** A request held open while its provider's limit resets
   is checked again before each retry, so a key that runs out of budget or
   expires during the wait gets its error instead of the retry. With "Require

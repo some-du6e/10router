@@ -7,6 +7,7 @@
  * @property {string} id
  * @property {string} baseUrl
  * @property {string} [method]
+ * @property {string} [api]  API the provider serves, when another provider's ("exa")
  *
  * @typedef {Object} ContentOptions
  * @property {boolean} [snippet]
@@ -23,6 +24,7 @@
  * @property {string}   [language]
  * @property {string}   [timeRange]
  * @property {number}   [offset]
+ * @property {string}   [searchMode]  mode the model names ("exa/instant" → "instant")
  * @property {string[]} [domainFilter]
  * @property {ContentOptions}        [contentOptions]
  * @property {Record<string,unknown>} [providerOptions]
@@ -30,6 +32,7 @@
  */
 
 import { assertPublicUrl } from "../../utils/ssrfGuard.js";
+import { buildExaSearchBody, exaHeaders } from "./exa.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -151,22 +154,12 @@ function buildPerplexityRequest(config, params) {
 }
 
 function buildExaRequest(config, params) {
-  const { includes, excludes } = parseDomainFilter(params.domainFilter);
-  const body = {
-    query: params.query,
-    numResults: params.maxResults,
-    type: "auto",
-    text: true,
-    highlights: true,
-  };
-  if (includes.length) body.includeDomains = includes;
-  if (excludes.length) body.excludeDomains = excludes;
-  if (params.searchType === "news") body.category = "news";
+  const body = buildExaSearchBody(config, params, parseDomainFilter(params.domainFilter));
   return {
     url: resolveBaseUrl(config, params),
     init: {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": params.token },
+      headers: exaHeaders(config, params.token),
       body: JSON.stringify(body),
     },
   };
@@ -441,14 +434,15 @@ const BUILDERS = {
 };
 
 /**
- * Dispatch to the correct provider builder by `provider.id`.
+ * Dispatch to the provider's builder: by `provider.api` when it serves another
+ * provider's API, else by `provider.id`.
  * Falls back to generic POST + bearer auth for unknown providers.
  * @param {SearchProviderConfig} provider
  * @param {SearchRequestParams} params
  * @returns {{url: string, init: RequestInit}}
  */
 export function buildSearchRequest(provider, params) {
-  const builder = BUILDERS[provider.id];
+  const builder = BUILDERS[provider.api || provider.id];
   if (builder) return builder(provider, params);
 
   return {

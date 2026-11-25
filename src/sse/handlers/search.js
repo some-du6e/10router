@@ -17,6 +17,7 @@ import * as log from "../utils/logger.js";
 import { checkApiKeyLimits } from "../services/keyLimits.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat, getComboModelsFromData } from "open-sse/services/combo.js";
+import { parseSearchModel, searchModeError } from "@/shared/utils/searchModel.js";
 
 /**
  * Handle web search request for the SSE/Next.js server.
@@ -94,7 +95,8 @@ export async function handleSearch(request) {
 
 async function handleSingleProviderSearch(body, providerInput, request, apiKey, settings) {
   const query = body.query;
-  const providerId = resolveProviderId(providerInput);
+  const { provider: providerName, mode } = parseSearchModel(providerInput);
+  const providerId = resolveProviderId(providerName);
   const resolvedProvider = AI_PROVIDERS[providerId];
 
   if (!resolvedProvider) {
@@ -110,8 +112,15 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
     return errorResponse(HTTP_STATUS.BAD_REQUEST, `Provider ${providerId} does not support web search`);
   }
 
+  // Before any account is picked, so a mode the provider lacks locks none.
+  const modeError = searchModeError(providerId, mode, providerConfig);
+  if (modeError) {
+    log.warn("SEARCH", modeError);
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, modeError);
+  }
+
   if (providerInput !== providerId) {
-    log.info("ROUTING", `${providerInput} → ${providerId}`);
+    log.info("ROUTING", `${providerInput} → ${providerId}${mode ? ` (mode ${mode})` : ""}`);
   } else {
     log.info("ROUTING", `Provider: ${providerId}`);
   }
@@ -128,7 +137,8 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
     offset: body.offset,
     domain_filter: body.domain_filter,
     content_options: body.content_options,
-    provider_options: body.provider_options
+    provider_options: body.provider_options,
+    search_mode: mode ?? undefined
   };
 
   // No-auth providers (e.g. searxng) bypass credential lookup
@@ -217,6 +227,10 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
       await clearAccountError(credentials.connectionId, credentials, searchLockKey);
       return result.response;
     }
+
+    // Refused before it was sent (a bad provider option): every account would
+    // refuse it the same way, and none is at fault.
+    if (result.requestError) return result.response;
 
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, credentialProviderId, searchLockKey, null, credentials.apiKey);
 

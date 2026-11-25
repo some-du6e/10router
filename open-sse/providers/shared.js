@@ -95,3 +95,20 @@ export const GOOGLE_OAUTH_CLIENT = {
   clientId: "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
   clientSecret: "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"
 };
+
+// searchConfig shared by every provider that serves Exa's /search API (Exa,
+// and proxies taking the same body). `modes` are the Exa search types a search
+// may pick ("exa/instant", or provider_options.type); `defaultMode` applies
+// when it picks none. highlightMaxCharacters caps each result's highlights.
+export const EXA_SEARCH_API = {
+  api: "exa",
+  method: "POST",
+  searchTypes: ["web", "news"],
+  modes: ["auto", "lite", "fast", "instant"],
+  defaultMode: "auto",
+  highlightMaxCharacters: 700,
+  defaultMaxResults: 5,
+  maxMaxResults: 100,
+  timeoutMs: 10000,
+  cacheTTLMs: 300000,
+};

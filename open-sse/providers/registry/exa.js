@@ -1,3 +1,5 @@
+import { EXA_SEARCH_API } from "../shared.js";
+
 export default {
   id: "exa",
   alias: "exa",
@@ -18,20 +20,12 @@ export default {
     "webFetch"
   ],
   searchConfig: {
+    ...EXA_SEARCH_API,
     baseUrl: "https://api.exa.ai/search",
-    method: "POST",
     authType: "apikey",
     authHeader: "x-api-key",
     costPerQuery: 0.007,
     freeMonthlyQuota: 1000,
-    searchTypes: [
-      "web",
-      "news"
-    ],
-    defaultMaxResults: 5,
-    maxMaxResults: 100,
-    timeoutMs: 10000,
-    cacheTTLMs: 300000
   },
   fetchConfig: {
     baseUrl: "https://api.exa.ai/contents",

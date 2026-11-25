@@ -8,6 +8,7 @@ import CapacityBadges from "./CapacityBadges";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, AI_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, getProviderAlias } from "@/shared/constants/providers";
+import { searchModelChoices } from "@/shared/utils/searchModel.js";
 
 // Provider order: OAuth first, then Free Tier, then API Key (matches dashboard/providers)
 const PROVIDER_ORDER = [
@@ -205,13 +206,16 @@ export default function ModelSelectModal({
       const providerInfo = allProviders[providerId] || { name: providerId, color: "#666" };
       const isCustomProvider = isOpenAICompatibleProvider(providerId) || isAnthropicCompatibleProvider(providerId);
 
-      // For provider-as-model kinds (webSearch/webFetch): emit a single entry where value === providerId
+      // For provider-as-model kinds (webSearch/webFetch): an entry whose value is the provider id,
+      // plus one per other search mode the provider lists ("exa/instant")
       if (kindFilter && PROVIDER_AS_MODEL_KINDS.has(kindFilter)) {
         groups[providerId] = {
           name: providerInfo.name,
           alias,
           color: providerInfo.color,
-          models: [{ id: providerId, name: providerInfo.name, value: providerId }],
+          models: kindFilter === "webSearch"
+            ? searchModelChoices(providerId, providerInfo)
+            : [{ id: providerId, name: providerInfo.name, value: providerId }],
         };
         return;
       }

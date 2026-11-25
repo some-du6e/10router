@@ -98,6 +98,8 @@ async function probeWebProvider(provider, apiKey) {
   if (cfg.authType === "none") return true; // no-auth (e.g. searxng)
 
   let url = cfg.validateUrl || cfg.baseUrl;
+  // A validateUrl can take another method than the search (a GET key check).
+  const method = (cfg.validateUrl && cfg.validateMethod) || cfg.method;
   const headers = { "Content-Type": "application/json" };
   let body;
 
@@ -111,11 +113,11 @@ async function probeWebProvider(provider, apiKey) {
   }
 
   // Minimal body for POST endpoints; GET sends nothing
-  if (cfg.method === "POST") {
+  if (method === "POST") {
     body = JSON.stringify({ query: "ping", q: "ping", url: "https://example.com" });
   }
 
-  const res = await fetch(url, { method: cfg.method, headers, body, signal: AbortSignal.timeout(8000) });
+  const res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(8000) });
   return res.status !== 401 && res.status !== 403;
 }
 

@@ -12,6 +12,7 @@ const FIELD_SCHEMA = {
   freeTier:         { label: "Free tier",  format: (v) => v },
   freeMonthlyQuota: { label: "Free quota",  format: (v) => v === 0 ? "—" : v >= 999999 ? "Unlimited" : `${v.toLocaleString()} / mo` },
   searchTypes:      { label: "Types",      format: (v) => v.join(", ") },
+  modes:            { label: "Search modes", format: (v) => v.join(", ") },
   formats:          { label: "Formats",    format: (v) => v.join(", ") },
   maxMaxResults:    { label: "Max results", format: (v) => v },
   maxCharacters:    { label: "Max chars",  format: (v) => v.toLocaleString() },
