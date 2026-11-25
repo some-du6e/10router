@@ -77,6 +77,8 @@ for (const [key, value] of Object.entries(config.aliases)) {
 const coreModel = await import("../../open-sse/services/model.js");
 const appModel = await import("../../src/sse/services/model.js");
 const { MAX_COMBO_DEPTH } = await import("../../open-sse/config/runtimeConfig.js");
+const { SEARCH_TOOL_TYPES } = await import("../../open-sse/config/appConstants.js");
+const { CLAUDE_BLOCK } = await import("../../open-sse/translator/schema/blocks.js");
 
 afterAll(() => {
   closeRepos();
@@ -98,6 +100,9 @@ function tablesText() {
     builtinModelAliases: coreModel.BUILTIN_MODEL_ALIASES,
     modelPrefixProviders: coreModel.MODEL_PREFIX_PROVIDERS.map(([re, provider]) => [re.source, provider]),
     maxComboDepth: MAX_COMBO_DEPTH,
+    // combo.js's detectRequiredCapabilities and the Claude search hooks.
+    searchToolTypes: [...SEARCH_TOOL_TYPES].sort(),
+    webSearchToolType: CLAUDE_BLOCK.WEB_SEARCH_TOOL,
   };
   return JSON.stringify(tables, null, 2) + "\n";
 }

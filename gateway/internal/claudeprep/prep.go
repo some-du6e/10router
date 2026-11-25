@@ -358,6 +358,22 @@ func asciiLower(what, s string) string {
 	return strings.ToLower(s)
 }
 
+// DetectClientTool is clientDetector.js's detectClientTool for callers
+// outside Prepare (chat.ts reads it for finalizeRoutingError). "" is null. A
+// non-ASCII client-identity header is a decline, as in Prepare.
+func DetectClientTool(h map[string]string, body *Value) (tool string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			d, ok := r.(declined)
+			if !ok {
+				panic(r)
+			}
+			tool, err = "", &DeclineError{d.reason}
+		}
+	}()
+	return detectClientTool(h, body), nil
+}
+
 // detectClientTool is clientDetector.js detectClientTool.
 func detectClientTool(h map[string]string, body *Value) string {
 	ua := asciiLower("user-agent", h["user-agent"])

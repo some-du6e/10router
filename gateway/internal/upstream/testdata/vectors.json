@@ -1,0 +1,1653 @@
+{
+ "budgets": [
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": ""
+   },
+   "stream": true,
+   "ms": 240000,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": ""
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "5000"
+   },
+   "stream": true,
+   "ms": 5000,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 5s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "5000"
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": " 7000"
+   },
+   "stream": true,
+   "ms": 7000,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 7s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": " 7000"
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "5m"
+   },
+   "stream": true,
+   "ms": 5,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 0s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "5m"
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "0"
+   },
+   "stream": true,
+   "ms": 240000,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "0"
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "-5"
+   },
+   "stream": true,
+   "ms": 240000,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "-5"
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1e4"
+   },
+   "stream": true,
+   "ms": 1,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 0s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1e4"
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "0x10"
+   },
+   "stream": true,
+   "ms": 240000,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "0x10"
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "abc"
+   },
+   "stream": true,
+   "ms": 240000,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "abc"
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "2147483647"
+   },
+   "stream": true,
+   "ms": 2147483647,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 2147484s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "2147483647"
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "2147483648"
+   },
+   "stream": true,
+   "ms": 240000,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "2147483648"
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "+300"
+   },
+   "stream": true,
+   "ms": 300,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 0s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "+300"
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"
+   },
+   "stream": true,
+   "ms": 1500,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 2s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": " 900"
+   },
+   "stream": true,
+   "ms": 900,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 1s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": " 900"
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": ""
+   },
+   "stream": true,
+   "ms": 240000,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": ""
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "5000"
+   },
+   "stream": true,
+   "ms": 20000,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 20s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "5000"
+   },
+   "stream": false,
+   "ms": 20000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 20s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": " 7000"
+   },
+   "stream": true,
+   "ms": 28000,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 28s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": " 7000"
+   },
+   "stream": false,
+   "ms": 28000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 28s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "5m"
+   },
+   "stream": true,
+   "ms": 20,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 0s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "5m"
+   },
+   "stream": false,
+   "ms": 20,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 0s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "0"
+   },
+   "stream": true,
+   "ms": 240000,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "0"
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "-5"
+   },
+   "stream": true,
+   "ms": 240000,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "-5"
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "1e4"
+   },
+   "stream": true,
+   "ms": 4,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 0s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "1e4"
+   },
+   "stream": false,
+   "ms": 4,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 0s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "0x10"
+   },
+   "stream": true,
+   "ms": 240000,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "0x10"
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "abc"
+   },
+   "stream": true,
+   "ms": 240000,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "abc"
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "2147483647"
+   },
+   "stream": true,
+   "ms": 2147483647,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 2147484s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "2147483647"
+   },
+   "stream": false,
+   "ms": 2147483647,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 2147484s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "2147483648"
+   },
+   "stream": true,
+   "ms": 240000,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "2147483648"
+   },
+   "stream": false,
+   "ms": 240000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 240s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "+300"
+   },
+   "stream": true,
+   "ms": 1200,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 1s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "+300"
+   },
+   "stream": false,
+   "ms": 1200,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 1s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "1500"
+   },
+   "stream": true,
+   "ms": 6000,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 6s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": "1500"
+   },
+   "stream": false,
+   "ms": 6000,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 6s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": " 900"
+   },
+   "stream": true,
+   "ms": 3600,
+   "setBy": "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 4s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)"
+  },
+  {
+   "env": {
+    "FETCH_CONNECT_TIMEOUT_MS": " 900"
+   },
+   "stream": false,
+   "ms": 3600,
+   "setBy": "4x FETCH_CONNECT_TIMEOUT_MS",
+   "text": "upstream sent no response headers in 4s (headers timeout, set by 4x FETCH_CONNECT_TIMEOUT_MS)"
+  }
+ ],
+ "rejections": [
+  {
+   "text": "Unexpected value(s) `interleaved-thinking-2025-05-14` for the `anthropic-beta` header. Please consult our documentation at docs.example.test or try again without the header.",
+   "flags": [
+    "interleaved-thinking-2025-05-14"
+   ]
+  },
+  {
+   "text": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Unexpected value(s) `a-1`, `b-2` for the `anthropic-beta` header.\"}}",
+   "flags": [
+    "a-1",
+    "b-2"
+   ]
+  },
+  {
+   "text": "unexpected VALUE(S)   ` spaced-flag ` for the anthropic-beta HEADER",
+   "flags": [
+    "spaced-flag"
+   ]
+  },
+  {
+   "text": "Unexpected value(s) `x`\nfor the `anthropic-beta` header",
+   "flags": [
+    "x"
+   ]
+  },
+  {
+   "text": "Unexpected value(s) for the `anthropic-beta` header",
+   "flags": []
+  },
+  {
+   "text": "Unexpected value(s) `` for the `anthropic-beta` header",
+   "flags": []
+  },
+  {
+   "text": "Unexpected values `a` for the `anthropic-beta` header",
+   "flags": []
+  },
+  {
+   "text": "Unexpected value(s) `a` for the anthropic-version header",
+   "flags": []
+  },
+  {
+   "text": "Unexpected value(s) `Kelvin` for the `anthropic-beta` header",
+   "flags": [
+    "Kelvin"
+   ]
+  },
+  {
+   "text": "Unexpected value(s) `nbsp` for the `anthropic-beta` header",
+   "flags": [
+    "nbsp"
+   ]
+  },
+  {
+   "text": "",
+   "flags": []
+  },
+  {
+   "text": "model not found",
+   "flags": []
+  }
+ ],
+ "proxies": [
+  {
+   "input": {},
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "system",
+    "connectionProxyEnabled": false,
+    "connectionProxyUrl": "",
+    "connectionNoProxy": "",
+    "strictProxy": false,
+    "vercelRelayUrl": "",
+    "direct": false,
+    "blocked": false
+   },
+   "transport": "[\"\",\"\",\"\",false]"
+  },
+  {
+   "input": {
+    "account": {
+     "proxyPoolId": "on"
+    }
+   },
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "account",
+    "connectionProxyEnabled": true,
+    "connectionProxyUrl": "http://proxy.example.test:8080",
+    "connectionNoProxy": "a.test",
+    "strictProxy": false,
+    "vercelRelayUrl": "",
+    "direct": false,
+    "blocked": false
+   },
+   "transport": "[\"http://proxy.example.test:8080\",\"a.test\",\"\",false]"
+  },
+  {
+   "input": {
+    "account": {
+     "proxyPoolId": " on "
+    }
+   },
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "account",
+    "connectionProxyEnabled": true,
+    "connectionProxyUrl": "http://proxy.example.test:8080",
+    "connectionNoProxy": "a.test",
+    "strictProxy": false,
+    "vercelRelayUrl": "",
+    "direct": false,
+    "blocked": false
+   },
+   "transport": "[\"http://proxy.example.test:8080\",\"a.test\",\"\",false]"
+  },
+  {
+   "input": {
+    "account": {
+     "proxyPoolId": "__none__"
+    },
+    "global": "strict"
+   },
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "global",
+    "connectionProxyEnabled": true,
+    "connectionProxyUrl": "http://proxy.example.test:8081",
+    "connectionNoProxy": "",
+    "strictProxy": true,
+    "vercelRelayUrl": "",
+    "direct": false,
+    "blocked": false
+   },
+   "transport": "[\"http://proxy.example.test:8081\",\"\",\"\",false]"
+  },
+  {
+   "input": {
+    "account": {
+     "proxyPoolId": "__direct__"
+    },
+    "global": "on"
+   },
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "account",
+    "connectionProxyEnabled": false,
+    "connectionProxyUrl": "",
+    "connectionNoProxy": "",
+    "strictProxy": false,
+    "vercelRelayUrl": "",
+    "direct": true,
+    "blocked": false
+   },
+   "transport": "[\"\",\"\",\"\",true]"
+  },
+  {
+   "input": {
+    "account": {
+     "proxyPoolId": "gone"
+    }
+   },
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "account",
+    "connectionProxyEnabled": false,
+    "connectionProxyUrl": "",
+    "connectionNoProxy": "",
+    "strictProxy": true,
+    "vercelRelayUrl": "",
+    "direct": false,
+    "blocked": true
+   },
+   "transport": "[\"\",\"\",\"\",false]"
+  },
+  {
+   "input": {
+    "account": {
+     "proxyPoolId": "off"
+    }
+   },
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "account",
+    "connectionProxyEnabled": false,
+    "connectionProxyUrl": "",
+    "connectionNoProxy": "",
+    "strictProxy": true,
+    "vercelRelayUrl": "",
+    "direct": false,
+    "blocked": true
+   },
+   "transport": "[\"\",\"\",\"\",false]"
+  },
+  {
+   "input": {
+    "account": {
+     "proxyPoolId": "blank"
+    }
+   },
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "account",
+    "connectionProxyEnabled": false,
+    "connectionProxyUrl": "",
+    "connectionNoProxy": "",
+    "strictProxy": true,
+    "vercelRelayUrl": "",
+    "direct": false,
+    "blocked": true
+   },
+   "transport": "[\"\",\"\",\"\",false]"
+  },
+  {
+   "input": {
+    "account": {
+     "proxyPoolId": "relay"
+    }
+   },
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "account",
+    "connectionProxyEnabled": false,
+    "connectionProxyUrl": "",
+    "connectionNoProxy": "x.test",
+    "strictProxy": false,
+    "vercelRelayUrl": "https://relay.example.test",
+    "direct": false,
+    "blocked": false
+   },
+   "transport": "[\"\",\"\",\"https://relay.example.test\",false]"
+  },
+  {
+   "input": {
+    "account": {
+     "proxyPoolId": "named"
+    }
+   },
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "account",
+    "connectionProxyEnabled": false,
+    "connectionProxyUrl": "",
+    "connectionNoProxy": "",
+    "strictProxy": true,
+    "vercelRelayUrl": "",
+    "direct": false,
+    "blocked": true
+   },
+   "transport": "[\"\",\"\",\"\",false]"
+  },
+  {
+   "input": {
+    "account": {
+     "connectionProxyEnabled": true,
+     "connectionProxyUrl": " http://legacy.example.test:3128 ",
+     "connectionNoProxy": "b.test"
+    }
+   },
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "account",
+    "connectionProxyEnabled": true,
+    "connectionProxyUrl": "http://legacy.example.test:3128",
+    "connectionNoProxy": "b.test",
+    "strictProxy": false,
+    "vercelRelayUrl": "",
+    "direct": false,
+    "blocked": false
+   },
+   "transport": "[\"http://legacy.example.test:3128\",\"b.test\",\"\",false]"
+  },
+  {
+   "input": {
+    "account": {
+     "connectionProxyEnabled": true,
+     "connectionProxyUrl": "  "
+    },
+    "provider": "on"
+   },
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "provider",
+    "connectionProxyEnabled": true,
+    "connectionProxyUrl": "http://proxy.example.test:8080",
+    "connectionNoProxy": "a.test",
+    "strictProxy": false,
+    "vercelRelayUrl": "",
+    "direct": false,
+    "blocked": false
+   },
+   "transport": "[\"http://proxy.example.test:8080\",\"a.test\",\"\",false]"
+  },
+  {
+   "input": {
+    "account": {
+     "connectionProxyEnabled": "true",
+     "connectionProxyUrl": "http://legacy.example.test"
+    }
+   },
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "system",
+    "connectionProxyEnabled": false,
+    "connectionProxyUrl": "",
+    "connectionNoProxy": "",
+    "strictProxy": false,
+    "vercelRelayUrl": "",
+    "direct": false,
+    "blocked": false
+   },
+   "transport": "[\"\",\"\",\"\",false]"
+  },
+  {
+   "input": {
+    "provider": "__direct__",
+    "global": "on"
+   },
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "provider",
+    "connectionProxyEnabled": false,
+    "connectionProxyUrl": "",
+    "connectionNoProxy": "",
+    "strictProxy": false,
+    "vercelRelayUrl": "",
+    "direct": true,
+    "blocked": false
+   },
+   "transport": "[\"\",\"\",\"\",true]"
+  },
+  {
+   "input": {
+    "provider": "relay"
+   },
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "provider",
+    "connectionProxyEnabled": false,
+    "connectionProxyUrl": "",
+    "connectionNoProxy": "x.test",
+    "strictProxy": false,
+    "vercelRelayUrl": "https://relay.example.test",
+    "direct": false,
+    "blocked": false
+   },
+   "transport": "[\"\",\"\",\"https://relay.example.test\",false]"
+  },
+  {
+   "input": {
+    "global": "strict"
+   },
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "global",
+    "connectionProxyEnabled": true,
+    "connectionProxyUrl": "http://proxy.example.test:8081",
+    "connectionNoProxy": "",
+    "strictProxy": true,
+    "vercelRelayUrl": "",
+    "direct": false,
+    "blocked": false
+   },
+   "transport": "[\"http://proxy.example.test:8081\",\"\",\"\",false]"
+  },
+  {
+   "input": {
+    "global": "__none__"
+   },
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "system",
+    "connectionProxyEnabled": false,
+    "connectionProxyUrl": "",
+    "connectionNoProxy": "",
+    "strictProxy": false,
+    "vercelRelayUrl": "",
+    "direct": false,
+    "blocked": false
+   },
+   "transport": "[\"\",\"\",\"\",false]"
+  },
+  {
+   "input": {
+    "provider": 7,
+    "global": "on"
+   },
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "provider",
+    "connectionProxyEnabled": false,
+    "connectionProxyUrl": "",
+    "connectionNoProxy": "",
+    "strictProxy": true,
+    "vercelRelayUrl": "",
+    "direct": false,
+    "blocked": true
+   },
+   "transport": "[\"\",\"\",\"\",false]"
+  },
+  {
+   "input": {
+    "account": {
+     "proxyPoolId": ""
+    },
+    "provider": "",
+    "global": ""
+   },
+   "pools": {
+    "on": {
+     "id": "on",
+     "name": "Main",
+     "proxyUrl": " http://proxy.example.test:8080 ",
+     "noProxy": "a.test",
+     "isActive": true
+    },
+    "strict": {
+     "id": "strict",
+     "proxyUrl": "http://proxy.example.test:8081",
+     "isActive": true,
+     "strictProxy": true
+    },
+    "off": {
+     "id": "off",
+     "name": "Old",
+     "proxyUrl": "http://proxy.example.test:8082",
+     "isActive": false
+    },
+    "blank": {
+     "id": "blank",
+     "proxyUrl": "  ",
+     "isActive": true
+    },
+    "relay": {
+     "id": "relay",
+     "proxyUrl": "https://relay.example.test",
+     "isActive": true,
+     "type": "vercel",
+     "noProxy": "x.test"
+    },
+    "named": {
+     "id": "named",
+     "name": "",
+     "proxyUrl": "http://proxy.example.test:8083",
+     "isActive": false
+    }
+   },
+   "out": {
+    "layer": "system",
+    "connectionProxyEnabled": false,
+    "connectionProxyUrl": "",
+    "connectionNoProxy": "",
+    "strictProxy": false,
+    "vercelRelayUrl": "",
+    "direct": false,
+    "blocked": false
+   },
+   "transport": "[\"\",\"\",\"\",false]"
+  }
+ ]
+}

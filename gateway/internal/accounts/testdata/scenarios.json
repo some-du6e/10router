@@ -1,0 +1,2570 @@
+[
+ {
+  "name": "fill-first fallback and recovery",
+  "goDeclines": "",
+  "startMs": 1772366400000,
+  "settings": null,
+  "initial": [
+   {
+    "id": "k1",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k1",
+    "email": null,
+    "priority": 1,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   },
+   {
+    "id": "k2",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k2",
+    "email": null,
+    "priority": 2,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   },
+   {
+    "id": "k3",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k3",
+    "email": null,
+    "priority": 3,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   }
+  ],
+  "steps": [
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "connectionId": "k1",
+     "connectionName": "k1"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k1",
+    "status": 429,
+    "error": "[429]: Rate limit exceeded",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 2000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "exclude": [
+     "k1"
+    ],
+    "nowMs": 1772366400000,
+    "out": {
+     "connectionId": "k2",
+     "connectionName": "k2"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "succeed",
+    "id": "k2",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"lastErrorAt\":null,\"backoffLevel\":0,\"authDemoteOkAt\":\"2026-03-01T12:00:00.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "connectionId": "k2",
+     "connectionName": "k2"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"lastErrorAt\":null,\"backoffLevel\":0,\"authDemoteOkAt\":\"2026-03-01T12:00:00.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "advance",
+    "ms": 3000,
+    "nowMs": 1772366403000,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"lastErrorAt\":null,\"backoffLevel\":0,\"authDemoteOkAt\":\"2026-03-01T12:00:00.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366403000,
+    "out": {
+     "connectionId": "k1",
+     "connectionName": "k1"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"lastErrorAt\":null,\"backoffLevel\":0,\"authDemoteOkAt\":\"2026-03-01T12:00:00.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "succeed",
+    "id": "k1",
+    "model": "m",
+    "nowMs": 1772366403000,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":null,\"modelLimit_m\":null,\"providerReset_m\":null,\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"lastErrorAt\":null,\"backoffLevel\":0,\"modelNoHeaders_m\":null,\"authDemoteOkAt\":\"2026-03-01T12:00:03.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:03.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"lastErrorAt\":null,\"backoffLevel\":0,\"authDemoteOkAt\":\"2026-03-01T12:00:00.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "succeed",
+    "id": "k1",
+    "model": "m",
+    "nowMs": 1772366403000,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":null,\"modelLimit_m\":null,\"providerReset_m\":null,\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"lastErrorAt\":null,\"backoffLevel\":0,\"modelNoHeaders_m\":null,\"authDemoteOkAt\":\"2026-03-01T12:00:03.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:03.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"lastErrorAt\":null,\"backoffLevel\":0,\"authDemoteOkAt\":\"2026-03-01T12:00:00.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "backoff escalates and a straggler keeps the lock",
+  "goDeclines": "",
+  "startMs": 1772366400000,
+  "settings": null,
+  "initial": [
+   {
+    "id": "k1",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k1",
+    "email": null,
+    "priority": 1,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   },
+   {
+    "id": "k2",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k2",
+    "email": null,
+    "priority": 2,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   }
+  ],
+  "steps": [
+   {
+    "op": "fail",
+    "id": "k1",
+    "status": 429,
+    "error": "[429]: Rate limit exceeded",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 2000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "advance",
+    "ms": 500,
+    "nowMs": 1772366400500,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k1",
+    "status": 429,
+    "error": "[429]: Rate limit exceeded",
+    "model": "m",
+    "nowMs": 1772366400500,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 2000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.500Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.500Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.500Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "advance",
+    "ms": 3000,
+    "nowMs": 1772366403500,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.500Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.500Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.500Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k1",
+    "status": 429,
+    "error": "[429]: too many requests",
+    "model": "m",
+    "nowMs": 1772366403500,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 4000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:07.500Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: too many requests\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:03.500Z\",\"backoffLevel\":2}",
+      "updatedAt": "2026-03-01T12:00:03.500Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "advance",
+    "ms": 10000,
+    "nowMs": 1772366413500,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:07.500Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: too many requests\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:03.500Z\",\"backoffLevel\":2}",
+      "updatedAt": "2026-03-01T12:00:03.500Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k1",
+    "status": 503,
+    "error": "[503]: overloaded",
+    "model": "m",
+    "nowMs": 1772366413500,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 8000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:21.500Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[503]: overloaded\",\"errorCode\":503,\"lastErrorAt\":\"2026-03-01T12:00:13.500Z\",\"backoffLevel\":3}",
+      "updatedAt": "2026-03-01T12:00:13.500Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k2",
+    "status": 504,
+    "error": "[504]: upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)",
+    "model": "m",
+    "nowMs": 1772366413500,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 30000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:21.500Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[503]: overloaded\",\"errorCode\":503,\"lastErrorAt\":\"2026-03-01T12:00:13.500Z\",\"backoffLevel\":3}",
+      "updatedAt": "2026-03-01T12:00:13.500Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:43.500Z\",\"modelLimit_m\":false,\"modelNoHeaders_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[504]: upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TI\",\"errorCode\":504,\"lastErrorAt\":\"2026-03-01T12:00:13.500Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:13.500Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k2",
+    "status": 504,
+    "error": "[504]: upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)",
+    "model": "m",
+    "nowMs": 1772366413500,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 30000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:21.500Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[503]: overloaded\",\"errorCode\":503,\"lastErrorAt\":\"2026-03-01T12:00:13.500Z\",\"backoffLevel\":3}",
+      "updatedAt": "2026-03-01T12:00:13.500Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:43.500Z\",\"modelLimit_m\":false,\"modelNoHeaders_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[504]: upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TI\",\"errorCode\":504,\"lastErrorAt\":\"2026-03-01T12:00:13.500Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:13.500Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366413500,
+    "out": {
+     "allRateLimited": true,
+     "allLimitsExhausted": false,
+     "retryAfter": "2026-03-01T12:00:21.500Z",
+     "retryAfterHuman": "reset after 8s",
+     "providerResetAtMs": null,
+     "lastError": "[503]: overloaded",
+     "lastErrorCode": 503,
+     "lastErrorOwn": false
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:21.500Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[503]: overloaded\",\"errorCode\":503,\"lastErrorAt\":\"2026-03-01T12:00:13.500Z\",\"backoffLevel\":3}",
+      "updatedAt": "2026-03-01T12:00:13.500Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:43.500Z\",\"modelLimit_m\":false,\"modelNoHeaders_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[504]: upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TI\",\"errorCode\":504,\"lastErrorAt\":\"2026-03-01T12:00:13.500Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:13.500Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "other",
+    "nowMs": 1772366413500,
+    "out": {
+     "connectionId": "k1",
+     "connectionName": "k1"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:21.500Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[503]: overloaded\",\"errorCode\":503,\"lastErrorAt\":\"2026-03-01T12:00:13.500Z\",\"backoffLevel\":3}",
+      "updatedAt": "2026-03-01T12:00:13.500Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:43.500Z\",\"modelLimit_m\":false,\"modelNoHeaders_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[504]: upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TI\",\"errorCode\":504,\"lastErrorAt\":\"2026-03-01T12:00:13.500Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:13.500Z"
+     }
+    ]
+   },
+   {
+    "op": "advance",
+    "ms": 60000,
+    "nowMs": 1772366473500,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:21.500Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[503]: overloaded\",\"errorCode\":503,\"lastErrorAt\":\"2026-03-01T12:00:13.500Z\",\"backoffLevel\":3}",
+      "updatedAt": "2026-03-01T12:00:13.500Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:43.500Z\",\"modelLimit_m\":false,\"modelNoHeaders_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[504]: upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TI\",\"errorCode\":504,\"lastErrorAt\":\"2026-03-01T12:00:13.500Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:13.500Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366473500,
+    "out": {
+     "connectionId": "k1",
+     "connectionName": "k1"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:21.500Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[503]: overloaded\",\"errorCode\":503,\"lastErrorAt\":\"2026-03-01T12:00:13.500Z\",\"backoffLevel\":3}",
+      "updatedAt": "2026-03-01T12:00:13.500Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:43.500Z\",\"modelLimit_m\":false,\"modelNoHeaders_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[504]: upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TI\",\"errorCode\":504,\"lastErrorAt\":\"2026-03-01T12:00:13.500Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:13.500Z"
+     }
+    ]
+   },
+   {
+    "op": "succeed",
+    "id": "k1",
+    "model": "m",
+    "nowMs": 1772366473500,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":null,\"modelLimit_m\":null,\"providerReset_m\":null,\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"lastErrorAt\":null,\"backoffLevel\":0,\"modelNoHeaders_m\":null,\"authDemoteOkAt\":\"2026-03-01T12:01:13.500Z\"}",
+      "updatedAt": "2026-03-01T12:01:13.500Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:43.500Z\",\"modelLimit_m\":false,\"modelNoHeaders_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[504]: upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TI\",\"errorCode\":504,\"lastErrorAt\":\"2026-03-01T12:00:13.500Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:13.500Z"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "every key locked",
+  "goDeclines": "",
+  "startMs": 1772366400000,
+  "settings": null,
+  "initial": [
+   {
+    "id": "k1",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k1",
+    "email": null,
+    "priority": 1,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   },
+   {
+    "id": "k2",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k2",
+    "email": null,
+    "priority": 2,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   },
+   {
+    "id": "k3",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k3",
+    "email": null,
+    "priority": 3,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   }
+  ],
+  "steps": [
+   {
+    "op": "fail",
+    "id": "k1",
+    "status": 429,
+    "error": "[429]: Rate limit exceeded",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 2000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k2",
+    "status": 500,
+    "error": "[500]: Internal error",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 30000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[500]: Internal error\",\"errorCode\":500,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k3",
+    "status": 404,
+    "error": "[404]: not found",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 120000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[500]: Internal error\",\"errorCode\":500,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[404]: not found\",\"errorCode\":404,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "allRateLimited": true,
+     "allLimitsExhausted": false,
+     "retryAfter": "2026-03-01T12:00:02.000Z",
+     "retryAfterHuman": "reset after 2s",
+     "providerResetAtMs": null,
+     "lastError": "[429]: Rate limit exceeded",
+     "lastErrorCode": 429,
+     "lastErrorOwn": true
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[500]: Internal error\",\"errorCode\":500,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[404]: not found\",\"errorCode\":404,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "exclude": [
+     "k1",
+     "k2",
+     "k3"
+    ],
+    "nowMs": 1772366400000,
+    "out": {
+     "allRateLimited": true,
+     "allLimitsExhausted": false,
+     "retryAfter": "2026-03-01T12:00:02.000Z",
+     "retryAfterHuman": "reset after 2s",
+     "providerResetAtMs": null,
+     "lastError": "[429]: Rate limit exceeded",
+     "lastErrorCode": 429,
+     "lastErrorOwn": true
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[500]: Internal error\",\"errorCode\":500,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[404]: not found\",\"errorCode\":404,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k1",
+    "status": 400,
+    "error": "[400]: Rate limit hit",
+    "model": "",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 4000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[400]: Rate limit hit\",\"errorCode\":400,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":2,\"modelLock___all\":\"2026-03-01T12:00:04.000Z\",\"modelLimit___all\":true,\"providerReset___all\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[500]: Internal error\",\"errorCode\":500,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[404]: not found\",\"errorCode\":404,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "n",
+    "nowMs": 1772366400000,
+    "out": {
+     "connectionId": "k2",
+     "connectionName": "k2"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[400]: Rate limit hit\",\"errorCode\":400,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":2,\"modelLock___all\":\"2026-03-01T12:00:04.000Z\",\"modelLimit___all\":true,\"providerReset___all\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[500]: Internal error\",\"errorCode\":500,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[404]: not found\",\"errorCode\":404,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k2",
+    "status": 429,
+    "error": "[429]: Rate limit exceeded",
+    "model": "m",
+    "resetsAtMs": 1772366490000,
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 90000,
+     "providerResetAtMs": 1772366490000
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[400]: Rate limit hit\",\"errorCode\":400,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":2,\"modelLock___all\":\"2026-03-01T12:00:04.000Z\",\"modelLimit___all\":true,\"providerReset___all\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:01:30.000Z\",\"modelLimit_m\":true,\"providerReset_m\":\"2026-03-01T12:01:30.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[404]: not found\",\"errorCode\":404,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k3",
+    "status": 429,
+    "error": "[429]: Rate limit exceeded",
+    "model": "m",
+    "resetsAtMs": 1772377200000,
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 1800000,
+     "providerResetAtMs": 1772377200000
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[400]: Rate limit hit\",\"errorCode\":400,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":2,\"modelLock___all\":\"2026-03-01T12:00:04.000Z\",\"modelLimit___all\":true,\"providerReset___all\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:01:30.000Z\",\"modelLimit_m\":true,\"providerReset_m\":\"2026-03-01T12:01:30.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:30:00.000Z\",\"modelLimit_m\":true,\"providerReset_m\":\"2026-03-01T15:00:00.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "allRateLimited": true,
+     "allLimitsExhausted": true,
+     "retryAfter": "2026-03-01T12:00:04.000Z",
+     "retryAfterHuman": "reset after 4s",
+     "providerResetAtMs": null,
+     "lastError": "[400]: Rate limit hit",
+     "lastErrorCode": 400,
+     "lastErrorOwn": true
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[400]: Rate limit hit\",\"errorCode\":400,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":2,\"modelLock___all\":\"2026-03-01T12:00:04.000Z\",\"modelLimit___all\":true,\"providerReset___all\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:01:30.000Z\",\"modelLimit_m\":true,\"providerReset_m\":\"2026-03-01T12:01:30.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:30:00.000Z\",\"modelLimit_m\":true,\"providerReset_m\":\"2026-03-01T15:00:00.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "advance",
+    "ms": 31000,
+    "nowMs": 1772366431000,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[400]: Rate limit hit\",\"errorCode\":400,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":2,\"modelLock___all\":\"2026-03-01T12:00:04.000Z\",\"modelLimit___all\":true,\"providerReset___all\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:01:30.000Z\",\"modelLimit_m\":true,\"providerReset_m\":\"2026-03-01T12:01:30.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:30:00.000Z\",\"modelLimit_m\":true,\"providerReset_m\":\"2026-03-01T15:00:00.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366431000,
+    "out": {
+     "connectionId": "k1",
+     "connectionName": "k1"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[400]: Rate limit hit\",\"errorCode\":400,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":2,\"modelLock___all\":\"2026-03-01T12:00:04.000Z\",\"modelLimit___all\":true,\"providerReset___all\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:01:30.000Z\",\"modelLimit_m\":true,\"providerReset_m\":\"2026-03-01T12:01:30.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:30:00.000Z\",\"modelLimit_m\":true,\"providerReset_m\":\"2026-03-01T15:00:00.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "status and text rules",
+  "goDeclines": "",
+  "startMs": 1772366400000,
+  "settings": null,
+  "initial": [
+   {
+    "id": "k1",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k1",
+    "email": null,
+    "priority": 1,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   }
+  ],
+  "steps": [
+   {
+    "op": "fail",
+    "id": "k1",
+    "status": 418,
+    "error": "[418]: teapot",
+    "model": "a",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 30000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_a\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_a\":false,\"providerReset_a\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[418]: teapot\",\"errorCode\":418,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k1",
+    "status": 403,
+    "error": "[403]: Request not allowed",
+    "model": "b",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 5000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_a\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_a\":false,\"providerReset_a\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[403]: Request not allowed\",\"errorCode\":403,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0,\"modelLock_b\":\"2026-03-01T12:00:05.000Z\",\"modelLimit_b\":false,\"providerReset_b\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k1",
+    "status": 402,
+    "error": "[402]: pay",
+    "model": "c",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 120000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_a\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_a\":false,\"providerReset_a\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[402]: pay\",\"errorCode\":402,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0,\"modelLock_b\":\"2026-03-01T12:00:05.000Z\",\"modelLimit_b\":false,\"providerReset_b\":null,\"modelLock_c\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_c\":false,\"providerReset_c\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k1",
+    "status": 400,
+    "error": "[400]: improperly formed request",
+    "model": "d",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 120000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_a\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_a\":false,\"providerReset_a\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[400]: improperly formed request\",\"errorCode\":400,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0,\"modelLock_b\":\"2026-03-01T12:00:05.000Z\",\"modelLimit_b\":false,\"providerReset_b\":null,\"modelLock_c\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_c\":false,\"providerReset_c\":null,\"modelLock_d\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_d\":false,\"providerReset_d\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k1",
+    "status": 500,
+    "error": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀",
+    "model": "e",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 30000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_a\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_a\":false,\"providerReset_a\":null,\"testStatus\":\"unavailable\",\"lastError\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"errorCode\":500,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0,\"modelLock_b\":\"2026-03-01T12:00:05.000Z\",\"modelLimit_b\":false,\"providerReset_b\":null,\"modelLock_c\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_c\":false,\"providerReset_c\":null,\"modelLock_d\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_d\":false,\"providerReset_d\":null,\"modelLock_e\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_e\":false,\"providerReset_e\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k1",
+    "status": 500,
+    "error": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy😀z",
+    "model": "f",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 30000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_a\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_a\":false,\"providerReset_a\":null,\"testStatus\":\"unavailable\",\"lastError\":\"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\\ud83d\",\"errorCode\":500,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0,\"modelLock_b\":\"2026-03-01T12:00:05.000Z\",\"modelLimit_b\":false,\"providerReset_b\":null,\"modelLock_c\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_c\":false,\"providerReset_c\":null,\"modelLock_d\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_d\":false,\"providerReset_d\":null,\"modelLock_e\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_e\":false,\"providerReset_e\":null,\"modelLock_f\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_f\":false,\"providerReset_f\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "a",
+    "nowMs": 1772366400000,
+    "out": {
+     "allRateLimited": true,
+     "allLimitsExhausted": false,
+     "retryAfter": "2026-03-01T12:00:30.000Z",
+     "retryAfterHuman": "reset after 30s",
+     "providerResetAtMs": null,
+     "lastError": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\ud83d",
+     "lastErrorCode": 500,
+     "lastErrorOwn": false
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_a\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_a\":false,\"providerReset_a\":null,\"testStatus\":\"unavailable\",\"lastError\":\"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\\ud83d\",\"errorCode\":500,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0,\"modelLock_b\":\"2026-03-01T12:00:05.000Z\",\"modelLimit_b\":false,\"providerReset_b\":null,\"modelLock_c\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_c\":false,\"providerReset_c\":null,\"modelLock_d\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_d\":false,\"providerReset_d\":null,\"modelLock_e\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_e\":false,\"providerReset_e\":null,\"modelLock_f\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_f\":false,\"providerReset_f\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "advance",
+    "ms": 200000,
+    "nowMs": 1772366600000,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_a\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_a\":false,\"providerReset_a\":null,\"testStatus\":\"unavailable\",\"lastError\":\"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\\ud83d\",\"errorCode\":500,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0,\"modelLock_b\":\"2026-03-01T12:00:05.000Z\",\"modelLimit_b\":false,\"providerReset_b\":null,\"modelLock_c\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_c\":false,\"providerReset_c\":null,\"modelLock_d\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_d\":false,\"providerReset_d\":null,\"modelLock_e\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_e\":false,\"providerReset_e\":null,\"modelLock_f\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_f\":false,\"providerReset_f\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "z",
+    "nowMs": 1772366600000,
+    "out": {
+     "connectionId": "k1",
+     "connectionName": "k1"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_a\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_a\":false,\"providerReset_a\":null,\"testStatus\":\"unavailable\",\"lastError\":\"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\\ud83d\",\"errorCode\":500,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0,\"modelLock_b\":\"2026-03-01T12:00:05.000Z\",\"modelLimit_b\":false,\"providerReset_b\":null,\"modelLock_c\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_c\":false,\"providerReset_c\":null,\"modelLock_d\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_d\":false,\"providerReset_d\":null,\"modelLock_e\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_e\":false,\"providerReset_e\":null,\"modelLock_f\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_f\":false,\"providerReset_f\":null}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "succeed",
+    "id": "k1",
+    "model": "z",
+    "nowMs": 1772366600000,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_a\":null,\"modelLimit_a\":null,\"providerReset_a\":null,\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"lastErrorAt\":null,\"backoffLevel\":0,\"modelLock_b\":null,\"modelLimit_b\":null,\"providerReset_b\":null,\"modelLock_c\":null,\"modelLimit_c\":null,\"providerReset_c\":null,\"modelLock_d\":null,\"modelLimit_d\":null,\"providerReset_d\":null,\"modelLock_e\":null,\"modelLimit_e\":null,\"providerReset_e\":null,\"modelLock_f\":null,\"modelLimit_f\":null,\"providerReset_f\":null,\"modelNoHeaders_a\":null,\"modelNoHeaders_b\":null,\"modelNoHeaders_c\":null,\"modelNoHeaders_d\":null,\"modelNoHeaders_e\":null,\"modelNoHeaders_f\":null,\"authDemoteOkAt\":\"2026-03-01T12:03:20.000Z\"}",
+      "updatedAt": "2026-03-01T12:03:20.000Z"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "round-robin stickiness",
+  "goDeclines": "",
+  "startMs": 1772366400000,
+  "settings": "{\"fallbackStrategy\":\"round-robin\",\"stickyRoundRobinLimit\":2}",
+  "initial": [
+   {
+    "id": "k1",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k1",
+    "email": null,
+    "priority": 1,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   },
+   {
+    "id": "k2",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k2",
+    "email": null,
+    "priority": 2,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   },
+   {
+    "id": "k3",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k3",
+    "email": null,
+    "priority": 3,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T11:59:00.000Z\",\"consecutiveUseCount\":5}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   }
+  ],
+  "steps": [
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "connectionId": "k1",
+     "connectionName": "k1"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.000Z\",\"consecutiveUseCount\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T11:59:00.000Z\",\"consecutiveUseCount\":5}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "advance",
+    "ms": 10,
+    "nowMs": 1772366400010,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.000Z\",\"consecutiveUseCount\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T11:59:00.000Z\",\"consecutiveUseCount\":5}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366400010,
+    "out": {
+     "connectionId": "k1",
+     "connectionName": "k1"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.010Z\",\"consecutiveUseCount\":2}",
+      "updatedAt": "2026-03-01T12:00:00.010Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T11:59:00.000Z\",\"consecutiveUseCount\":5}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "advance",
+    "ms": 10,
+    "nowMs": 1772366400020,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.010Z\",\"consecutiveUseCount\":2}",
+      "updatedAt": "2026-03-01T12:00:00.010Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T11:59:00.000Z\",\"consecutiveUseCount\":5}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366400020,
+    "out": {
+     "connectionId": "k2",
+     "connectionName": "k2"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.010Z\",\"consecutiveUseCount\":2}",
+      "updatedAt": "2026-03-01T12:00:00.010Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.020Z\",\"consecutiveUseCount\":1}",
+      "updatedAt": "2026-03-01T12:00:00.020Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T11:59:00.000Z\",\"consecutiveUseCount\":5}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "advance",
+    "ms": 10,
+    "nowMs": 1772366400030,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.010Z\",\"consecutiveUseCount\":2}",
+      "updatedAt": "2026-03-01T12:00:00.010Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.020Z\",\"consecutiveUseCount\":1}",
+      "updatedAt": "2026-03-01T12:00:00.020Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T11:59:00.000Z\",\"consecutiveUseCount\":5}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366400030,
+    "out": {
+     "connectionId": "k2",
+     "connectionName": "k2"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.010Z\",\"consecutiveUseCount\":2}",
+      "updatedAt": "2026-03-01T12:00:00.010Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.030Z\",\"consecutiveUseCount\":2}",
+      "updatedAt": "2026-03-01T12:00:00.030Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T11:59:00.000Z\",\"consecutiveUseCount\":5}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "advance",
+    "ms": 10,
+    "nowMs": 1772366400040,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.010Z\",\"consecutiveUseCount\":2}",
+      "updatedAt": "2026-03-01T12:00:00.010Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.030Z\",\"consecutiveUseCount\":2}",
+      "updatedAt": "2026-03-01T12:00:00.030Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T11:59:00.000Z\",\"consecutiveUseCount\":5}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k2",
+    "status": 429,
+    "error": "[429]: Rate limit exceeded",
+    "model": "m",
+    "nowMs": 1772366400040,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 2000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.010Z\",\"consecutiveUseCount\":2}",
+      "updatedAt": "2026-03-01T12:00:00.010Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.030Z\",\"consecutiveUseCount\":2,\"modelLock_m\":\"2026-03-01T12:00:02.040Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.040Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.040Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T11:59:00.000Z\",\"consecutiveUseCount\":5}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366400040,
+    "out": {
+     "connectionId": "k3",
+     "connectionName": "k3"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.010Z\",\"consecutiveUseCount\":2}",
+      "updatedAt": "2026-03-01T12:00:00.010Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.030Z\",\"consecutiveUseCount\":2,\"modelLock_m\":\"2026-03-01T12:00:02.040Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.040Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.040Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.040Z\",\"consecutiveUseCount\":1}",
+      "updatedAt": "2026-03-01T12:00:00.040Z"
+     }
+    ]
+   },
+   {
+    "op": "advance",
+    "ms": 10,
+    "nowMs": 1772366400050,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.010Z\",\"consecutiveUseCount\":2}",
+      "updatedAt": "2026-03-01T12:00:00.010Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.030Z\",\"consecutiveUseCount\":2,\"modelLock_m\":\"2026-03-01T12:00:02.040Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.040Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.040Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.040Z\",\"consecutiveUseCount\":1}",
+      "updatedAt": "2026-03-01T12:00:00.040Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "warm": [
+     "k3",
+     "k1"
+    ],
+    "nowMs": 1772366400050,
+    "out": {
+     "connectionId": "k1",
+     "connectionName": "k1"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.010Z\",\"consecutiveUseCount\":2}",
+      "updatedAt": "2026-03-01T12:00:00.010Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.030Z\",\"consecutiveUseCount\":2,\"modelLock_m\":\"2026-03-01T12:00:02.040Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.040Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.040Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.040Z\",\"consecutiveUseCount\":1}",
+      "updatedAt": "2026-03-01T12:00:00.040Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "warm": [
+     "k2"
+    ],
+    "maxWarmWaitMs": 10000,
+    "nowMs": 1772366400050,
+    "out": {
+     "warmRetryAtMs": 1772366402190
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.010Z\",\"consecutiveUseCount\":2}",
+      "updatedAt": "2026-03-01T12:00:00.010Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.030Z\",\"consecutiveUseCount\":2,\"modelLock_m\":\"2026-03-01T12:00:02.040Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.040Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.040Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.040Z\",\"consecutiveUseCount\":1}",
+      "updatedAt": "2026-03-01T12:00:00.040Z"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "provider strategy and global sticky",
+  "goDeclines": "",
+  "startMs": 1772366400000,
+  "settings": "{\"fallbackStrategy\":\"fill-first\",\"stickyRoundRobinLimit\":1,\"providerStrategies\":{\"openai-compatible-chat-hot\":{\"fallbackStrategy\":\"round-robin\"}}}",
+  "initial": [
+   {
+    "id": "k1",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k1",
+    "email": null,
+    "priority": 2,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   },
+   {
+    "id": "k2",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k2",
+    "email": null,
+    "priority": 1,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   }
+  ],
+  "steps": [
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "connectionId": "k2",
+     "connectionName": "k2"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.000Z\",\"consecutiveUseCount\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "advance",
+    "ms": 5,
+    "nowMs": 1772366400005,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.000Z\",\"consecutiveUseCount\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366400005,
+    "out": {
+     "connectionId": "k1",
+     "connectionName": "k1"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.005Z\",\"consecutiveUseCount\":1}",
+      "updatedAt": "2026-03-01T12:00:00.005Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.000Z\",\"consecutiveUseCount\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "advance",
+    "ms": 5,
+    "nowMs": 1772366400010,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.005Z\",\"consecutiveUseCount\":1}",
+      "updatedAt": "2026-03-01T12:00:00.005Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.000Z\",\"consecutiveUseCount\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366400010,
+    "out": {
+     "connectionId": "k2",
+     "connectionName": "k2"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.005Z\",\"consecutiveUseCount\":1}",
+      "updatedAt": "2026-03-01T12:00:00.005Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"lastUsedAt\":\"2026-03-01T12:00:00.010Z\",\"consecutiveUseCount\":1}",
+      "updatedAt": "2026-03-01T12:00:00.010Z"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "warm key wait",
+  "goDeclines": "",
+  "startMs": 1772366400000,
+  "settings": null,
+  "initial": [
+   {
+    "id": "k2",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k2",
+    "email": null,
+    "priority": 1,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   },
+   {
+    "id": "k1",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k1",
+    "email": null,
+    "priority": 2,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   },
+   {
+    "id": "k3",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k3",
+    "email": null,
+    "priority": 3,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   }
+  ],
+  "steps": [
+   {
+    "op": "select",
+    "model": "m",
+    "warm": [
+     "k1"
+    ],
+    "maxWarmWaitMs": 10000,
+    "nowMs": 1772366400000,
+    "out": {
+     "connectionId": "k2",
+     "connectionName": "k2"
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k2",
+    "status": 429,
+    "error": "[429]: Rate limit exceeded",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 2000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "warm": [
+     "k2"
+    ],
+    "maxWarmWaitMs": 10000,
+    "nowMs": 1772366400000,
+    "out": {
+     "warmRetryAtMs": 1772366402150
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "warm": [
+     "k2"
+    ],
+    "maxWarmWaitMs": 1000,
+    "nowMs": 1772366400000,
+    "out": {
+     "connectionId": "k1",
+     "connectionName": "k1"
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "warm": [
+     "k2"
+    ],
+    "maxWarmWaitMs": 10000,
+    "avoid": [
+     "k2"
+    ],
+    "nowMs": 1772366400000,
+    "out": {
+     "connectionId": "k1",
+     "connectionName": "k1"
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "warm": [
+     "k2",
+     "k3"
+    ],
+    "maxWarmWaitMs": 10000,
+    "nowMs": 1772366400000,
+    "out": {
+     "warmRetryAtMs": 1772366402150
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:02.000Z\",\"modelLimit_m\":true,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k2",
+    "status": 500,
+    "error": "[500]: boom",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 30000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[500]: boom\",\"errorCode\":500,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "warm": [
+     "k2"
+    ],
+    "maxWarmWaitMs": 60000,
+    "nowMs": 1772366400000,
+    "out": {
+     "connectionId": "k1",
+     "connectionName": "k1"
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[500]: boom\",\"errorCode\":500,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "avoid": [
+     "k1"
+    ],
+    "nowMs": 1772366400000,
+    "out": {
+     "connectionId": "k3",
+     "connectionName": "k3"
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[500]: boom\",\"errorCode\":500,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "avoid": [
+     "k1",
+     "k3"
+    ],
+    "exclude": [],
+    "nowMs": 1772366400000,
+    "out": {
+     "connectionId": "k1",
+     "connectionName": "k1"
+    },
+    "rows": [
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:30.000Z\",\"modelLimit_m\":false,\"providerReset_m\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[500]: boom\",\"errorCode\":500,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":1}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k3",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k3\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "clearing an auth streak and stale flags",
+  "goDeclines": "",
+  "startMs": 1772366400000,
+  "settings": null,
+  "initial": [
+   {
+    "id": "k1",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k1",
+    "email": null,
+    "priority": 1,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"authFailCount\":3,\"authFailFirstAt\":\"2026-03-01T11:58:20.000Z\",\"authFailModels\":[\"m\"],\"testStatus\":\"unavailable\",\"lastError\":\"[401]: x\",\"errorCode\":401,\"modelLock_old\":\"2026-03-01T11:59:55.000Z\",\"modelLimit_old\":true,\"providerReset_gone\":\"2026-03-01T11:59:59.999Z\",\"modelLock_gone\":null,\"modelNoHeaders_m\":true,\"modelLock_m\":null,\"backoffLevel\":4}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   },
+   {
+    "id": "k2",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k2",
+    "email": null,
+    "priority": 2,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:50.000Z\",\"modelLock_x\":\"2026-03-01T12:00:50.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: limited\",\"errorCode\":429}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   }
+  ],
+  "steps": [
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "connectionId": "k1",
+     "connectionName": "k1"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"authFailCount\":3,\"authFailFirstAt\":\"2026-03-01T11:58:20.000Z\",\"authFailModels\":[\"m\"],\"testStatus\":\"unavailable\",\"lastError\":\"[401]: x\",\"errorCode\":401,\"modelLock_old\":\"2026-03-01T11:59:55.000Z\",\"modelLimit_old\":true,\"providerReset_gone\":\"2026-03-01T11:59:59.999Z\",\"modelLock_gone\":null,\"modelNoHeaders_m\":true,\"modelLock_m\":null,\"backoffLevel\":4}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:50.000Z\",\"modelLock_x\":\"2026-03-01T12:00:50.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: limited\",\"errorCode\":429}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "succeed",
+    "id": "k1",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"authFailCount\":null,\"authFailFirstAt\":null,\"authFailModels\":null,\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"modelLock_old\":null,\"modelLimit_old\":null,\"providerReset_gone\":null,\"modelLock_gone\":null,\"modelNoHeaders_m\":null,\"modelLock_m\":null,\"backoffLevel\":0,\"authFailLastAt\":null,\"authFailAll401\":null,\"authFailSameUpstream\":null,\"authFailRunCount\":null,\"authFailRunStartAt\":null,\"authFailBursts\":null,\"providerReset_old\":null,\"modelNoHeaders_old\":null,\"modelLimit_gone\":null,\"modelNoHeaders_gone\":null,\"providerReset_m\":null,\"modelLimit_m\":null,\"lastErrorAt\":null,\"authDemoteOkAt\":\"2026-03-01T12:00:00.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:50.000Z\",\"modelLock_x\":\"2026-03-01T12:00:50.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: limited\",\"errorCode\":429}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "x",
+    "nowMs": 1772366400000,
+    "out": {
+     "connectionId": "k1",
+     "connectionName": "k1"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"authFailCount\":null,\"authFailFirstAt\":null,\"authFailModels\":null,\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"modelLock_old\":null,\"modelLimit_old\":null,\"providerReset_gone\":null,\"modelLock_gone\":null,\"modelNoHeaders_m\":null,\"modelLock_m\":null,\"backoffLevel\":0,\"authFailLastAt\":null,\"authFailAll401\":null,\"authFailSameUpstream\":null,\"authFailRunCount\":null,\"authFailRunStartAt\":null,\"authFailBursts\":null,\"providerReset_old\":null,\"modelNoHeaders_old\":null,\"modelLimit_gone\":null,\"modelNoHeaders_gone\":null,\"providerReset_m\":null,\"modelLimit_m\":null,\"lastErrorAt\":null,\"authDemoteOkAt\":\"2026-03-01T12:00:00.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:50.000Z\",\"modelLock_x\":\"2026-03-01T12:00:50.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: limited\",\"errorCode\":429}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "succeed",
+    "id": "k1",
+    "model": "x",
+    "nowMs": 1772366400000,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"authFailCount\":null,\"authFailFirstAt\":null,\"authFailModels\":null,\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"modelLock_old\":null,\"modelLimit_old\":null,\"providerReset_gone\":null,\"modelLock_gone\":null,\"modelNoHeaders_m\":null,\"modelLock_m\":null,\"backoffLevel\":0,\"authFailLastAt\":null,\"authFailAll401\":null,\"authFailSameUpstream\":null,\"authFailRunCount\":null,\"authFailRunStartAt\":null,\"authFailBursts\":null,\"providerReset_old\":null,\"modelNoHeaders_old\":null,\"modelLimit_gone\":null,\"modelNoHeaders_gone\":null,\"providerReset_m\":null,\"modelLimit_m\":null,\"lastErrorAt\":null,\"authDemoteOkAt\":\"2026-03-01T12:00:00.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:50.000Z\",\"modelLock_x\":\"2026-03-01T12:00:50.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: limited\",\"errorCode\":429}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "fail",
+    "id": "k2",
+    "status": 429,
+    "error": "[429]: Rate limit exceeded",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "shouldFallback": true,
+     "cooldownMs": 50000,
+     "providerResetAtMs": null
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"authFailCount\":null,\"authFailFirstAt\":null,\"authFailModels\":null,\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"modelLock_old\":null,\"modelLimit_old\":null,\"providerReset_gone\":null,\"modelLock_gone\":null,\"modelNoHeaders_m\":null,\"modelLock_m\":null,\"backoffLevel\":0,\"authFailLastAt\":null,\"authFailAll401\":null,\"authFailSameUpstream\":null,\"authFailRunCount\":null,\"authFailRunStartAt\":null,\"authFailBursts\":null,\"providerReset_old\":null,\"modelNoHeaders_old\":null,\"modelLimit_gone\":null,\"modelNoHeaders_gone\":null,\"providerReset_m\":null,\"modelLimit_m\":null,\"lastErrorAt\":null,\"authDemoteOkAt\":\"2026-03-01T12:00:00.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:50.000Z\",\"modelLock_x\":\"2026-03-01T12:00:50.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"modelLimit_m\":true,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "advance",
+    "ms": 60000,
+    "nowMs": 1772366460000,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"authFailCount\":null,\"authFailFirstAt\":null,\"authFailModels\":null,\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"modelLock_old\":null,\"modelLimit_old\":null,\"providerReset_gone\":null,\"modelLock_gone\":null,\"modelNoHeaders_m\":null,\"modelLock_m\":null,\"backoffLevel\":0,\"authFailLastAt\":null,\"authFailAll401\":null,\"authFailSameUpstream\":null,\"authFailRunCount\":null,\"authFailRunStartAt\":null,\"authFailBursts\":null,\"providerReset_old\":null,\"modelNoHeaders_old\":null,\"modelLimit_gone\":null,\"modelNoHeaders_gone\":null,\"providerReset_m\":null,\"modelLimit_m\":null,\"lastErrorAt\":null,\"authDemoteOkAt\":\"2026-03-01T12:00:00.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:50.000Z\",\"modelLock_x\":\"2026-03-01T12:00:50.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"modelLimit_m\":true,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "select",
+    "model": "m",
+    "exclude": [
+     "k1"
+    ],
+    "nowMs": 1772366460000,
+    "out": {
+     "connectionId": "k2",
+     "connectionName": "k2"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"authFailCount\":null,\"authFailFirstAt\":null,\"authFailModels\":null,\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"modelLock_old\":null,\"modelLimit_old\":null,\"providerReset_gone\":null,\"modelLock_gone\":null,\"modelNoHeaders_m\":null,\"modelLock_m\":null,\"backoffLevel\":0,\"authFailLastAt\":null,\"authFailAll401\":null,\"authFailSameUpstream\":null,\"authFailRunCount\":null,\"authFailRunStartAt\":null,\"authFailBursts\":null,\"providerReset_old\":null,\"modelNoHeaders_old\":null,\"modelLimit_gone\":null,\"modelNoHeaders_gone\":null,\"providerReset_m\":null,\"modelLimit_m\":null,\"lastErrorAt\":null,\"authDemoteOkAt\":\"2026-03-01T12:00:00.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":\"2026-03-01T12:00:50.000Z\",\"modelLock_x\":\"2026-03-01T12:00:50.000Z\",\"testStatus\":\"unavailable\",\"lastError\":\"[429]: Rate limit exceeded\",\"errorCode\":429,\"modelLimit_m\":true,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     }
+    ]
+   },
+   {
+    "op": "succeed",
+    "id": "k2",
+    "model": "m",
+    "nowMs": 1772366460000,
+    "out": null,
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"authFailCount\":null,\"authFailFirstAt\":null,\"authFailModels\":null,\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"modelLock_old\":null,\"modelLimit_old\":null,\"providerReset_gone\":null,\"modelLock_gone\":null,\"modelNoHeaders_m\":null,\"modelLock_m\":null,\"backoffLevel\":0,\"authFailLastAt\":null,\"authFailAll401\":null,\"authFailSameUpstream\":null,\"authFailRunCount\":null,\"authFailRunStartAt\":null,\"authFailBursts\":null,\"providerReset_old\":null,\"modelNoHeaders_old\":null,\"modelLimit_gone\":null,\"modelNoHeaders_gone\":null,\"providerReset_m\":null,\"modelLimit_m\":null,\"lastErrorAt\":null,\"authDemoteOkAt\":\"2026-03-01T12:00:00.000Z\"}",
+      "updatedAt": "2026-03-01T12:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"modelLock_m\":null,\"modelLock_x\":null,\"testStatus\":\"active\",\"lastError\":null,\"errorCode\":null,\"modelLimit_m\":null,\"lastErrorAt\":null,\"backoffLevel\":0,\"providerReset_m\":null,\"modelNoHeaders_m\":null,\"providerReset_x\":null,\"modelLimit_x\":null,\"modelNoHeaders_x\":null,\"authDemoteOkAt\":\"2026-03-01T12:01:00.000Z\"}",
+      "updatedAt": "2026-03-01T12:01:00.000Z"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "a demotion record goes to Node",
+  "goDeclines": "demotion",
+  "startMs": 1772366400000,
+  "settings": null,
+  "initial": [
+   {
+    "id": "k1",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k1",
+    "email": null,
+    "priority": 1,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"authDemote_m\":{\"count\":5,\"firstAt\":\"2026-03-01T11:00:00.000Z\",\"demotedAt\":\"2026-03-01T11:59:00.000Z\",\"nextProbeAt\":\"2026-03-01T13:00:00.000Z\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   },
+   {
+    "id": "k2",
+    "provider": "openai-compatible-chat-hot",
+    "authType": "apikey",
+    "name": "k2",
+    "email": null,
+    "priority": 2,
+    "isActive": 1,
+    "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+    "createdAt": "2026-03-01T11:00:00.000Z",
+    "updatedAt": "2026-03-01T11:00:00.000Z",
+    "ownerManagementKeyId": null
+   }
+  ],
+  "steps": [
+   {
+    "op": "select",
+    "model": "m",
+    "nowMs": 1772366400000,
+    "out": {
+     "connectionId": "k2",
+     "connectionName": "k2"
+    },
+    "rows": [
+     {
+      "id": "k1",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"},\"authDemote_m\":{\"count\":5,\"firstAt\":\"2026-03-01T11:00:00.000Z\",\"demotedAt\":\"2026-03-01T11:59:00.000Z\",\"nextProbeAt\":\"2026-03-01T13:00:00.000Z\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     },
+     {
+      "id": "k2",
+      "isActive": 1,
+      "data": "{\"apiKey\":\"key-k2\",\"providerSpecificData\":{\"baseUrl\":\"https://up.example.test/v1\"}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+     }
+    ]
+   }
+  ]
+ }
+]

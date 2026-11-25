@@ -40,6 +40,11 @@ type tables struct {
 	ModelPrefixProviders [][2]string `json:"modelPrefixProviders"`
 	// MaxComboDepth is runtimeConfig.js's MAX_COMBO_DEPTH.
 	MaxComboDepth int `json:"maxComboDepth"`
+	// SearchToolTypes is appConstants.js's SEARCH_TOOL_TYPES.
+	SearchToolTypes []string `json:"searchToolTypes"`
+	// WebSearchToolType is CLAUDE_BLOCK.WEB_SEARCH_TOOL, which the Claude
+	// search hooks answer or enrich.
+	WebSearchToolType string `json:"webSearchToolType"`
 }
 
 var (
@@ -63,8 +68,11 @@ func init() {
 	for _, pp := range tbl.ModelPrefixProviders {
 		prefixProviders = append(prefixProviders, prefixProvider{regexp.MustCompile(pp[0]), pp[1]})
 	}
-	if tbl.MaxComboDepth <= 0 {
-		panic("combo: tables.json has no maxComboDepth")
+	if tbl.MaxComboDepth <= 0 || len(tbl.SearchToolTypes) == 0 || tbl.WebSearchToolType == "" {
+		panic("combo: tables.json is incomplete")
+	}
+	for _, t := range tbl.SearchToolTypes {
+		searchToolType[t] = true
 	}
 }
 

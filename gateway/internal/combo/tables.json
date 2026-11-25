@@ -422,5 +422,11 @@
       "openrouter"
     ]
   ],
-  "maxComboDepth": 4
+  "maxComboDepth": 4,
+  "searchToolTypes": [
+    "google_search",
+    "web_search",
+    "web_search_preview"
+  ],
+  "webSearchToolType": "web_search_20250305"
 }

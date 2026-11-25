@@ -1,0 +1,2226 @@
+[
+ {
+  "name": "a plain stream",
+  "env": {
+   "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"
+  },
+  "script": [
+   "ok"
+  ],
+  "provider": "openai-compatible-chat-hot",
+  "clientHeaders": {
+   "content-type": "application/json",
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-version": "2023-06-01",
+   "anthropic-beta": "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+  },
+  "clientBody": "{\"model\":\"hot/m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}]}",
+  "psd": {
+   "apiType": "chat",
+   "baseUrl": "<base>",
+   "modelRoutes": {
+    "m1": "anthropic"
+   }
+  },
+  "requests": [
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   }
+  ],
+  "events": [
+   {
+    "budget": 1500
+   },
+   {
+    "attempt": {
+     "connectionId": "k1",
+     "success": true,
+     "status": 0,
+     "error": "",
+     "headersTimeout": null
+    }
+   }
+  ],
+  "savedBetas": {
+   "connection": null,
+   "node": null
+  }
+ },
+ {
+  "name": "a 503 is retried",
+  "env": {
+   "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"
+  },
+  "script": [
+   {
+    "status": 503,
+    "body": "{\"error\":{\"message\":\"busy\"}}"
+   },
+   {
+    "status": 503,
+    "body": "{\"error\":{\"message\":\"busy\"}}"
+   },
+   "ok"
+  ],
+  "provider": "openai-compatible-chat-hot",
+  "clientHeaders": {
+   "content-type": "application/json",
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-version": "2023-06-01",
+   "anthropic-beta": "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+  },
+  "clientBody": "{\"model\":\"hot/m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}]}",
+  "psd": {
+   "apiType": "chat",
+   "baseUrl": "<base>",
+   "modelRoutes": {
+    "m1": "anthropic"
+   }
+  },
+  "requests": [
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   }
+  ],
+  "events": [
+   {
+    "budget": 1500
+   },
+   {
+    "sleep": 2000
+   },
+   {
+    "sleep": 2000
+   },
+   {
+    "attempt": {
+     "connectionId": "k1",
+     "success": true,
+     "status": 0,
+     "error": "",
+     "headersTimeout": null
+    }
+   }
+  ],
+  "savedBetas": {
+   "connection": null,
+   "node": null
+  }
+ },
+ {
+  "name": "a 502 every time",
+  "env": {
+   "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"
+  },
+  "script": [
+   {
+    "status": 502,
+    "body": "{\"error\":{\"message\":\"bad gateway\"}}"
+   }
+  ],
+  "provider": "openai-compatible-chat-hot",
+  "clientHeaders": {
+   "content-type": "application/json",
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-version": "2023-06-01",
+   "anthropic-beta": "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+  },
+  "clientBody": "{\"model\":\"hot/m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}]}",
+  "psd": {
+   "apiType": "chat",
+   "baseUrl": "<base>",
+   "modelRoutes": {
+    "m1": "anthropic"
+   }
+  },
+  "requests": [
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   }
+  ],
+  "events": [
+   {
+    "budget": 1500
+   },
+   {
+    "sleep": 3000
+   },
+   {
+    "sleep": 3000
+   },
+   {
+    "sleep": 3000
+   },
+   {
+    "attempt": {
+     "connectionId": "k1",
+     "success": false,
+     "status": 502,
+     "error": "[502]: {\"error\":{\"message\":\"bad gateway\"}}",
+     "headersTimeout": null
+    }
+   }
+  ],
+  "savedBetas": {
+   "connection": null,
+   "node": null
+  }
+ },
+ {
+  "name": "a 429 is not retried",
+  "env": {
+   "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"
+  },
+  "script": [
+   {
+    "status": 429,
+    "body": "{\"error\":{\"message\":\"Rate limit exceeded\"}}"
+   }
+  ],
+  "provider": "openai-compatible-chat-hot",
+  "clientHeaders": {
+   "content-type": "application/json",
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-version": "2023-06-01",
+   "anthropic-beta": "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+  },
+  "clientBody": "{\"model\":\"hot/m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}]}",
+  "psd": {
+   "apiType": "chat",
+   "baseUrl": "<base>",
+   "modelRoutes": {
+    "m1": "anthropic"
+   }
+  },
+  "requests": [
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   }
+  ],
+  "events": [
+   {
+    "budget": 1500
+   },
+   {
+    "attempt": {
+     "connectionId": "k1",
+     "success": false,
+     "status": 429,
+     "error": "[429]: {\"error\":{\"message\":\"Rate limit exceeded\"}}",
+     "headersTimeout": null
+    }
+   }
+  ],
+  "savedBetas": {
+   "connection": null,
+   "node": null
+  }
+ },
+ {
+  "name": "a rejected beta flag",
+  "env": {
+   "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"
+  },
+  "script": [
+   {
+    "status": 400,
+    "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Unexpected value(s) `interleaved-thinking-2025-05-14` for the `anthropic-beta` header.\"}}"
+   },
+   "ok"
+  ],
+  "provider": "openai-compatible-chat-hot",
+  "clientHeaders": {
+   "content-type": "application/json",
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-version": "2023-06-01",
+   "anthropic-beta": "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+  },
+  "clientBody": "{\"model\":\"hot/m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}]}",
+  "psd": {
+   "apiType": "chat",
+   "baseUrl": "<base>",
+   "modelRoutes": {
+    "m1": "anthropic"
+   }
+  },
+  "requests": [
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   }
+  ],
+  "events": [
+   {
+    "budget": 1500
+   },
+   {
+    "budget": 1500
+   },
+   {
+    "attempt": {
+     "connectionId": "k1",
+     "success": true,
+     "status": 0,
+     "error": "",
+     "headersTimeout": null
+    }
+   }
+  ],
+  "savedBetas": {
+   "connection": [
+    "interleaved-thinking-2025-05-14"
+   ],
+   "node": [
+    "interleaved-thinking-2025-05-14"
+   ]
+  }
+ },
+ {
+  "name": "rejected twice: no flags at all",
+  "env": {
+   "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"
+  },
+  "script": [
+   {
+    "status": 400,
+    "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Unexpected value(s) `interleaved-thinking-2025-05-14` for the `anthropic-beta` header.\"}}"
+   },
+   {
+    "status": 400,
+    "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Unexpected value(s) `context-management-2025-06-27` for the `anthropic-beta` header.\"}}"
+   },
+   "ok"
+  ],
+  "provider": "openai-compatible-chat-hot",
+  "clientHeaders": {
+   "content-type": "application/json",
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-version": "2023-06-01",
+   "anthropic-beta": "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+  },
+  "clientBody": "{\"model\":\"hot/m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}]}",
+  "psd": {
+   "apiType": "chat",
+   "baseUrl": "<base>",
+   "modelRoutes": {
+    "m1": "anthropic"
+   }
+  },
+  "requests": [
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   }
+  ],
+  "events": [
+   {
+    "budget": 1500
+   },
+   {
+    "budget": 1500
+   },
+   {
+    "budget": 1500
+   },
+   {
+    "attempt": {
+     "connectionId": "k1",
+     "success": true,
+     "status": 0,
+     "error": "",
+     "headersTimeout": null
+    }
+   }
+  ],
+  "savedBetas": {
+   "connection": [
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27"
+   ],
+   "node": [
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27"
+   ]
+  }
+ },
+ {
+  "name": "a rejected flag that wasn't sent",
+  "env": {
+   "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"
+  },
+  "script": [
+   {
+    "status": 400,
+    "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Unexpected value(s) `unknown-flag-1` for the `anthropic-beta` header.\"}}"
+   }
+  ],
+  "provider": "openai-compatible-chat-hot",
+  "clientHeaders": {
+   "content-type": "application/json",
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-version": "2023-06-01",
+   "anthropic-beta": "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+  },
+  "clientBody": "{\"model\":\"hot/m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}]}",
+  "psd": {
+   "apiType": "chat",
+   "baseUrl": "<base>",
+   "modelRoutes": {
+    "m1": "anthropic"
+   }
+  },
+  "requests": [
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   }
+  ],
+  "events": [
+   {
+    "budget": 1500
+   },
+   {
+    "attempt": {
+     "connectionId": "k1",
+     "success": false,
+     "status": 400,
+     "error": "[400]: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Unexpected value(s) `unknown-flag-1` for the `anthropic-beta` header.\"}}",
+     "headersTimeout": null
+    }
+   }
+  ],
+  "savedBetas": {
+   "connection": null,
+   "node": null
+  }
+ },
+ {
+  "name": "a retry, then a rejected flag",
+  "env": {
+   "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"
+  },
+  "script": [
+   {
+    "status": 503,
+    "body": "{\"error\":{\"message\":\"busy\"}}"
+   },
+   {
+    "status": 400,
+    "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Unexpected value(s) `fine-grained-tool-streaming-2025-05-14` for the `anthropic-beta` header.\"}}"
+   },
+   "ok"
+  ],
+  "provider": "openai-compatible-chat-hot",
+  "clientHeaders": {
+   "content-type": "application/json",
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-version": "2023-06-01",
+   "anthropic-beta": "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+  },
+  "clientBody": "{\"model\":\"hot/m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}]}",
+  "psd": {
+   "apiType": "chat",
+   "baseUrl": "<base>",
+   "modelRoutes": {
+    "m1": "anthropic"
+   }
+  },
+  "requests": [
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   }
+  ],
+  "events": [
+   {
+    "budget": 1500
+   },
+   {
+    "sleep": 2000
+   },
+   {
+    "budget": 1500
+   },
+   {
+    "attempt": {
+     "connectionId": "k1",
+     "success": true,
+     "status": 0,
+     "error": "",
+     "headersTimeout": null
+    }
+   }
+  ],
+  "savedBetas": {
+   "connection": [
+    "fine-grained-tool-streaming-2025-05-14"
+   ],
+   "node": [
+    "fine-grained-tool-streaming-2025-05-14"
+   ]
+  }
+ },
+ {
+  "name": "an empty 404",
+  "env": {
+   "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"
+  },
+  "script": [
+   {
+    "status": 404,
+    "body": ""
+   }
+  ],
+  "provider": "openai-compatible-chat-hot",
+  "clientHeaders": {
+   "content-type": "application/json",
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-version": "2023-06-01",
+   "anthropic-beta": "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+  },
+  "clientBody": "{\"model\":\"hot/m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}]}",
+  "psd": {
+   "apiType": "chat",
+   "baseUrl": "<base>",
+   "modelRoutes": {
+    "m1": "anthropic"
+   }
+  },
+  "requests": [
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   }
+  ],
+  "events": [
+   {
+    "budget": 1500
+   },
+   {
+    "attempt": {
+     "connectionId": "k1",
+     "success": false,
+     "status": 404,
+     "error": "[404]: HTTP 404",
+     "headersTimeout": null
+    }
+   }
+  ],
+  "savedBetas": {
+   "connection": null,
+   "node": null
+  }
+ },
+ {
+  "name": "a gzip error body",
+  "env": {
+   "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"
+  },
+  "script": [
+   {
+    "status": 500,
+    "body": "{\"error\":{\"message\":\"zipped\"}}",
+    "gzip": true
+   }
+  ],
+  "provider": "openai-compatible-chat-hot",
+  "clientHeaders": {
+   "content-type": "application/json",
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-version": "2023-06-01",
+   "anthropic-beta": "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+  },
+  "clientBody": "{\"model\":\"hot/m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}]}",
+  "psd": {
+   "apiType": "chat",
+   "baseUrl": "<base>",
+   "modelRoutes": {
+    "m1": "anthropic"
+   }
+  },
+  "requests": [
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   }
+  ],
+  "events": [
+   {
+    "budget": 1500
+   },
+   {
+    "attempt": {
+     "connectionId": "k1",
+     "success": false,
+     "status": 500,
+     "error": "[500]: {\"error\":{\"message\":\"zipped\"}}",
+     "headersTimeout": null
+    }
+   }
+  ],
+  "savedBetas": {
+   "connection": null,
+   "node": null
+  }
+ },
+ {
+  "name": "an error body in broken UTF-8",
+  "env": {
+   "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"
+  },
+  "script": [
+   {
+    "status": 500,
+    "bodyBytes": [
+     123,
+     255,
+     254,
+     120,
+     226,
+     130,
+     125
+    ]
+   }
+  ],
+  "provider": "openai-compatible-chat-hot",
+  "clientHeaders": {
+   "content-type": "application/json",
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-version": "2023-06-01",
+   "anthropic-beta": "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+  },
+  "clientBody": "{\"model\":\"hot/m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}]}",
+  "psd": {
+   "apiType": "chat",
+   "baseUrl": "<base>",
+   "modelRoutes": {
+    "m1": "anthropic"
+   }
+  },
+  "requests": [
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   }
+  ],
+  "events": [
+   {
+    "budget": 1500
+   },
+   {
+    "attempt": {
+     "connectionId": "k1",
+     "success": false,
+     "status": 500,
+     "error": "[500]: {��x�}",
+     "headersTimeout": null
+    }
+   }
+  ],
+  "savedBetas": {
+   "connection": null,
+   "node": null
+  }
+ },
+ {
+  "name": "a BOM before the error",
+  "env": {
+   "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"
+  },
+  "script": [
+   {
+    "status": 500,
+    "bodyBytes": [
+     239,
+     187,
+     191,
+     111,
+     107
+    ]
+   }
+  ],
+  "provider": "openai-compatible-chat-hot",
+  "clientHeaders": {
+   "content-type": "application/json",
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-version": "2023-06-01",
+   "anthropic-beta": "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+  },
+  "clientBody": "{\"model\":\"hot/m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}]}",
+  "psd": {
+   "apiType": "chat",
+   "baseUrl": "<base>",
+   "modelRoutes": {
+    "m1": "anthropic"
+   }
+  },
+  "requests": [
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   }
+  ],
+  "events": [
+   {
+    "budget": 1500
+   },
+   {
+    "attempt": {
+     "connectionId": "k1",
+     "success": false,
+     "status": 500,
+     "error": "[500]: ok",
+     "headersTimeout": null
+    }
+   }
+  ],
+  "savedBetas": {
+   "connection": null,
+   "node": null
+  }
+ },
+ {
+  "name": "no headers in time",
+  "env": {
+   "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"
+  },
+  "script": [
+   "hang"
+  ],
+  "provider": "openai-compatible-chat-hot",
+  "clientHeaders": {
+   "content-type": "application/json",
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-version": "2023-06-01",
+   "anthropic-beta": "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+  },
+  "clientBody": "{\"model\":\"hot/m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}]}",
+  "psd": {
+   "apiType": "chat",
+   "baseUrl": "<base>",
+   "modelRoutes": {
+    "m1": "anthropic"
+   }
+  },
+  "requests": [
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   }
+  ],
+  "events": [
+   {
+    "budget": 1500
+   },
+   {
+    "attempt": {
+     "connectionId": "k1",
+     "success": false,
+     "status": 504,
+     "error": "[504]: upstream sent no response headers in 2s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)",
+     "headersTimeout": {
+      "stream": true
+     }
+    }
+   }
+  ],
+  "savedBetas": {
+   "connection": null,
+   "node": null
+  }
+ },
+ {
+  "name": "learned flags stay off",
+  "env": {
+   "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"
+  },
+  "script": [
+   {
+    "status": 400,
+    "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Unexpected value(s) `context-management-2025-06-27` for the `anthropic-beta` header.\"}}"
+   },
+   "ok"
+  ],
+  "provider": "openai-compatible-chat-hot",
+  "clientHeaders": {
+   "content-type": "application/json",
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-version": "2023-06-01",
+   "anthropic-beta": "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+  },
+  "clientBody": "{\"model\":\"hot/m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}]}",
+  "psd": {
+   "apiType": "chat",
+   "baseUrl": "<base>",
+   "modelRoutes": {
+    "m1": "anthropic"
+   },
+   "droppedBetas": [
+    "interleaved-thinking-2025-05-14"
+   ]
+  },
+  "requests": [
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   }
+  ],
+  "events": [
+   {
+    "budget": 1500
+   },
+   {
+    "budget": 1500
+   },
+   {
+    "attempt": {
+     "connectionId": "k1",
+     "success": true,
+     "status": 0,
+     "error": "",
+     "headersTimeout": null
+    }
+   }
+  ],
+  "savedBetas": {
+   "connection": [
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27"
+   ],
+   "node": [
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27"
+   ]
+  }
+ },
+ {
+  "name": "strip beta sends none",
+  "env": {
+   "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"
+  },
+  "script": [
+   "ok"
+  ],
+  "provider": "openai-compatible-chat-hot",
+  "clientHeaders": {
+   "content-type": "application/json",
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-version": "2023-06-01",
+   "anthropic-beta": "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+  },
+  "clientBody": "{\"model\":\"hot/m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}]}",
+  "psd": {
+   "apiType": "chat",
+   "baseUrl": "<base>",
+   "modelRoutes": {
+    "m1": "anthropic"
+   },
+   "stripBeta": true
+  },
+  "requests": [
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   }
+  ],
+  "events": [
+   {
+    "budget": 1500
+   },
+   {
+    "attempt": {
+     "connectionId": "k1",
+     "success": true,
+     "status": 0,
+     "error": "",
+     "headersTimeout": null
+    }
+   }
+  ],
+  "savedBetas": {
+   "connection": null,
+   "node": null
+  }
+ }
+]

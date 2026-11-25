@@ -1,19 +1,24 @@
 name: Gateway combo parity
 
-# The Go port of Node's model and combo resolution (gateway/internal/combo,
-# docs/GO_GATEWAY.md "Phase 2c"):
+# The Go port of Node's model and combo resolution and combo fallback
+# (gateway/internal/combo, docs/GO_GATEWAY.md "Phase 2c"):
 #   parity           this PR's Node still makes the committed fixtures (over a
-#                    real Node database) and the registry table export, and
+#                    real Node database: resolution, and handleChat's routing
+#                    against a scripted upstream) and the table export, and
 #                    the Go tests match them through the gateway's snapshot
+#                    and its account loop
 #   no-new-failures  the whole vitest suite, base vs this branch
 on:
   pull_request:
     paths:
       - "gateway/internal/combo/**"
+      - "gateway/internal/accounts/**"
+      - "gateway/internal/claudeprep/**"
       - "gateway/internal/db/**"
       - "gateway/internal/decline/**"
       - "gateway/node-map.json"
       - "tests/unit/gateway-combo-parity.test.js"
+      - "tests/unit/gateway-combo-fallback-parity.test.js"
       - "tests/helpers/nodeDb.js"
       - "src/lib/db/**"
       - "src/lib/localDb.js"
@@ -22,9 +27,26 @@ on:
       - "open-sse/services/model.js"
       - "src/lib/db/repos/combosRepo.js"
       - "src/lib/db/repos/nodesRepo.js"
-      # The registry the alias table is built from, and MAX_COMBO_DEPTH.
+      - "open-sse/services/combo.js"
+      - "open-sse/services/capacityAdapter.js"
+      - "src/sse/handlers/chat.ts"
+      - "src/sse/services/autoCombo.ts"
+      - "src/sse/services/limitHoldConfig.js"
+      - "src/sse/services/finalRoutingError.js"
+      - "src/sse/services/claudeBuiltinSearch.js"
+      - "src/sse/services/claudeSearchShortcut.ts"
+      - "open-sse/utils/clientDetector.js"
+      - "open-sse/utils/error.js"
+      - "open-sse/utils/modelPath.ts"
+      # The routing scenarios run the whole request path, the account loop and
+      # the executor included.
+      - "src/sse/**"
+      - "open-sse/**"
+      # The registry the alias table is built from, MAX_COMBO_DEPTH, and
+      # SEARCH_TOOL_TYPES.
       - "open-sse/providers/registry/**"
       - "open-sse/config/runtimeConfig.js"
+      - "open-sse/config/appConstants.js"
   workflow_dispatch:
 
 permissions:
@@ -50,7 +72,7 @@ jobs:
           cd tests && bun install --ignore-scripts
       - name: Node still makes the committed fixtures and table export
         working-directory: tests
-        run: ./node_modules/.bin/vitest run unit/gateway-combo-parity.test.js
+        run: ./node_modules/.bin/vitest run unit/gateway-combo-parity.test.js unit/gateway-combo-fallback-parity.test.js
       - name: Go parity test
         working-directory: gateway
         run: go test -count=1 -v ./internal/combo 2>&1 | grep -a -v -E '^\s+--- PASS|^=== RUN' ; exit "${PIPESTATUS[0]}"
