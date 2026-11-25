@@ -245,11 +245,11 @@ const gzipReservedFlags = 0xe0
 // comment of 512 bytes or more, which zlib reads; a reply that carries one
 // fails here where Node's decodes.)
 func (g *gunzip) open() error {
-	head, _ := g.br.Peek(4)
-	if len(head) >= 2 && (head[0] != 0x1f || head[1] != 0x8b) {
+	// Each pair is checked as soon as it is here, not once all four are.
+	if head, _ := g.br.Peek(2); len(head) == 2 && (head[0] != 0x1f || head[1] != 0x8b) {
 		return gzip.ErrHeader
 	}
-	if len(head) >= 4 && (head[2] != 0x08 || head[3]&gzipReservedFlags != 0) {
+	if head, _ := g.br.Peek(4); len(head) == 4 && (head[2] != 0x08 || head[3]&gzipReservedFlags != 0) {
 		return gzip.ErrHeader
 	}
 	var err error

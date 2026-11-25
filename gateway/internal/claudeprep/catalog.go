@@ -139,15 +139,22 @@ func (c *FileCatalog) Modalities(model string) (Modalities, bool) {
 // them (POST /api/models/catalog-sync installs the source in their copy of
 // capabilities.js; the one instrumentation installs at boot is another
 // module copy), so whether Node reads it depends on the process's history.
-// A request it would change (a maxOutput for the model) declines; with no
-// entry both sides agree either way. Modalities change nothing Prepare does
-// for a request the native route takes (combo.MayNeedCapability declines any
-// that may carry an image, PDF or audio), so they read as none.
+// A request it could change declines: a maxOutput for the model (the
+// max_tokens ceiling), or a modality it declares (stripUnsupportedModalities
+// keeps or replaces media in earlier turns and tool results by it, which
+// combo.MayNeedCapability, reading only the current turn, lets through). With
+// no such entry both sides agree either way. Lookups only reach the catalog
+// from refine, for models the hand tables don't name.
 func DeclineCovered(c Catalog) Catalog { return coveredDeclines{c} }
 
 type coveredDeclines struct{ c Catalog }
 
-func (coveredDeclines) Modalities(string) (Modalities, bool) { return Modalities{}, false }
+func (d coveredDeclines) Modalities(model string) (Modalities, bool) {
+	if m, ok := d.c.Modalities(model); ok && (m.Vision || m.PDF || m.AudioInput) {
+		decline("the synced model catalog declares a modality for this model (Node's request handlers read the catalog only after a sync ran in them)")
+	}
+	return Modalities{}, false
+}
 
 func (d coveredDeclines) Limits(provider, model string) (Limits, bool) {
 	if l, ok := d.c.Limits(provider, model); ok && l.MaxOutput > 0 {

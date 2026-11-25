@@ -32,16 +32,22 @@ func declined(format string, args ...any) error { return decline.New(pkg, format
 var tablesJSON []byte
 
 // skipPatterns is runtimeConfig.js's SKIP_PATTERNS, exported by
-// tests/unit/gateway-route-parity.test.js.
-var skipPatterns = func() []string {
+// tests/unit/gateway-route-parity.test.js. loadErr is why it didn't load:
+// Ready reports it, so the gateway (which links this package in every mode)
+// turns the native route off instead of failing to start.
+var skipPatterns, loadErr = func() ([]string, error) {
 	var t struct {
 		SkipPatterns []string `json:"skipPatterns"`
 	}
 	if err := json.Unmarshal(tablesJSON, &t); err != nil || len(t.SkipPatterns) == 0 {
-		panic(fmt.Sprintf("route: tables.json has no skipPatterns (%v)", err))
+		return nil, fmt.Errorf("route: tables.json has no skipPatterns (%v)", err)
 	}
-	return t.SkipPatterns
+	return t.SkipPatterns, nil
 }()
+
+// Ready is nil when the embedded tables loaded; Inspect may be called only
+// then.
+func Ready() error { return loadErr }
 
 // paths are the request paths that reach /api/v1/messages: the route itself
 // and the two rewrites in next.config.mjs (/v1/:path* and /v1/v1/:path*).

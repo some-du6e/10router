@@ -241,7 +241,7 @@ func TestObserveWithTheRouteOff(t *testing.T) {
 }
 
 // A panic in the shadow's planning is its own error: the request is relayed
-// with its body, untagged.
+// with its body, as a declined one.
 func TestPlanningPanicStillRelays(t *testing.T) {
 	// No database: Plan's first read panics.
 	s := &Shadow{Native: func() (*native.Native, string) { return &native.Native{}, "" }}

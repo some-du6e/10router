@@ -186,26 +186,33 @@ func TestCatalogArrayDeclines(t *testing.T) {
 	}
 }
 
-// DeclineCovered declines what a maxOutput would change and reads every
-// other lookup as no entry.
+// DeclineCovered declines what a maxOutput or a declared modality could
+// change, and reads every other lookup as no entry.
 func TestDeclineCovered(t *testing.T) {
-	path := writeTemp(t, `{"models":{"mystery-1":{"vision":true}},"providers":{"p":{"mystery-1":{"maxOutput":3000},"zeta-9":{"contextWindow":5}}}}`)
+	path := writeTemp(t, `{"models":{"mystery-1":{"vision":true},"zeta-9":{"vision":false},"omega-2":{"pdf":true}},"providers":{"p":{"mystery-1":{"maxOutput":3000},"zeta-9":{"contextWindow":5}}}}`)
 	c := DeclineCovered(NewFileCatalog(path))
-	if m, ok := c.Modalities("mystery-1"); ok || m.Vision {
-		t.Fatalf("modalities %+v %v", m, ok)
-	}
 	for _, model := range []string{"zeta-9", "other"} {
-		if err := catching(func() { c.Limits("p", model) }); err != nil {
-			t.Fatalf("%s: %v", model, err)
+		var m Modalities
+		var l Limits
+		var mok, lok bool
+		if err := catching(func() { m, mok = c.Modalities(model); l, lok = c.Limits("p", model) }); err != nil || mok || lok || m != (Modalities{}) || l != (Limits{}) {
+			t.Fatalf("%s: %+v %v %+v %v %v", model, m, mok, l, lok, err)
 		}
 	}
 	var d *DeclineError
-	if err := catching(func() { c.Limits("p", "acme/Mystery-1") }); !errors.As(err, &d) || !strings.Contains(d.Reason, "maxOutput") {
-		t.Fatalf("got %v, want a maxOutput decline", err)
-	}
-	// Through Prepare's capabilities, as the native route reads them.
-	if err := catching(func() { NewModels(c).Capabilities("p", "mystery-1") }); err == nil {
-		t.Fatal("Capabilities didn't decline")
+	for _, tc := range []struct {
+		name, want string
+		f          func()
+	}{
+		{"maxOutput by base id", "maxOutput", func() { c.Limits("p", "acme/Mystery-1") }},
+		{"vision", "modality", func() { c.Modalities("mystery-1") }},
+		{"pdf", "modality", func() { c.Modalities("vendor/Omega-2:free") }},
+		// Through Prepare's capabilities, as the native route reads them.
+		{"capabilities", "synced model catalog", func() { NewModels(c).Capabilities("p", "omega-2") }},
+	} {
+		if err := catching(tc.f); !errors.As(err, &d) || !strings.Contains(d.Reason, tc.want) {
+			t.Fatalf("%s: got %v, want a decline naming %q", tc.name, err, tc.want)
+		}
 	}
 }
 

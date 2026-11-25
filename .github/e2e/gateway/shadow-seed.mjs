@@ -5,9 +5,11 @@
 //   "sht/<model>" - settings.providerThinking sets mode "high"
 //   sk-shadow-budget - a 10router key with a budget (speed and service_tier
 //                      don't go upstream)
-//   model-catalog.json - a maxOutput for CATALOG_MODEL on "sh" (Prepare clamps
-//                        max_tokens to it); the container runs with
-//                        MODEL_CATALOG_SYNC=off so Node never rewrites it
+//   model-catalog.json - a maxOutput for CATALOG_MODEL on "sh": the native
+//                        route declines that request (Node's request handlers
+//                        read the catalog only after a sync ran in them); the
+//                        container runs with MODEL_CATALOG_SYNC=off so Node
+//                        never rewrites it
 // Run from the app checkout:
 //   DATA_DIR=... node --experimental-loader=./scripts/resolve-src-alias.mjs <this file>
 // Credentials are fake; the mock accepts anything.

@@ -345,7 +345,7 @@ func (s *Shadow) Compare(ctx context.Context, rep Report) {
 	s.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	leaf, diff, err := match(ctx, rec.n, rec.plan, rep)
+	leaf, diff, err := safeMatch(ctx, rec.n, rec.plan, rep)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch {
@@ -367,6 +367,16 @@ func (s *Shadow) Compare(ctx context.Context, rep Report) {
 		s.diffLocked(rep.ID + ": " + diff)
 		s.logf("%s: differs from Node's send: %s", rep.ID, diff)
 	}
+}
+
+// safeMatch is match with a panic turned into an error, so it is counted.
+func safeMatch(ctx context.Context, n *native.Native, p *native.Plan, rep Report) (leaf int, diff string, err error) {
+	defer func() {
+		if v := recover(); v != nil {
+			leaf, diff, err = 0, "", fmt.Errorf("comparing panicked: %v", v)
+		}
+	}()
+	return match(ctx, n, p, rep)
 }
 
 // match prepares the attempt for every key of the plan's leaves whose

@@ -94,7 +94,7 @@ func CatalogFile(dataFile string) string {
 // Ready is nil when every package the route runs loaded its embedded
 // tables (each reports a bad one here instead of panicking at start).
 func Ready() error {
-	return errors.Join(combo.Ready(), upstream.Ready())
+	return errors.Join(claudeprep.Ready(), route.Ready(), combo.Ready(), upstream.Ready())
 }
 
 func (n *Native) now() time.Time {

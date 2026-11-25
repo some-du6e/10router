@@ -41,7 +41,7 @@ function requests() {
   if (cc) {
     // Combos (a fallback over two members, and one nested in another).
     for (const combo of ["shadow-main", "shadow-outer"]) out.push({ name: `combo-${combo}`, headers: cc.headers, body: { ...cc.body, model: combo } });
-    // Above the catalog's maxOutput, which Prepare clamps it to.
+    // Above the catalog's maxOutput: the native route declines it.
     out.push({ name: "catalog maxOutput", headers: cc.headers, body: { ...cc.body, model: `sh/${CATALOG_MODEL}`, max_tokens: 64000 } });
   }
   return out;
