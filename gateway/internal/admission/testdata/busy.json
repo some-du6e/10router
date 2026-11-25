@@ -1,0 +1,32 @@
+[
+ {
+  "retryAfterSec": 1,
+  "status": 503,
+  "headers": {
+   "access-control-allow-origin": "*",
+   "content-type": "application/json",
+   "retry-after": "1"
+  },
+  "body": "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Server is busy with other large requests; retry in 1s.\"}}"
+ },
+ {
+  "retryAfterSec": 10,
+  "status": 503,
+  "headers": {
+   "access-control-allow-origin": "*",
+   "content-type": "application/json",
+   "retry-after": "10"
+  },
+  "body": "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Server is busy with other large requests; retry in 10s.\"}}"
+ },
+ {
+  "retryAfterSec": 3600,
+  "status": 503,
+  "headers": {
+   "access-control-allow-origin": "*",
+   "content-type": "application/json",
+   "retry-after": "3600"
+  },
+  "body": "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Server is busy with other large requests; retry in 3600s.\"}}"
+ }
+]

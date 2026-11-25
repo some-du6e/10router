@@ -56,4 +56,55 @@ describe("Driver fallback chain", () => {
     const db = await getAdapter();
     expect(db.driver).toBe("sql.js");
   });
+
+  describe("with the gateway in native mode", () => {
+    const originalMode = process.env.GATEWAY_MODE;
+    beforeEach(() => {
+      process.env.GATEWAY_MODE = "native";
+      // A doMock outlives vi.resetModules: start each case with the real adapters.
+      for (const adapter of ["betterSqliteAdapter", "nodeSqliteAdapter", "sqljsAdapter"]) vi.doUnmock(`@/lib/db/adapters/${adapter}.js`);
+    });
+    afterEach(() => {
+      if (originalMode === undefined) delete process.env.GATEWAY_MODE;
+      else process.env.GATEWAY_MODE = originalMode;
+    });
+
+    it("refuses sql.js rather than overwrite the gateway's writes", async () => {
+      vi.doMock("@/lib/db/adapters/betterSqliteAdapter.js", () => {
+        throw new Error("simulated unavailable");
+      });
+      vi.doMock("@/lib/db/adapters/nodeSqliteAdapter.js", () => {
+        throw new Error("simulated unavailable");
+      });
+      const sqljs = vi.fn();
+      vi.doMock("@/lib/db/adapters/sqljsAdapter.js", () => ({ createSqlJsAdapter: sqljs }));
+      const { getAdapter, SQLJS_REFUSED_MESSAGE } = await import("@/lib/db/driver.js");
+      await expect(getAdapter()).rejects.toThrow(SQLJS_REFUSED_MESSAGE);
+      expect(sqljs).not.toHaveBeenCalled();
+      // Nothing was written: no database file was created either.
+      expect(fs.existsSync(path.join(tempDir, "db", "data.sqlite"))).toBe(false);
+    });
+
+    it("still opens a native driver", async () => {
+      vi.doMock("@/lib/db/adapters/betterSqliteAdapter.js", () => {
+        throw new Error("simulated unavailable");
+      });
+      const [maj, min] = process.versions.node.split(".").map(Number);
+      const { getAdapter } = await import("@/lib/db/driver.js");
+      if (maj > 22 || (maj === 22 && min >= 5)) expect((await getAdapter()).driver).toBe("node:sqlite");
+      else await expect(getAdapter()).rejects.toThrow(/GATEWAY_MODE=native/);
+    });
+
+    it("only native mode refuses: proxy mode never opens the database from Go", async () => {
+      process.env.GATEWAY_MODE = "proxy";
+      vi.doMock("@/lib/db/adapters/betterSqliteAdapter.js", () => {
+        throw new Error("simulated unavailable");
+      });
+      vi.doMock("@/lib/db/adapters/nodeSqliteAdapter.js", () => {
+        throw new Error("simulated unavailable");
+      });
+      const { getAdapter } = await import("@/lib/db/driver.js");
+      expect((await getAdapter()).driver).toBe("sql.js");
+    });
+  });
 });

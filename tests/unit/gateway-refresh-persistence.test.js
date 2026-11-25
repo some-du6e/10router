@@ -54,7 +54,7 @@ import { handleVideoCreate, handleVideoGet } from "../../src/sse/handlers/videoG
 const refreshed = {
   accessToken: "new-access", refreshToken: "new-refresh", idToken: "new-identity", expiresIn: 3600,
 };
-const PATCH = { patchProviderSpecificData: true, stampLastRefreshAt: true };
+const PATCH = { patchProviderSpecificData: true, stampLastRefreshAt: true, tokenRefresh: true };
 
 function savedUpdate() {
   expect(mocks.update).toHaveBeenCalledOnce();
@@ -86,7 +86,7 @@ describe("updateProviderCredentials", () => {
   it("passes extra options through and lets them override the defaults", async () => {
     await updateProviderCredentials("account", refreshed, { refreshTokenUsed: "old-refresh", stampLastRefreshAt: false });
     expect(mocks.update).toHaveBeenCalledWith("account", expect.any(Object), {
-      patchProviderSpecificData: true, stampLastRefreshAt: false, refreshTokenUsed: "old-refresh",
+      patchProviderSpecificData: true, stampLastRefreshAt: false, tokenRefresh: true, refreshTokenUsed: "old-refresh",
     });
   });
 

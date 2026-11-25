@@ -228,7 +228,7 @@ func TestSnapshotReadsConfig(t *testing.T) {
 	if keys := s.Settings.Merged.Keys(); keys[0] != "usageHubEnabled" || keys[len(keys)-1] != "zNew" {
 		t.Fatalf("settings order: %v", keys)
 	}
-	if c := s.Combos["fast"]; c == nil || len(c.Models) != 2 || c.Kind != nil {
+	if c := s.Combos["fast"]; c == nil || len(c.Models.([]any)) != 2 || c.Kind != nil {
 		t.Fatalf("combo: %+v", c)
 	}
 	n := s.Nodes["openai-compatible-chat-1"]

@@ -1,0 +1,642 @@
+{
+ "apiV1Rewrites": [
+  "/v1/v1/:path*",
+  "/v1/:path*"
+ ],
+ "cases": [
+  {
+   "name": "hot path",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoZWxsbyJ9XX0=",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "hot path, other client",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoZWxsbyJ9XX0=",
+   "ua": "custom-client/1.0",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "hot path, no user agent",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoZWxsbyJ9XX0=",
+   "ua": "",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "1m marker",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW5bMW1dIiwic3RyZWFtIjp0cnVlLCJtYXhfdG9rZW5zIjoxMDI0LCJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiaGVsbG8ifV19",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "1M marker",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW5bMU1dIiwic3RyZWFtIjp0cnVlLCJtYXhfdG9rZW5zIjoxMDI0LCJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiaGVsbG8ifV19",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "1m marker with spaces",
+   "bodyBase64": "eyJtb2RlbCI6IiAgbWFpblsxbV0gICIsInN0cmVhbSI6dHJ1ZSwibWF4X3Rva2VucyI6MTAyNCwibWVzc2FnZXMiOlt7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6ImhlbGxvIn1dfQ==",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "spaces without a marker",
+   "bodyBase64": "eyJtb2RlbCI6IiBtYWluICIsInN0cmVhbSI6dHJ1ZSwibWF4X3Rva2VucyI6MTAyNCwibWVzc2FnZXMiOlt7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6ImhlbGxvIn1dfQ==",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": " main ",
+    "bypass": false
+   }
+  },
+  {
+   "name": "200k selector stays",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW5bMjAwa10iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoZWxsbyJ9XX0=",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main[200k]",
+    "bypass": false
+   }
+  },
+  {
+   "name": "model is a provider id",
+   "bodyBase64": "eyJtb2RlbCI6ImhvdC9tb2RlbC1hIiwic3RyZWFtIjp0cnVlLCJtYXhfdG9rZW5zIjoxMDI0LCJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiaGVsbG8ifV19",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "hot/model-a",
+    "bypass": false
+   }
+  },
+  {
+   "name": "no model",
+   "bodyBase64": "eyJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoZWxsbyJ9XX0=",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "status": 400
+   }
+  },
+  {
+   "name": "empty model",
+   "bodyBase64": "eyJtb2RlbCI6IiIsInN0cmVhbSI6dHJ1ZSwibWF4X3Rva2VucyI6MTAyNCwibWVzc2FnZXMiOlt7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6ImhlbGxvIn1dfQ==",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "status": 400
+   }
+  },
+  {
+   "name": "blank model",
+   "bodyBase64": "eyJtb2RlbCI6IiAgICIsInN0cmVhbSI6dHJ1ZSwibWF4X3Rva2VucyI6MTAyNCwibWVzc2FnZXMiOlt7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6ImhlbGxvIn1dfQ==",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "status": 400
+   }
+  },
+  {
+   "name": "only a marker",
+   "bodyBase64": "eyJtb2RlbCI6IlsxbV0iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoZWxsbyJ9XX0=",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "status": 400
+   }
+  },
+  {
+   "name": "number model",
+   "bodyBase64": "eyJtb2RlbCI6NSwic3RyZWFtIjp0cnVlLCJtYXhfdG9rZW5zIjoxMDI0LCJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiaGVsbG8ifV19",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "status": 400
+   }
+  },
+  {
+   "name": "non-ASCII model",
+   "bodyBase64": "eyJtb2RlbCI6Im3DpGluIiwic3RyZWFtIjp0cnVlLCJtYXhfdG9rZW5zIjoxMDI0LCJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiaGVsbG8ifV19",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "not printable ASCII",
+   "node": {
+    "model": "mäin",
+    "bypass": false
+   }
+  },
+  {
+   "name": "model naming an Object.prototype member",
+   "bodyBase64": "eyJtb2RlbCI6ImNvbnN0cnVjdG9yIiwic3RyZWFtIjp0cnVlLCJtYXhfdG9rZW5zIjoxMDI0LCJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiaGVsbG8ifV19",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "Object.prototype",
+   "node": {
+    "model": "constructor",
+    "bypass": false
+   }
+  },
+  {
+   "name": "not JSON",
+   "bodyBase64": "e25vcGU=",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "status": 400
+   }
+  },
+  {
+   "name": "array body",
+   "bodyBase64": "WzEsMl0=",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "status": 400
+   }
+  },
+  {
+   "name": "null body",
+   "bodyBase64": "bnVsbA==",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "status": 400
+   }
+  },
+  {
+   "name": "string body",
+   "bodyBase64": "Ingi",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "status": 400
+   }
+  },
+  {
+   "name": "empty body",
+   "bodyBase64": "",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "status": 400
+   }
+  },
+  {
+   "name": "BOM",
+   "bodyBase64": "77u/eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoZWxsbyJ9XX0=",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "invalid UTF-8 in a string",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJh/yJ9XX0=",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "stream false",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOmZhbHNlLCJtYXhfdG9rZW5zIjoxMDI0LCJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiaGVsbG8ifV19",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "not stream: true",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "stream missing",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJtYXhfdG9rZW5zIjoxMDI0LCJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiaGVsbG8ifV19",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "not stream: true",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "stream as a string",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOiJ0cnVlIiwibWF4X3Rva2VucyI6MTAyNCwibWVzc2FnZXMiOlt7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6ImhlbGxvIn1dfQ==",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "not stream: true",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "messages empty",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbXX0=",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "not a non-empty array",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "messages missing",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjR9",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "not a non-empty array",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "messages is a string",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjoiaGkifQ==",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "not a non-empty array",
+   "node": {
+    "threw": "messages.filter is not a function"
+   }
+  },
+  {
+   "name": "a null message",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoaSJ9LG51bGxdfQ==",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "threw": "Cannot read properties of null (reading 'role')"
+   }
+  },
+  {
+   "name": "a null message, other client",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoaSJ9LG51bGxdfQ==",
+   "ua": "custom-client/1.0",
+   "ccFilterNaming": false,
+   "conservative": "a message that is not an object",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "warmup, UA among others",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJXYXJtdXAifV19",
+   "ua": "proxy-agent/1.0, claude-cli/2.1.0",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": true
+   }
+  },
+  {
+   "name": "warmup",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJXYXJtdXAifV19",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": true
+   }
+  },
+  {
+   "name": "warmup in blocks",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0ZXh0IiwidGV4dCI6Ildhcm11cCJ9XX1dfQ==",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": true
+   }
+  },
+  {
+   "name": "warmup, two blocks",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0ZXh0IiwidGV4dCI6Ildhcm0ifSx7InR5cGUiOiJ0ZXh0IiwidGV4dCI6InVwIn1dfV19",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "warmup from another client",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJXYXJtdXAifV19",
+   "ua": "custom-client/1.0",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "warmup, capitalized UA",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJXYXJtdXAifV19",
+   "ua": "Claude-CLI/2.1.0",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "warmup, later message",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoZWxsbyJ9LHsicm9sZSI6ImFzc2lzdGFudCIsImNvbnRlbnQiOiJoaSJ9LHsicm9sZSI6InVzZXIiLCJjb250ZW50IjoiV2FybXVwIn1dfQ==",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "title extraction",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoZWxsbyJ9LHsicm9sZSI6ImFzc2lzdGFudCIsImNvbnRlbnQiOlt7InR5cGUiOiJ0ZXh0IiwidGV4dCI6InsifV19XX0=",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": true
+   }
+  },
+  {
+   "name": "title-like string content",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoZWxsbyJ9LHsicm9sZSI6ImFzc2lzdGFudCIsImNvbnRlbnQiOiJ7In1dfQ==",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "title, object content",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoZWxsbyJ9LHsicm9sZSI6ImFzc2lzdGFudCIsImNvbnRlbnQiOnsiMCI6eyJ0eXBlIjoidGV4dCIsInRleHQiOiJ7In19fV19",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": true
+   }
+  },
+  {
+   "name": "count",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJjb3VudCJ9XX0=",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": true
+   }
+  },
+  {
+   "name": "count in blocks",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0ZXh0IiwidGV4dCI6ImNvdW50In1dfV19",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": true
+   }
+  },
+  {
+   "name": "count, two messages",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJjb3VudCJ9LHsicm9sZSI6InVzZXIiLCJjb250ZW50IjoibW9yZSJ9XX0=",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "skip pattern",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJQbGVhc2Ugd3JpdGUgYSA1LTEwIHdvcmQgdGl0bGUgZm9yIHRoZSBmb2xsb3dpbmcgY29udmVyc2F0aW9uOiB4In1dfQ==",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": true
+   }
+  },
+  {
+   "name": "skip pattern across messages",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJQbGVhc2Ugd3JpdGUgYSA1LTEwIHdvcmQifSx7InJvbGUiOiJhc3Npc3RhbnQiLCJjb250ZW50Ijoib2sifSx7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6InRpdGxlIGZvciB0aGUgZm9sbG93aW5nIGNvbnZlcnNhdGlvbjoifV19",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": true
+   }
+  },
+  {
+   "name": "skip pattern in a block",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJpbWFnZSIsInNvdXJjZSI6e319LHsidHlwZSI6InRleHQiLCJ0ZXh0IjoiUGxlYXNlIHdyaXRlIGEgNS0xMCB3b3JkIHRpdGxlIGZvciB0aGUgZm9sbG93aW5nIGNvbnZlcnNhdGlvbjoifV19XX0=",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": true
+   }
+  },
+  {
+   "name": "naming, filter on",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoZWxsbyJ9XSwic3lzdGVtIjpbeyJ0eXBlIjoidGV4dCIsInRleHQiOiJBbnN3ZXIgd2l0aCBpc05ld1RvcGljIGFuZCBhIHRpdGxlIn1dfQ==",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": true,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": true
+   }
+  },
+  {
+   "name": "naming, filter off",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoZWxsbyJ9XSwic3lzdGVtIjpbeyJ0eXBlIjoidGV4dCIsInRleHQiOiJBbnN3ZXIgd2l0aCBpc05ld1RvcGljIGFuZCBhIHRpdGxlIn1dfQ==",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "naming, string system",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoZWxsbyJ9XSwic3lzdGVtIjoiaXNOZXdUb3BpYyJ9",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": true,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": true
+   }
+  },
+  {
+   "name": "naming, system message",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoic3lzdGVtIiwiY29udGVudCI6ImlzTmV3VG9waWMifSx7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6ImhpIn1dfQ==",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": true,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": true
+   }
+  },
+  {
+   "name": "naming, system message wins",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoic3lzdGVtIiwiY29udGVudCI6InBsYWluIn0seyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoaSJ9XSwic3lzdGVtIjoiaXNOZXdUb3BpYyJ9",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": true,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "naming, null system block",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoZWxsbyJ9XSwic3lzdGVtIjpbeyJ0eXBlIjoidGV4dCIsInRleHQiOiJ4In0sbnVsbF19",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": true,
+   "conservative": "",
+   "node": {
+    "threw": "Cannot read properties of null (reading 'type')"
+   }
+  },
+  {
+   "name": "naming, null system block, filter off",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoZWxsbyJ9XSwic3lzdGVtIjpbeyJ0eXBlIjoidGV4dCIsInRleHQiOiJ4In0sbnVsbF19",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "null block in the first message",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0ZXh0IiwidGV4dCI6IngifSxudWxsXX1dfQ==",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "threw": "Cannot read properties of null (reading 'type')"
+   }
+  },
+  {
+   "name": "null block in a later user message",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoaSJ9LHsicm9sZSI6ImFzc2lzdGFudCIsImNvbnRlbnQiOiJvayJ9LHsicm9sZSI6InVzZXIiLCJjb250ZW50IjpbbnVsbF19XX0=",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "threw": "Cannot read properties of null (reading 'type')"
+   }
+  },
+  {
+   "name": "null block in an assistant message",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJoaSJ9LHsicm9sZSI6ImFzc2lzdGFudCIsImNvbnRlbnQiOltudWxsXX0seyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJhZ2FpbiJ9XX0=",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "non-string text",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0ZXh0IiwidGV4dCI6NX1dfV19",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "text is not a string",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  },
+  {
+   "name": "text block without text",
+   "bodyBase64": "eyJtb2RlbCI6Im1haW4iLCJzdHJlYW0iOnRydWUsIm1heF90b2tlbnMiOjEwMjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0ZXh0In1dfSx7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6Ildhcm11cCJ9XX0=",
+   "ua": "claude-cli/2.1.0 (external, cli)",
+   "ccFilterNaming": false,
+   "conservative": "",
+   "node": {
+    "model": "main",
+    "bypass": false
+   }
+  }
+ ]
+}

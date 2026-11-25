@@ -211,6 +211,24 @@ const OPS = [
   },
   { name: "round-robin stickiness", covers: [], bump: false, run: (c) => c.repos.updateProviderConnection(c.conn.id, { lastUsedAt: now(), consecutiveUseCount: 2 }) },
   { name: "a token refresh", covers: [], bump: false, run: (c) => c.repos.updateProviderConnection(c.conn.id, { accessToken: "a2", expiresAt: now(), lastRefreshAt: now() }) },
+  {
+    // credentialSave.js's path: the refresh patches providerSpecificData (a
+    // Copilot token, a project id). Those keys are runtime for that write.
+    name: "a token refresh rewriting providerSpecificData", covers: [], bump: false,
+    run: async (c) => {
+      const { updateProviderCredentials } = await import("@/sse/services/credentialSave.js");
+      const saved = await updateProviderCredentials(c.conn.id, {
+        accessToken: "a3", expiresIn: 3600, projectId: "project-1",
+        providerSpecificData: { copilotTokenExpiresAt: now(), accountId: "acct-1" }, copilotToken: "ct-1",
+      });
+      expect(saved.providerSpecificData).toMatchObject({ copilotToken: "ct-1", accountId: "acct-1" });
+    },
+  },
+  {
+    // The same key written by a dashboard edit is config.
+    name: "a dashboard edit of a key a refresh also writes", covers: ["connectionsRepo.js#upsert"], bump: true,
+    run: (c) => c.repos.updateProviderConnection(c.conn.id, { providerSpecificData: { accountId: "acct-2" } }),
+  },
   { name: "a dashboard rename", covers: ["connectionsRepo.js#upsert"], bump: true, run: (c) => c.repos.updateProviderConnection(c.conn.id, { name: "renamed" }) },
   { name: "a proxy change", covers: ["connectionsRepo.js#upsert"], bump: true, run: (c) => c.repos.updateProviderConnection(c.conn.id, { providerSpecificData: { proxyPoolId: "pool" } }) },
   { name: "a priority change", covers: ["connectionsRepo.js#reorderInTx"], bump: true, run: (c) => c.repos.updateProviderConnection(c.conn.id, { priority: 2 }) },

@@ -58,6 +58,7 @@ export async function updateProviderCredentials(connectionId, newCredentials, op
   const result = await updateProviderConnection(connectionId, updates, {
     patchProviderSpecificData: true,
     stampLastRefreshAt: true,
+    tokenRefresh: true,
     ...options,
   });
   log.info("TOKEN_REFRESH", "Credentials updated in localDb", {

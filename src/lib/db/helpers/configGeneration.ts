@@ -50,16 +50,60 @@ function isRuntimeField(key: string): boolean {
 
 type ConnectionFields = Record<string, unknown> | null | undefined;
 
+/** A token refresh's own fields, which count as runtime state for that write (connectionConfigChanged). */
+export interface RefreshedFields {
+  /** Top-level connection fields the refresh result writes (buildCredentialUpdates). */
+  fields?: Iterable<string>;
+  /** providerSpecificData keys its patch writes (Copilot's token, a project or account id). */
+  providerSpecificData?: Iterable<string>;
+}
+
+/** The fields a token refresh result writes, from its connection update (credentialSave.js). */
+export function refreshedFields(update: Record<string, unknown> | null | undefined): RefreshedFields {
+  const psd = update?.providerSpecificData;
+  return {
+    fields: Object.keys(update || {}).filter((key) => key !== "providerSpecificData"),
+    providerSpecificData: psd && typeof psd === "object" ? Object.keys(psd) : [],
+  };
+}
+
+const json = (value: unknown): string | undefined => JSON.stringify(value ?? null);
+
 /**
  * Did a providerConnections write change anything but runtime state? `before`
  * and `after` are connection objects as connectionsRepo reads them (columns
  * and data together). isActive is a column, so turning a key off counts.
+ *
+ * `refreshed` names what a token refresh wrote: those fields, and those keys
+ * of providerSpecificData, are runtime for this write. A refresh rewrites
+ * tokens on a timer; the gateway reads connections fresh at pick time, so
+ * reloading its whole config snapshot for one would buy nothing.
  */
-export function connectionConfigChanged(before: ConnectionFields, after: ConnectionFields): boolean {
-  const keys = new Set([...Object.keys(before || {}), ...Object.keys(after || {})]);
-  for (const key of keys) {
-    if (isRuntimeField(key)) continue;
-    if (JSON.stringify(before?.[key] ?? null) !== JSON.stringify(after?.[key] ?? null)) return true;
+export function connectionConfigChanged(before: ConnectionFields, after: ConnectionFields, refreshed: RefreshedFields | null = null): boolean {
+  const refreshedTop = new Set(refreshed?.fields || []);
+  const refreshedPsd = new Set(refreshed?.providerSpecificData || []);
+  return differsExcept(before || {}, after || {}, (key) => isRuntimeField(key) || refreshedTop.has(key), (key, a, b) => {
+    // providerSpecificData key by key, without the keys the refresh wrote.
+    // A missing one is empty: the refresh's patch is applied over `{}`.
+    if (key !== "providerSpecificData" || refreshedPsd.size === 0) return json(a) !== json(b);
+    const pa = a ?? {};
+    const pb = b ?? {};
+    if (!isPlainObject(pa) || !isPlainObject(pb)) return json(pa) !== json(pb);
+    return differsExcept(pa, pb, (k) => refreshedPsd.has(k), (_, x, y) => json(x) !== json(y));
+  });
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+// Does any key of either object, other than the skipped ones, differ?
+function differsExcept(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+  skip: (key: string) => boolean,
+  differs: (key: string, before: unknown, after: unknown) => boolean,
+): boolean {
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (!skip(key) && differs(key, before[key], after[key])) return true;
   }
   return false;
 }

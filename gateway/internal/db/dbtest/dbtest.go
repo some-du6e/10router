@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -99,6 +100,35 @@ func Exec(t testing.TB, db *sql.DB, q string, args ...any) {
 	t.Helper()
 	if _, err := db.Exec(q, args...); err != nil {
 		t.Fatalf("%s: %v", q, err)
+	}
+}
+
+// InsertRows inserts rows as another process stored them: for each table,
+// in order, each row's columns and values as JSON gave them (numbers are
+// float64, which SQLite's column affinity turns back into integers where the
+// column is one). Tables are inserted in sorted order, rows in the order given,
+// so their rowids keep Node's order.
+func InsertRows(t testing.TB, db *sql.DB, rows map[string][]map[string]any) {
+	t.Helper()
+	tables := make([]string, 0, len(rows))
+	for table := range rows {
+		tables = append(tables, table)
+	}
+	sort.Strings(tables)
+	for _, table := range tables {
+		for _, row := range rows[table] {
+			cols := make([]string, 0, len(row))
+			for c := range row {
+				cols = append(cols, c)
+			}
+			sort.Strings(cols)
+			args := make([]any, len(cols))
+			marks := make([]string, len(cols))
+			for i, c := range cols {
+				args[i], marks[i] = row[c], "?"
+			}
+			Exec(t, db, fmt.Sprintf("INSERT INTO %s(%s) VALUES(%s)", table, strings.Join(cols, ", "), strings.Join(marks, ", ")), args...)
+		}
 	}
 }
 

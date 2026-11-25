@@ -52,14 +52,28 @@ async function trySqlJs() {
   }
 }
 
+// The Go gateway in native mode (docs/GO_GATEWAY.md) writes the same file.
+// sql.js holds the database in memory and writes the whole file back on each
+// save, which would throw away every row the gateway wrote in between, so it
+// is no fallback then. The gateway passes the mode it settled on.
+export function sharesFileWithGateway(env = process.env) {
+  return env.GATEWAY_MODE === "native";
+}
+
+export const SQLJS_REFUSED_MESSAGE =
+  "[DB] No native SQLite driver loaded, and sql.js can't share the database with the gateway (GATEWAY_MODE=native): " +
+  "it would overwrite the gateway's writes. Install better-sqlite3, run Node 22.5+ (node:sqlite) or Bun, or set GATEWAY_MODE=proxy.";
+
 async function initAdapter() {
   ensureDirs();
   // Order per runtime:
   //   Bun:  bun:sqlite → sql.js
   //   Node: better-sqlite3 → node:sqlite (≥22.5) → sql.js
+  // sql.js is skipped while the gateway shares the file (sharesFileWithGateway).
   let adapter = await tryBunSqlite();
   if (!adapter) adapter = await tryBetterSqlite();
   if (!adapter) adapter = await tryNodeSqlite();
+  if (!adapter && sharesFileWithGateway()) throw new Error(SQLJS_REFUSED_MESSAGE);
   if (!adapter) adapter = await trySqlJs();
   if (!adapter) throw new Error("[DB] No SQLite driver available (bun/better/node/sql.js all failed)");
   restrictDbFilePermissions();

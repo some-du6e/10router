@@ -89,9 +89,12 @@ type APIKey struct {
 	AllowedModels []string
 	ExpiresAt     string
 	// SpentUsd counts against the budget (since the last reset).
-	SpentUsd             float64
-	LifetimeSpentUsd     float64
-	SpendOffsetUsd       float64
+	SpentUsd         float64
+	LifetimeSpentUsd float64
+	SpendOffsetUsd   float64
+	// SpendNotNumeric: spentUsd or spendOffsetUsd holds a value that isn't a
+	// number (read as 0 above, where Node's Number() might read one).
+	SpendNotNumeric      bool
 	SpendResetAt         string
 	RequestCount         float64
 	LastUsedAt           string
@@ -139,6 +142,14 @@ func scanAPIKey(scan func(...any) error) (*APIKey, error) {
 	k.ExpiresAt = expiresAt.String
 	k.LifetimeSpentUsd, _ = sqlNumber(spent)
 	k.SpendOffsetUsd, _ = sqlNumber(offset)
+	// Text in a REAL column is text SQLite couldn't read as a number, which
+	// Number() still may ("0x10"). Read as 0 here; callers that judge a
+	// budget by it decline.
+	for _, v := range []any{spent, offset} {
+		if _, ok := sqlNumber(v); !ok && v != nil {
+			k.SpendNotNumeric = true
+		}
+	}
 	k.SpentUsd = math.Max(0, roundUsd(k.LifetimeSpentUsd-k.SpendOffsetUsd))
 	k.SpendResetAt = resetAt.String
 	k.RequestCount, _ = sqlNumber(count)
@@ -163,10 +174,13 @@ func (d *DB) APIKeyByKey(ctx context.Context, key string) (*APIKey, error) {
 
 // Combo is combosRepo.js's rowToCombo.
 type Combo struct {
-	ID        string
-	Name      string
-	Kind      *string
-	Models    []any
+	ID   string
+	Name string
+	Kind *string
+	// Models is parseJson(row.models, []): normally an array, but whatever
+	// JSON the column holds (Node's getComboModels takes a non-empty string
+	// as members too).
+	Models    any
 	CreatedAt string
 	UpdatedAt string
 }

@@ -27,6 +27,9 @@ type Snapshot struct {
 	Combos map[string]*Combo
 	// Nodes by id (provider node ids such as openai-compatible-chat-...).
 	Nodes map[string]*ProviderNode
+	// NodeOrder is the node ids in table (rowid) order: getProviderNodes'
+	// order, which a prefix lookup's first match depends on.
+	NodeOrder []string
 	// APIKeys by key: the policy (isActive, limits, expiry, limitHold). The
 	// spend in these copies is as of LoadedAt; use APIKeyByKey for spend.
 	APIKeys map[string]*APIKey
@@ -126,11 +129,9 @@ func loadCombos(ctx context.Context, tx *sql.Tx, s *Snapshot) error {
 			return err
 		}
 		c.Kind = nullString(kind)
-		if list, ok := parseJSONOr(models, nil).([]any); ok {
-			c.Models = list
-		} else {
-			c.Models = []any{}
-		}
+		// parseJson(row.models, []): unreadable is [], and readable JSON that
+		// isn't an array is kept as it is, as rowToCombo keeps it.
+		c.Models = parseJSONOr(models, []any{})
 		c.CreatedAt, c.UpdatedAt = c1.String, u.String
 		// getComboByName: name is UNIQUE.
 		s.Combos[c.Name] = &c
@@ -158,7 +159,9 @@ var nodeColumnKeys = []string{"id", "type", "name", "createdAt", "updatedAt"}
 const nodeColumns = `id, type, name, data, createdAt, updatedAt`
 
 func loadNodes(ctx context.Context, tx *sql.Tx, s *Snapshot) error {
-	rows, err := tx.QueryContext(ctx, `SELECT `+nodeColumns+` FROM providerNodes`)
+	// getProviderNodes has no ORDER BY: a full scan, or idx_pn_type for one
+	// type, reads in rowid order either way.
+	rows, err := tx.QueryContext(ctx, `SELECT `+nodeColumns+` FROM providerNodes ORDER BY rowid`)
 	if err != nil {
 		return err
 	}
@@ -169,6 +172,7 @@ func loadNodes(ctx context.Context, tx *sql.Tx, s *Snapshot) error {
 			return err
 		}
 		s.Nodes[n.ID] = n
+		s.NodeOrder = append(s.NodeOrder, n.ID)
 	}
 	return rows.Err()
 }
