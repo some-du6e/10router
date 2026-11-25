@@ -260,6 +260,8 @@ type scriptStep struct {
 	Cut bool `json:"cut"`
 	// NoTrailer: the gzip body without its 8-byte trailer.
 	NoTrailer bool `json:"noTrailer"`
+	// PadZeros: zero bytes after the gzip body.
+	PadZeros int `json:"padZeros"`
 }
 
 const sseOK = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
@@ -334,6 +336,7 @@ func scripted(t *testing.T, script []json.RawMessage) (*httptest.Server, *[]wire
 		if step.NoTrailer {
 			out = out[:len(out)-8]
 		}
+		out = append(out, make([]byte, step.PadZeros)...)
 		w.WriteHeader(step.Status)
 		_, _ = w.Write(out)
 	}))
@@ -575,6 +578,17 @@ func TestExecuteReturnsAFailedRetryWait(t *testing.T) {
 	})
 	if !errors.Is(err, sleepErr) {
 		t.Fatalf("%v", err)
+	}
+}
+
+func TestHeadersUndiciHandlesItsOwnWayAreDeclined(t *testing.T) {
+	for _, h := range [][2]string{{"Expect", "100-continue"}, {"Host", "api.internal"}, {"Transfer-Encoding", "chunked"}, {"keep-alive", "timeout=5"}, {"Upgrade", "h2c"}, {"Connection", "close"}} {
+		if err := CheckHeaders([]claudeprep.HeaderField{{Name: h[0], Value: h[1]}}); !decline.Is(err) {
+			t.Errorf("%s: %v", h[0], err)
+		}
+	}
+	if err := CheckHeaders([]claudeprep.HeaderField{{Name: "Connection", Value: "keep-alive"}, {Name: "x-api-key", Value: "k"}}); err != nil {
+		t.Fatal(err)
 	}
 }
 

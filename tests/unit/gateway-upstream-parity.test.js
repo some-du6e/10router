@@ -236,6 +236,8 @@ const WIRE = [
   // Fetch inflates with Z_SYNC_FLUSH: a gzip body that ends before its
   // trailer still reads as far as it got.
   { name: "a gzip error body without its trailer", script: [{ status: 429, body: JSON.stringify({ error: { message: "Rate limit exceeded" } }), gzip: true, noTrailer: true }] },
+  // zlib reads zero bytes after a gzip member as padding.
+  { name: "a zero-padded gzip error body", script: [{ status: 429, body: JSON.stringify({ error: { message: "Rate limit exceeded" } }), gzip: true, padZeros: 16 }] },
   { name: "an error body in broken UTF-8", script: [{ status: 500, bodyBytes: [0x7b, 0xff, 0xfe, 0x78, 0xe2, 0x82, 0x7d] }] },
   { name: "a BOM before the error", script: [{ status: 500, bodyBytes: [0xef, 0xbb, 0xbf, 0x6f, 0x6b] }] },
   // The error body breaks off: text() throws, and chatCore takes "".
@@ -281,6 +283,7 @@ function startServer(script, seen) {
       }
       if (step.gzip) { body = gzipSync(body); headers2["content-encoding"] = "gzip"; }
       if (step.noTrailer) body = body.subarray(0, body.length - 8);
+      if (step.padZeros) body = Buffer.concat([body, Buffer.alloc(step.padZeros)]);
       res.writeHead(step.status, headers2);
       res.end(body);
     });

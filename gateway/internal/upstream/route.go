@@ -271,8 +271,31 @@ func PreflightKey(ctx context.Context, c *db.Connection, s Settings, pools Pools
 	if err != nil {
 		return err
 	}
-	_, err = prepare(node)
-	return err
+	req, err := prepare(node)
+	if err != nil {
+		return err
+	}
+	return CheckHeaders(req.Header)
+}
+
+// undiciHeaders are the names undici refuses on a request or takes over
+// itself (lib/core/request.js): Node fails such a request, or sends it its
+// own way, so one an endpoint's header lines add is Node's.
+var undiciHeaders = map[string]bool{"host": true, "transfer-encoding": true, "keep-alive": true, "upgrade": true, "expect": true}
+
+// CheckHeaders declines headers undici handles its own way: those names,
+// and a connection header other than keep-alive.
+func CheckHeaders(h []claudeprep.HeaderField) error {
+	for _, f := range h {
+		name := strings.ToLower(f.Name)
+		if undiciHeaders[name] {
+			return declined("a %s header (undici refuses or takes it over)", name)
+		}
+		if name == "connection" && !strings.EqualFold(strings.TrimSpace(f.Value), "keep-alive") {
+			return declined("a connection header other than keep-alive")
+		}
+	}
+	return nil
 }
 
 // MergeDroppedBetas is the key's settings with the flags an attempt learned

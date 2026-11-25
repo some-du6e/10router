@@ -2,6 +2,7 @@ package accounts
 
 import (
 	"context"
+	"regexp"
 	"strings"
 
 	"github.com/some-du6e/10router/gateway/internal/db"
@@ -60,24 +61,31 @@ func (a *Accounts) CheckProvider(ctx context.Context, provider string, s Setting
 	return nil
 }
 
-// plainBaseURL: printable ASCII with no IPv6 literal, backslash or user
-// info, and no port with a leading zero, so net/url reads it as WHATWG URL
-// does (no punycode, no port or bracket normalization).
+// plainBaseURLRe is the base URLs net/url and WHATWG URL read alike: a
+// lowercase-safe ASCII host, an optional port with no leading zero, path
+// segments of unreserved characters, and a query of unreserved characters
+// and = &. Anything else is declined rather than compared: punycode, an
+// empty port, escapes, characters one parser escapes and the other doesn't.
+var plainBaseURLRe = regexp.MustCompile(`^https?://[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*(:[1-9][0-9]{0,4})?(/[A-Za-z0-9._~-]*)*(\?[A-Za-z0-9._~=&-]*)?$`)
+
+// plainBaseURL: no base URL at all (the provider's default), or one
+// plainBaseURLRe takes with no "." or ".." segment (WHATWG URL resolves
+// those; net/url sends them).
 func plainBaseURL(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] <= 0x20 || s[i] >= 0x7f || s[i] == '\\' || s[i] == '[' || s[i] == '@' {
+	if s == "" {
+		return true
+	}
+	if !plainBaseURLRe.MatchString(s) {
+		return false
+	}
+	path := s
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	for _, seg := range strings.Split(path, "/") {
+		if seg == "." || seg == ".." {
 			return false
 		}
-	}
-	rest := s
-	if i := strings.Index(rest, "://"); i >= 0 {
-		rest = rest[i+3:]
-	}
-	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
-		rest = rest[:i]
-	}
-	if i := strings.LastIndexByte(rest, ':'); i >= 0 && strings.HasPrefix(rest[i+1:], "0") {
-		return false
 	}
 	return true
 }

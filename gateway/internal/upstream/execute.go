@@ -242,6 +242,11 @@ func failure(ctx context.Context, resp *http.Response, req *claudeprep.Request) 
 	if err != nil && ctx.Err() != nil {
 		return attempt{}, ctx.Err()
 	}
+	if errors.Is(err, errGzipTrailing) {
+		// Not recorded from Node: whether zlib ignores the data or fails, the
+		// reply is Node's.
+		return attempt{}, fmt.Errorf("%w: data after the gzip stream", ErrNetwork)
+	}
 	if len(raw) > maxErrorBody {
 		return attempt{}, fmt.Errorf("%w: an error body over %d bytes", ErrNetwork, maxErrorBody)
 	}

@@ -591,6 +591,45 @@ func TestSelectChecksThePickBeforeWriting(t *testing.T) {
 	}
 }
 
+// A probe's lease follows the budget its sender reports (onBudget), as
+// noteProbeBudget does: a request blocked meanwhile is told when the probe's
+// send runs out, not the default budget.
+func TestProbeLeaseFollowsTheSendersBudget(t *testing.T) {
+	d, advance := openKeys(t, keyRow(t, "k1", 1, `{"apiKey":"key-k1"}`), keyRow(t, "k2", 2, `{"apiKey":"key-k2"}`))
+	a := New(d)
+	start := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
+	var offset atomic.Int64
+	a.Now = func() time.Time { return time.UnixMilli(start + offset.Load()) }
+	nowMs := func() float64 { return float64(start + offset.Load()) }
+	step := func(ms int64) { offset.Add(ms); advance(ms) }
+	in := LoopInput{Provider: "openai-compatible-chat-hot", Model: "m", Body: claudeprep.Undefined(), Settings: objSettings{jsjson.NewObject()}, ByteSent: func() bool { return false }}
+	timeout := func(ctx context.Context, c *db.Connection, onBudget func(float64)) (AttemptResult, error) {
+		return AttemptResult{Status: 504, Error: "[504]: upstream sent no response headers in 240s (headers timeout, set by UPSTREAM_STREAM_HEADERS_TIMEOUT_MS)", HeadersTimeout: true, TimeoutStream: true}, nil
+	}
+	// Two requests' timeouts on two keys: the model is hung.
+	if _, err := a.RunModel(context.Background(), in, timeout); err != nil {
+		t.Fatal(err)
+	}
+	step(5 * 60 * 1000)
+	if out, err := a.RunModel(context.Background(), in, timeout); err != nil || !strings.Contains(out.Error, "not responding") {
+		t.Fatalf("%+v %v", out, err)
+	}
+	// Past the hung window and the keys' locks: the next request probes.
+	step(int64(tbl.HeadersTimeout.HungWindowMs[0]) + 60*1000)
+	var blocked HangStatus
+	probe := func(ctx context.Context, c *db.Connection, onBudget func(float64)) (AttemptResult, error) {
+		onBudget(5000)
+		blocked = a.Hang.Check("openai-compatible-chat-hot", "m", "someone-else", nowMs())
+		return AttemptResult{Success: true}, nil
+	}
+	if out, err := a.RunModel(context.Background(), in, probe); err != nil || !out.Success {
+		t.Fatalf("the probe: %+v %v", out, err)
+	}
+	if !blocked.Blocked || !blocked.Checking || blocked.RetryAtMs != nowMs()+5000 {
+		t.Fatalf("a request during the probe: %+v (now %v)", blocked, nowMs())
+	}
+}
+
 func TestKeysShareOneUpstreamNeedsATransport(t *testing.T) {
 	d, _ := openKeys(t, keyRow(t, "k1", 1, `{"apiKey":"key-k1"}`))
 	if _, err := New(d).KeysShareOneUpstream(context.Background(), "openai-compatible-chat-hot", nil); !decline.Is(err) {
@@ -634,6 +673,9 @@ func TestJSLengthAndPlainBaseURL(t *testing.T) {
 		"https://upstream.test/v1": true, "https://upstream.test:8443/v1": true, "": true,
 		"https://[::1]:8443/v1": false, "https://bücher.test/v1": false, "https://upstream.test:0443/v1": false,
 		"https://user@upstream.test/v1": false, `https://upstream.test\v1`: false, "https://upstream.test /v1": false,
+		"https://upstream.test/x/../v1": false, "https://upstream.test/./v1": false, "https://upstream.test/%2e/v1": false,
+		"https://upstream.test:/v1": false, "https://upstream.test/v|1": false, "https://upstream.test/v1/..": false,
+		"https://upstream.test/v1?api-version=2024-01": true, "https://upstream.test/.well-known/v1": true, "http://upstream.test:8080": true,
 	} {
 		if got := plainBaseURL(s); got != want {
 			t.Errorf("plainBaseURL(%q) = %v", s, got)
