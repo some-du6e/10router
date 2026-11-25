@@ -69,8 +69,9 @@ export async function handleSearch(request) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: query");
   }
 
-  // No provider can take such a query, so refuse it before any account is picked.
-  const queryError = sanitizeQuery(query).error;
+  // No provider can take such a query, so refuse it before any account is
+  // picked. Trimmed first, as the query the core gets is.
+  const queryError = sanitizeQuery(query.trim()).error;
   if (queryError) {
     log.warn("SEARCH", queryError);
     return errorResponse(HTTP_STATUS.BAD_REQUEST, queryError);
@@ -238,12 +239,14 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
       return result.response;
     }
 
-    // Refused before anything was sent (an option it can't take, or a setting
-    // this account lacks): no lock, but another account may have the setting.
-    if (result.requestError) {
+    // Refused before anything was sent, so no lock. A request every account
+    // would refuse (one of its provider_options) gets its 400 now; a setting
+    // this account lacks moves on to an account that may have it.
+    if (result.refused === "request") return result.response;
+    if (result.refused === "account") {
       // A credential with no id (a no-auth stand-in) can't be excluded.
       if (!credentials.connectionId) return result.response;
-      log.warn("SEARCH", `[${providerId}] ${credentials.connectionName || credentials.connectionId} can't send this search: ${result.error}`);
+      log.warn("SEARCH", `[${providerId}] ${credentials.connectionName || credentials.connectionId} can't send this search: ${JSON.stringify(result.error).slice(0, 200)}`);
       excludeConnectionIds.add(credentials.connectionId);
       refusal = { status: result.status, error: result.error };
       continue;

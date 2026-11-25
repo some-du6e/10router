@@ -50,8 +50,24 @@ function successResult(data) {
 }
 
 /**
+ * Who a search refused before it was sent is down to: "request" when the
+ * account's own settings build it, so the request's provider_options are what
+ * every account would refuse; else "account" (a setting this account lacks).
+ */
+function refusalScope(config, params) {
+  const options = params.providerOptions;
+  if (!options || typeof options !== "object" || !Object.keys(options).length) return "account";
+  try {
+    buildSearchRequest(config, { ...params, providerOptions: undefined });
+    return "request";
+  } catch {
+    return "account";
+  }
+}
+
+/**
  * Run a single dedicated search provider attempt.
- * @returns {Promise<{success:boolean, status?:number, error?:string, data?:object}>}
+ * @returns {Promise<{success:boolean, status?:number, error?:string, data?:object, refused?:"request"|"account"}>}
  */
 async function tryDedicatedProvider({ provider, providerConfig, body, credentials, log, globalStartTime }) {
   const startTime = Date.now();
@@ -77,12 +93,13 @@ async function tryDedicatedProvider({ provider, providerConfig, body, credential
     providerSpecificData: credentials?.providerSpecificData
   };
 
+  const config = { id: provider.id, ...providerConfig };
   let url, init;
   try {
-    ({ url, init } = buildSearchRequest({ id: provider.id, ...providerConfig }, params));
+    ({ url, init } = buildSearchRequest(config, params));
   } catch (err) {
-    // Refused before anything was sent: the request is at fault, not the account.
-    return { success: false, status: 400, error: err?.message || `Invalid request for ${provider.id}`, requestError: true };
+    // Refused before anything was sent, so no account failed.
+    return { success: false, status: 400, error: err?.message || `Invalid request for ${provider.id}`, refused: refusalScope(config, params) };
   }
 
   // Timeout = min(provider timeout, remaining global)
@@ -151,7 +168,7 @@ export async function handleSearchCore({ body, provider, providerConfig, credent
 
   // 1. Sanitize query (a refused query is the request's fault, not the account's)
   const { clean, error: sanitizeError } = sanitizeQuery(body.query || "");
-  if (sanitizeError) return { ...errorResult(400, sanitizeError), requestError: true };
+  if (sanitizeError) return { ...errorResult(400, sanitizeError), refused: "request" };
   const normalizedBody = { ...body, query: clean };
 
   // 2. Route: dedicated search API takes priority over chat-based
@@ -199,5 +216,5 @@ export async function handleSearchCore({ body, provider, providerConfig, credent
     if (fallback.success) return successResult(fallback.data);
   }
 
-  return { ...errorResult(result.status || 502, result.error || "Search failed"), requestError: result.requestError };
+  return { ...errorResult(result.status || 502, result.error || "Search failed"), refused: result.refused };
 }

@@ -108,7 +108,11 @@ beforeEach(() => {
     const target = String(url);
     if (target === HACKCLUB_SEARCH_URL) return hackclubAnswer();
     if (target === EXA_SEARCH_URL) return Response.json(EXA_RESPONSE);
-    if (target.startsWith(`${PSE_SEARCH_URL}?`)) return Response.json({ items: [{ title: "PSE result", link: "https://pse.example/" }] });
+    if (target.startsWith(`${PSE_SEARCH_URL}?`)) {
+      return new URL(target).searchParams.get("cx") === "engine-down"
+        ? new Response("upstream down", { status: 500 })
+        : Response.json({ items: [{ title: "PSE result", link: "https://pse.example/" }] });
+    }
     throw new Error(`unexpected fetch ${url}`);
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -291,12 +295,20 @@ describe("/v1/search with a mode", () => {
     expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
   });
 
-  it("locks no account for a provider option the builder refuses", async () => {
+  it("searches a query that only ends in whitespace trim() drops, as before", async () => {
+    const response = await handleSearch(searchRequest({ model: "exa", query: "node release\f" }));
+    expect(response.status).toBe(200);
+    expect(sentRequests()[0].body.query).toBe("node release");
+  });
+
+  it("answers a provider option every account would refuse at once, locking none", async () => {
+    mocks.accounts.exa.push({ connectionId: "exa-second", connectionName: "Exa 2", apiKey: "exa-key-2" });
     const response = await handleSearch(searchRequest({
       model: "exa", query: "node release", provider_options: { baseUrl: "http://127.0.0.1:8080" },
     }));
     expect(response.status).toBe(400);
     expect((await response.json()).error.message).toContain("Blocked URL");
+    expect(mocks.getProviderCredentials).toHaveBeenCalledOnce();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
   });
@@ -331,16 +343,27 @@ describe("/v1/search with a mode", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("answers at once when the refused credential has no id to exclude", async () => {
+  it("reports a real failure over a later account's refusal", async () => {
+    mocks.accounts["google-pse"] = [
+      { connectionId: "pse-a", connectionName: "A", apiKey: "pse-key-a", providerSpecificData: { cx: "engine-down" } },
+      { connectionId: "pse-b", connectionName: "B", apiKey: "pse-key-b", providerSpecificData: {} },
+    ];
+    const response = await handleSearch(searchRequest({ model: "google-pse", query: "node release" }));
+    expect(response.status).toBe(500);
+    expect((await response.json()).error.message).toContain("upstream down");
+    expect(mocks.markAccountUnavailable).toHaveBeenCalledOnce();
+    expect(mocks.markAccountUnavailable.mock.calls[0][0]).toBe("pse-a");
+  });
+
+  it("answers at once when the refusing credential has no id to exclude", async () => {
     // Like the stand-in a no-auth provider gets: no connectionId, exclusions ignored.
     mocks.getProviderCredentials.mockImplementation(async () => {
       if (mocks.getProviderCredentials.mock.calls.length > 3) throw new Error("looped over the same credential");
-      return { connectionName: "stand-in", apiKey: "exa-key" };
+      return { connectionName: "stand-in", apiKey: "pse-key", providerSpecificData: {} };
     });
-    const response = await handleSearch(searchRequest({
-      model: "exa", query: "node release", provider_options: { baseUrl: "http://127.0.0.1:8080" },
-    }));
+    const response = await handleSearch(searchRequest({ model: "google-pse", query: "node release" }));
     expect(response.status).toBe(400);
+    expect((await response.json()).error.message).toContain("requires both apiKey and cx");
     expect(mocks.getProviderCredentials).toHaveBeenCalledOnce();
   });
 });
