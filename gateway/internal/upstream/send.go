@@ -126,7 +126,13 @@ func (s *Sender) Send(ctx context.Context, req *claudeprep.Request) (*http.Respo
 	if err := CheckHeaders(req.Header); err != nil {
 		return nil, err
 	}
-	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, req.URL, bytes.NewReader(req.Body))
+	// fetch sends new URL(req.URL): the host lowercased (Host and SNI), a
+	// default port dropped.
+	target, ok := claudeprep.CanonicalURL(req.URL)
+	if !ok {
+		return nil, declined("a request URL fetch would parse its own way")
+	}
+	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(req.Body))
 	if err != nil {
 		return nil, fmt.Errorf("%w: the request URL doesn't parse", ErrNetwork)
 	}
@@ -208,52 +214,67 @@ func (b *idleBody) Close() error {
 	return b.ReadCloser.Close()
 }
 
-// gunzip opens the gzip stream on the first Read. Node's fetch inflates with
-// Z_SYNC_FLUSH, so a body that ends cleanly before the gzip trailer decodes
-// up to there and ends: the same here. A body cut by the network still
-// fails. After a member, another member is read on, and zero bytes are
-// padding that ends the body, as zlib treats them; anything else is an error.
+// gunzip opens the gzip stream on the first Read and inflates it as Node's
+// fetch does (zlib with Z_SYNC_FLUSH): a body that ends cleanly inside a
+// member, or inside the next member's header, decodes as far as it got and
+// ends; one cut by the network fails. After a member zlib stops at a zero
+// byte (padding: whatever follows is ignored) and reads anything else as the
+// next member, so bytes that aren't one are an error. A member's last decoded
+// bytes come back before the next raw byte is waited for.
 type gunzip struct {
-	raw io.ReadCloser
-	src *eofSeen
-	br  *bufio.Reader
-	zr  *gzip.Reader
-	err error
+	raw        io.ReadCloser
+	src        *eofSeen
+	br         *bufio.Reader
+	zr         *gzip.Reader
+	started    bool
+	memberDone bool
+	err        error
 }
 
-// errGzipTrailing is data after a gzip member that is neither another member
-// nor zero padding.
-var errGzipTrailing = errors.New("upstream: data after the gzip stream")
+// gzipPrefix is how a gzip member starts: the magic number and deflate.
+var gzipPrefix = []byte{0x1f, 0x8b, 0x08}
 
-// next is what follows a finished member: io.EOF at the end or after zero
-// padding, nil when another member starts.
-func (g *gunzip) next() error {
-	b, err := g.br.Peek(1)
-	if err == io.EOF || (err == nil && len(b) == 0) {
-		return io.EOF
-	}
-	if err != nil {
-		return err
-	}
-	if b[0] == 0x1f {
-		if err := g.zr.Reset(g.br); err != nil {
-			return err
+// open starts a member where the body is: io.EOF when the body ends before
+// or inside its header, an error for bytes that aren't a gzip header. zlib
+// checks the header byte by byte as it arrives, so bytes that can't start a
+// member fail even when the body ends before a whole header; Go's reader
+// would ask for all ten first.
+func (g *gunzip) open() error {
+	head, _ := g.br.Peek(len(gzipPrefix))
+	for i, c := range head {
+		if c != gzipPrefix[i] {
+			return gzip.ErrHeader
 		}
+	}
+	var err error
+	if g.zr == nil {
+		g.zr, err = gzip.NewReader(g.br)
+	} else {
+		err = g.zr.Reset(g.br)
+	}
+	switch {
+	case err == nil:
 		g.zr.Multistream(false)
 		return nil
+	case (err == io.EOF || err == io.ErrUnexpectedEOF) && g.src.eof:
+		return io.EOF
 	}
-	for {
-		c, err := g.br.ReadByte()
-		if err == io.EOF {
-			return io.EOF
-		}
-		if err != nil {
-			return err
-		}
-		if c != 0 {
-			return errGzipTrailing
-		}
+	return err
+}
+
+// next is what follows a finished member: the end (the body's, or a zero
+// byte), else another member.
+func (g *gunzip) next() error {
+	b, err := g.br.Peek(1)
+	switch {
+	case err == io.EOF:
+		return io.EOF
+	case err != nil:
+		return err
+	case b[0] == 0:
+		return io.EOF
 	}
+	return g.open()
 }
 
 // eofSeen records whether the body under the decoder ended cleanly.
@@ -271,41 +292,32 @@ func (e *eofSeen) Read(p []byte) (int, error) {
 }
 
 func (g *gunzip) Read(p []byte) (int, error) {
-	if g.zr == nil && g.err == nil {
+	if !g.started {
+		g.started = true
 		g.src = &eofSeen{r: g.raw}
 		g.br = bufio.NewReader(g.src)
-		g.zr, g.err = gzip.NewReader(g.br)
-		if g.err == io.EOF {
-			// An empty body: nothing to decode.
-			return 0, io.EOF
-		}
-		if g.err == nil {
-			g.zr.Multistream(false)
-		}
+		g.err = g.open()
 	}
-	if g.err != nil {
-		return 0, g.err
-	}
-	for {
+	for g.err == nil {
+		if g.memberDone {
+			g.memberDone = false
+			g.err = g.next()
+			continue
+		}
 		n, err := g.zr.Read(p)
 		switch {
+		case err == io.EOF:
+			g.memberDone = true
 		case err == io.ErrUnexpectedEOF && g.src.eof:
 			g.err = io.EOF
-		case err == io.EOF:
-			if g.err = g.next(); g.err == nil {
-				if n > 0 {
-					return n, nil
-				}
-				continue
-			}
 		case err != nil:
 			g.err = err
 		}
-		if g.err != nil && n > 0 {
+		if n > 0 {
 			return n, nil
 		}
-		return n, g.err
 	}
+	return 0, g.err
 }
 
 func (g *gunzip) Close() error { return g.raw.Close() }

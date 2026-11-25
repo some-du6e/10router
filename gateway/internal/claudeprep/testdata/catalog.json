@@ -1,0 +1,5720 @@
+{
+ "cases": [
+  {
+   "name": "no file",
+   "file": null,
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "empty object",
+   "file": "{}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "sync.js shape",
+   "file": "{\"models\":{\"mystery-1\":{\"vision\":true,\"pdf\":true},\"zeta-9\":{\"audioInput\":true,\"videoInput\":true}},\"providers\":{\"openai-compatible-chat-cat\":{\"acme/Mystery-1:free\":{\"maxOutput\":12345,\"contextWindow\":99000},\"mystery-2\":{\"contextWindow\":5000},\"zeta-9\":{\"maxOutput\":777}}}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": {
+      "vision": true,
+      "pdf": true,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 12345
+     },
+     "caps": {
+      "vision": true,
+      "pdf": true,
+      "audioInput": false,
+      "maxOutput": 12345
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": {
+      "vision": true,
+      "pdf": true,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": true,
+      "pdf": true,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": {
+      "vision": true,
+      "pdf": true,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": true,
+      "pdf": true,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": {
+      "vision": true,
+      "pdf": true,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": true,
+      "pdf": true,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": true
+     },
+     "limits": {
+      "maxOutput": 777
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": true,
+      "maxOutput": 777
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "limits by base id",
+   "file": "{\"models\":{},\"providers\":{\"openai-compatible-chat-cat\":{\"mystery-1\":{\"maxOutput\":4096}}}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 4096
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 4096
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 4096
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 4096
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 4096
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 4096
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 4096
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 4096
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "exact entry shadows the base id",
+   "file": "{\"models\":{},\"providers\":{\"openai-compatible-chat-cat\":{\"acme/Mystery-1:free\":{\"contextWindow\":1},\"mystery-1\":{\"maxOutput\":4096}}}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 4096
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 4096
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 4096
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 4096
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 4096
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 4096
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "falsy exact entry falls back to the base id",
+   "file": "{\"models\":{},\"providers\":{\"openai-compatible-chat-cat\":{\"acme/Mystery-1:free\":0,\"mystery-1\":{\"maxOutput\":4096}}}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 4096
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 4096
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 4096
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 4096
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 4096
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 4096
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 4096
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 4096
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "null exact entry falls back",
+   "file": "{\"models\":{},\"providers\":{\"openai-compatible-chat-cat\":{\"mystery-1\":null,\"x/0\":null}}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "other provider only",
+   "file": "{\"models\":{},\"providers\":{\"openai-compatible-chat-else\":{\"mystery-1\":{\"maxOutput\":4096}}}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "modality values not exactly true",
+   "file": "{\"models\":{\"mystery-1\":{\"vision\":1,\"pdf\":\"true\",\"audioInput\":false}},\"providers\":{}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "maxOutput zero and negative",
+   "file": "{\"models\":{},\"providers\":{\"openai-compatible-chat-cat\":{\"mystery-1\":{\"maxOutput\":0},\"zeta-9\":{\"maxOutput\":-5}}}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "fractional maxOutput",
+   "file": "{\"models\":{},\"providers\":{\"openai-compatible-chat-cat\":{\"mystery-1\":{\"maxOutput\":1000.5}}}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 1000.5
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 1000.5
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 1000.5
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 1000.5
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 1000.5
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 1000.5
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 1000.5
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 1000.5
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "maxOutput null",
+   "file": "{\"models\":{},\"providers\":{\"openai-compatible-chat-cat\":{\"mystery-1\":{\"maxOutput\":null}}}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "prototype-named base ids",
+   "file": "{\"models\":{\"constructor\":{\"vision\":true},\"tostring\":{\"pdf\":true}},\"providers\":{\"openai-compatible-chat-cat\":{\"tostring\":{\"maxOutput\":3000},\"constructor\":{\"maxOutput\":3001}}}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 3001
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": {
+      "vision": false,
+      "pdf": true,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 3000
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "prototype names absent",
+   "file": "{\"models\":{\"mystery-1\":{\"vision\":true}},\"providers\":{\"openai-compatible-chat-cat\":{\"tostring\":{\"maxOutput\":3000}}}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 3000
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "own __proto__ key",
+   "file": "{\"models\":{\"__proto__\":{\"vision\":true}},\"providers\":{}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "models falsy",
+   "file": "{\"models\":0,\"providers\":{\"openai-compatible-chat-cat\":{\"mystery-1\":{\"maxOutput\":4096}}}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 4096
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 4096
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 4096
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 4096
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 4096
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 4096
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 4096
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 4096
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "providers null",
+   "file": "{\"models\":{\"mystery-1\":{\"vision\":true}},\"providers\":null}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "string entries",
+   "file": "{\"models\":{\"mystery-1\":\"vision\"},\"providers\":{\"openai-compatible-chat-cat\":{\"mystery-1\":\"big\",\"zeta-9\":{\"maxOutput\":10}}}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 10
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 10
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "models a string",
+   "file": "{\"models\":\"vision\",\"providers\":{}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "providers a number",
+   "file": "{\"models\":{},\"providers\":5}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "not an object",
+   "file": "[1,2,3]",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "a bare number",
+   "file": "42",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "null document",
+   "file": "null",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "trailing data",
+   "file": "{\"models\":{\"mystery-1\":{\"vision\":true}}} x",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "truncated",
+   "file": "{\"models\":{\"mystery-1\":{\"vision\":true}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "byte order mark",
+   "file": "﻿{\"models\":{\"mystery-1\":{\"vision\":true}},\"providers\":{}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "duplicate keys, last wins",
+   "file": "{\"models\":{\"mystery-1\":{\"vision\":true},\"mystery-1\":{\"pdf\":true}},\"providers\":{}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": {
+      "vision": false,
+      "pdf": true,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": true,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": {
+      "vision": false,
+      "pdf": true,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": true,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": {
+      "vision": false,
+      "pdf": true,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": true,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": {
+      "vision": false,
+      "pdf": true,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": true,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "whitespace around",
+   "file": "\n\t {\"models\":{\"mystery-1\":{\"pdf\":true}},\"providers\":{}} \r\n",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": {
+      "vision": false,
+      "pdf": true,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": true,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": {
+      "vision": false,
+      "pdf": true,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": true,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": {
+      "vision": false,
+      "pdf": true,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": true,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": {
+      "vision": false,
+      "pdf": true,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": true,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "models an array",
+   "file": "{\"models\":[{\"vision\":true}],\"providers\":{}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": true,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "provider entry an array",
+   "file": "{\"models\":{},\"providers\":{\"openai-compatible-chat-cat\":[{\"maxOutput\":9}]}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 9
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 9
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 9
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 9
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "entry an array",
+   "file": "{\"models\":{\"mystery-1\":[true]},\"providers\":{\"openai-compatible-chat-cat\":{\"mystery-1\":[1]}}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "maxOutput a string",
+   "file": "{\"models\":{},\"providers\":{\"openai-compatible-chat-cat\":{\"mystery-1\":{\"maxOutput\":\"5\"}}}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": {
+      "maxOutput": "5"
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": "5"
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": "5"
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": "5"
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": "5"
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": "5"
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": "5"
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": "5"
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "maxOutput true",
+   "file": "{\"models\":{},\"providers\":{\"openai-compatible-chat-cat\":{\"mystery-1\":{\"maxOutput\":true}}}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": {
+      "maxOutput": "true"
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": "true"
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": "true"
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": "true"
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": "true"
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": "true"
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": "true"
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": "true"
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  },
+  {
+   "name": "maxOutput beyond a float64",
+   "file": "{\"models\":{},\"providers\":{\"openai-compatible-chat-cat\":{\"mystery-1\":{\"maxOutput\":1e400}}}}",
+   "provider": "openai-compatible-chat-cat",
+   "lookups": [
+    {
+     "model": "acme/Mystery-1:free",
+     "modalities": null,
+     "limits": {
+      "maxOutput": "Infinity"
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": "Infinity"
+     }
+    },
+    {
+     "model": "mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": "Infinity"
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": "Infinity"
+     }
+    },
+    {
+     "model": "Mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": "Infinity"
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": "Infinity"
+     }
+    },
+    {
+     "model": "other/mystery-1",
+     "modalities": null,
+     "limits": {
+      "maxOutput": "Infinity"
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": "Infinity"
+     }
+    },
+    {
+     "model": "mystery-2",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "zeta-9",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/constructor",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "acme/toString",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/__proto__",
+     "modalities": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false
+     },
+     "limits": {
+      "maxOutput": 0
+     },
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "x/0",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "length",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    },
+    {
+     "model": "",
+     "modalities": null,
+     "limits": null,
+     "caps": {
+      "vision": false,
+      "pdf": false,
+      "audioInput": false,
+      "maxOutput": 64000
+     }
+    }
+   ]
+  }
+ ]
+}

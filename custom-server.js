@@ -748,6 +748,78 @@ function gatewayPeer(req, socketIp) {
   return { ip, port };
 }
 
+// Whether token is the one the gateway started this process with, for the
+// gateway's own calls into the app (src/lib/gatewayEvents.ts). Only behind
+// the gateway; the token itself stays in this module.
+function verifyGatewayToken(token) {
+  if (!GATEWAY_ON || !GATEWAY_TOKEN || typeof token !== "string") return false;
+  const given = Buffer.from(token);
+  return given.length === GATEWAY_TOKEN.length && crypto.timingSafeEqual(given, GATEWAY_TOKEN);
+}
+if (GATEWAY_ON) globalThis[Symbol.for("10router.verifyGatewayToken")] = verifyGatewayToken;
+
+// ─── Shadow compare (GATEWAY_SHADOW=1 with GATEWAY_MODE=native, CI only) ─────
+//
+// The gateway tags each /v1/messages it shadows with x-9r-shadow-id
+// (gateway/internal/shadow). A request the gateway proved runs with that id
+// in an AsyncLocalStorage, and proxyFetch.js's proxyAwareFetch hands each
+// upstream send to observe(), which reports the URL, the headers object's
+// entries and the body to the gateway. Reporting never changes or delays the
+// send. The id is removed from every request either way.
+const SHADOW_HEADER = "x-9r-shadow-id";
+const SHADOW_URL = String(process.env.GATEWAY_SHADOW_URL || "");
+const SHADOW_ON = GATEWAY_ON && !!GATEWAY_TOKEN && process.env.GATEWAY_MODE === "native" && process.env.GATEWAY_SHADOW === "1" && /^http:\/\/(127\.0\.0\.1|\[::1\]):\d+\//.test(SHADOW_URL);
+delete process.env.GATEWAY_SHADOW_URL;
+const shadowAls = SHADOW_ON ? new (require("async_hooks").AsyncLocalStorage)() : null;
+
+function shadowReport(id, url, options) {
+  const headers = options && options.headers;
+  const plain = !!headers && typeof headers === "object" && !Array.isArray(headers) && Object.getPrototypeOf(headers) === Object.prototype;
+  const body = options && options.body;
+  const isText = typeof body === "string";
+  const report = JSON.stringify({
+    id,
+    url,
+    method: String((options && options.method) || "GET").toUpperCase(),
+    headersKind: plain ? "object" : headers === undefined ? "none" : (headers && headers.constructor && headers.constructor.name) || typeof headers,
+    headers: plain ? Object.entries(headers).map(([k, v]) => [k, String(v)]) : [],
+    bodyKind: isText ? "string" : body === undefined || body === null ? "none" : (body.constructor && body.constructor.name) || typeof body,
+    body: isText ? Buffer.from(body, "utf8").toString("base64") : "",
+  });
+  const req = http.request(SHADOW_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json", "content-length": Buffer.byteLength(report), "x-9r-shadow-token": GATEWAY_TOKEN_TEXT },
+  });
+  req.on("error", () => {});
+  req.on("response", (res) => res.resume());
+  req.end(report);
+}
+
+if (SHADOW_ON) {
+  globalThis[Symbol.for("10router.gatewayShadow")] = {
+    observe(url, options) {
+      const store = shadowAls.getStore();
+      if (!store) return;
+      try {
+        shadowReport(store.id, url, options);
+      } catch (error) {
+        console.warn("[Gateway] shadow report failed:", error && error.message ? error.message : error);
+      }
+    },
+  };
+}
+
+// The handler run for req: in the shadow's context when the gateway proved
+// the request and tagged it.
+function withShadow(req, handed, run) {
+  const id = req.headers[SHADOW_HEADER];
+  delete req.headers[SHADOW_HEADER];
+  if (shadowAls && handed && handed !== UNPROVEN_PEER && typeof id === "string" && /^[0-9a-f]{32}$/.test(id)) {
+    return shadowAls.run({ id }, run);
+  }
+  return run();
+}
+
 // The peer of an upgrade (the Codex WebSocket), the same way.
 function upgradePeerIp(req, socket) {
   const socketIp = socket.remoteAddress || "";
@@ -842,7 +914,7 @@ http.createServer = (...args) => {
     if (!local) req.headers["x-9r-via-proxy"] = "1";
     if (proxyHop) req.headers["x-9r-proxy-hop"] = proxyHop;
     if (viaTunnel) req.headers["x-9r-via-tunnel"] = "1";
-    return handler(req, res);
+    return withShadow(req, handed, () => handler(req, res));
   };
   // Behind the gateway, room for the peer headers it adds to a client's
   // full --max-http-header-size, so the gateway is the one that answers 431.

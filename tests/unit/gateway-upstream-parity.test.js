@@ -185,6 +185,31 @@ async function fetchDefaults() {
   return out;
 }
 
+// Where Node's fetch sends a URL: the origin and path its dispatcher gets
+// (the host lowercased, a default or zero-padded port normalized), for the
+// cases the local server can't show (default ports).
+const FETCH_TARGETS = [
+  "https://API.Example.test:443/v1/messages", "http://Up.Test:80/v1/messages", "https://up.test:0443/v1/messages?beta=true",
+  "http://UP.test:08080/v1/messages", "https://up.test./v1/messages", "https://up.test",
+];
+
+async function fetchTargets() {
+  const out = [];
+  for (const url of FETCH_TARGETS) {
+    let seen = null;
+    const dispatcher = {
+      dispatch(opts, handler) {
+        seen = { origin: String(opts.origin), path: opts.path };
+        handler.onError(new Error("captured"));
+        return true;
+      },
+    };
+    await nativeFetch(url, { method: "POST", body: new Uint8Array([123, 125]), dispatcher }).catch(() => {});
+    out.push({ url, ...seen });
+  }
+  return out;
+}
+
 const PROXY_ENVS = [
   {}, { HTTPS_PROXY: "http://proxy.test:1" }, { https_proxy: "http://proxy.test:2" }, { HTTPS_PROXY: "  ", https_proxy: "http://proxy.test:3" },
   { HTTP_PROXY: "http://proxy.test:4" }, { ALL_PROXY: "socks5://proxy.test:5" }, { all_proxy: "http://proxy.test:6", HTTPS_PROXY: "" },
@@ -219,6 +244,8 @@ const SSE_OK = [
 ].map(([e, d]) => `event: ${e}\ndata: ${JSON.stringify(d)}\n\n`).join("");
 
 const json = (status, value) => ({ status, body: JSON.stringify(value) });
+const gz = (text) => [...gzipSync(Buffer.from(text, "utf8"))];
+const LIMITED = JSON.stringify({ error: { message: "Rate limit exceeded" } });
 const rejected = (...flags) => json(400, { type: "error", error: { type: "invalid_request_error", message: `Unexpected value(s) ${flags.map((f) => `\`${f}\``).join(", ")} for the \`anthropic-beta\` header.` } });
 const BETAS = "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14";
 
@@ -238,6 +265,15 @@ const WIRE = [
   { name: "a gzip error body without its trailer", script: [{ status: 429, body: JSON.stringify({ error: { message: "Rate limit exceeded" } }), gzip: true, noTrailer: true }] },
   // zlib reads zero bytes after a gzip member as padding.
   { name: "a zero-padded gzip error body", script: [{ status: 429, body: JSON.stringify({ error: { message: "Rate limit exceeded" } }), gzip: true, padZeros: 16 }] },
+  // zlib after a member: a zero byte ends the body whatever follows; any
+  // other byte starts the next member, which may end inside its header.
+  { name: "zeros, then other bytes, after a gzip member", script: [{ status: 429, gzipBytes: [...gz(LIMITED), 0, 0, ...Buffer.from("junk")] }] },
+  { name: "a second gzip member cut inside its header", script: [{ status: 429, gzipBytes: [...gz(LIMITED), 0x1f, 0x8b, 0x08] }] },
+  { name: "other bytes after a gzip member", script: [{ status: 429, gzipBytes: [...gz(LIMITED), ...Buffer.from("xyz")] }] },
+  { name: "two gzip members", script: [{ status: 429, gzipBytes: [...gz(LIMITED.slice(0, 20)), ...gz(LIMITED.slice(20))] }] },
+  { name: "only part of a gzip header", script: [{ status: 500, gzipBytes: [0x1f, 0x8b] }] },
+  // fetch sends new URL(baseUrl): the host lowercased, the port as a number.
+  { name: "a base URL's host case and port", baseHost: "LocalHost", portPad: "0", script: ["ok"] },
   { name: "an error body in broken UTF-8", script: [{ status: 500, bodyBytes: [0x7b, 0xff, 0xfe, 0x78, 0xe2, 0x82, 0x7d] }] },
   { name: "a BOM before the error", script: [{ status: 500, bodyBytes: [0xef, 0xbb, 0xbf, 0x6f, 0x6b] }] },
   // The error body breaks off: text() throws, and chatCore takes "".
@@ -260,6 +296,7 @@ const BODY = {
 function startServer(script, seen) {
   let n = 0;
   const hung = [];
+  let port = 0;
   const server = createServer((req, res) => {
     const chunks = [];
     req.on("data", (c) => chunks.push(c));
@@ -267,12 +304,19 @@ function startServer(script, seen) {
       const headers = [];
       for (let i = 0; i < req.rawHeaders.length; i += 2) {
         const name = req.rawHeaders[i].toLowerCase();
-        if (name !== "host") headers.push([name, req.rawHeaders[i + 1]]);
+        // The port is this run's: kept as <port>.
+        const value = name === "host" ? req.rawHeaders[i + 1].split(String(port)).join("<port>") : req.rawHeaders[i + 1];
+        headers.push([name, value]);
       }
       seen.push({ method: req.method, path: req.url, headers, body: Buffer.concat(chunks).toString("utf8") });
       const step = script[Math.min(n++, script.length - 1)];
       if (step === "hang") { hung.push(res); return; }
       if (step === "ok") { res.writeHead(200, { "content-type": "text/event-stream" }); res.end(SSE_OK); return; }
+      if (step.gzipBytes) {
+        res.writeHead(step.status, { "content-type": "application/json", "content-encoding": "gzip" });
+        res.end(Buffer.from(step.gzipBytes));
+        return;
+      }
       let body = step.bodyBytes ? Buffer.from(step.bodyBytes) : Buffer.from(step.body, "utf8");
       const headers2 = { "content-type": "application/json" };
       if (step.cut) {
@@ -288,7 +332,10 @@ function startServer(script, seen) {
       res.end(body);
     });
   });
-  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({ server, port: server.address().port, hung })));
+  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => {
+    port = server.address().port;
+    resolve({ server, port, hung });
+  }));
 }
 
 function installSleepShim() {
@@ -318,7 +365,7 @@ async function runWire(scenario, dir) {
   const seen = [];
   const { server, port, hung } = await startServer(scenario.script, seen);
   const restore = installSleepShim();
-  const base = `http://127.0.0.1:${port}/v1`;
+  const base = `http://${scenario.baseHost || "127.0.0.1"}:${scenario.portPad || ""}${port}/v1`;
   try {
     const { adapter, repos } = await openRepos("sql.js", dir);
     await repos.updateSettings({ requireApiKey: false });
@@ -338,6 +385,7 @@ async function runWire(scenario, dir) {
     const strip = (s) => s.split(base).join("<base>");
     return {
       name: scenario.name, env: WIRE_ENV, script: scenario.script,
+      baseHost: scenario.baseHost || "127.0.0.1", portPad: scenario.portPad || "",
       provider: PROVIDER, clientHeaders: CLIENT_HEADERS, clientBody: JSON.stringify(BODY),
       psd: JSON.parse(strip(JSON.stringify(psd))),
       requests: seen.map((r) => ({ ...r, body: strip(r.body) })),
@@ -374,6 +422,7 @@ describe("sender fixtures for the Go gateway", () => {
       rejections: REJECTIONS.map((t) => ({ text: t, flags: parseRejectedBetas(t) })),
       proxies: proxyCases(routing),
       fetchDefaults: await fetchDefaults(),
+      fetchTargets: await fetchTargets(),
       envProxies: await envProxyCases(),
     }, null, 1) + "\n";
     if (RECORD) writeFileSync(`${DIR}testdata/vectors.json`, text);

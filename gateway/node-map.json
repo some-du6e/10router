@@ -20,6 +20,7 @@
     "open-sse/config/providerModels.js",
     "open-sse/config/claudeMessageCompat.js",
     "open-sse/providers/capabilities.js",
+    "open-sse/providers/catalogOverride.js",
     "open-sse/providers/thinkingLevels.js",
     "open-sse/providers/visionPatterns.js",
     "open-sse/handlers/chatCore.js",

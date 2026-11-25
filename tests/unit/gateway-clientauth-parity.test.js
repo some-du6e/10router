@@ -130,8 +130,8 @@ const REMOTE = { socketIp: "203.0.113.7", headers: { host: "router.example.test"
 // purpose, sends it to Node.
 function build() {
   const cases = [];
-  const add = (name, { peer = LOCAL, headers = {}, query = "", model = "main", requireApiKey = true, comboStrategy = "fallback", conservative = "" } = {}) =>
-    cases.push({ name, socketIp: peer.socketIp, headers: { ...peer.headers, ...headers }, query, model, requireApiKey, comboStrategy, conservative });
+  const add = (name, { peer = LOCAL, headers = {}, query = "", model = "main", requireApiKey = true, comboStrategy = "fallback", conservative = "", path = "/v1/messages" } = {}) =>
+    cases.push({ name, ...(path === "/v1/messages" ? {} : { path }), socketIp: peer.socketIp, headers: { ...peer.headers, ...headers }, query, model, requireApiKey, comboStrategy, conservative });
 
   for (const row of db.keys) {
     for (const [where, peer] of [["local", LOCAL], ["remote", REMOTE]]) {
@@ -197,6 +197,19 @@ function build() {
     const conservative = /^fusey$/.test(model) ? "fusion" : "";
     add(`model ${JSON.stringify(model)} with ${key}`, { peer: REMOTE, headers: { "x-api-key": key }, model, conservative });
   }
+  // The other paths the native route takes (route.Match: the next.config.mjs
+  // rewrites onto /api/v1): the gate must decide them as it does /v1/messages.
+  for (const path of ["/v1/v1/messages", "/api/v1/messages"]) {
+    for (const requireApiKey of [true, false]) {
+      add(`${path}: no key local requireApiKey=${requireApiKey}`, { path, requireApiKey });
+      add(`${path}: no key remote requireApiKey=${requireApiKey}`, { path, peer: REMOTE, requireApiKey });
+      add(`${path}: active key remote requireApiKey=${requireApiKey}`, { path, peer: REMOTE, headers: { "x-api-key": "sk-active" }, requireApiKey });
+      add(`${path}: inactive key remote requireApiKey=${requireApiKey}`, { path, peer: REMOTE, headers: { "x-api-key": "sk-inactive" }, requireApiKey });
+    }
+    add(`${path}: management key local`, { path, headers: { "x-api-key": "10r-mgmt-abc" }, requireApiKey: false });
+    add(`${path}: local with a foreign origin`, { path, headers: { origin: "https://other.example.test" }, requireApiKey: false });
+    add(`${path}: local cross-site fetch`, { path, headers: { "sec-fetch-site": "cross-site" }, requireApiKey: false });
+  }
   return cases;
 }
 
@@ -207,9 +220,10 @@ function guardRequest(c) {
   stamped.set("x-9r-peer-token", PEER_TOKEN);
   stamped.set("x-9r-real-ip", server.clientIpFor ? server.clientIpFor(c.headers, c.socketIp) : c.socketIp);
   if (!local) stamped.set("x-9r-via-proxy", "1");
-  const url = `http://localhost/v1/messages${c.query ? `?${c.query}` : ""}`;
+  const pathname = c.path || "/v1/messages";
+  const url = `http://localhost${pathname}${c.query ? `?${c.query}` : ""}`;
   return {
-    nextUrl: { pathname: "/v1/messages", searchParams: new URL(url).searchParams },
+    nextUrl: { pathname, searchParams: new URL(url).searchParams },
     headers: stamped,
     cookies: { get: () => undefined },
     url,

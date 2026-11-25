@@ -13,7 +13,10 @@ on:
       - "gateway/node-map.json"
       - "tests/helpers/claudeprepCorpus.js"
       - "tests/unit/gateway-claudeprep-parity.test.js"
+      - "tests/unit/gateway-catalog-parity.test.js"
       - ".github/workflows/gateway-claudeprep.yml"
+      - "open-sse/providers/catalogOverride.js"
+      - "src/lib/dataDir.js"
       - "open-sse/translator/**"
       - "open-sse/services/provider.js"
       - "open-sse/config/providerModels.js"
@@ -64,7 +67,7 @@ jobs:
           cd tests && bun install --ignore-scripts
       - name: Node still makes the committed fixtures and table export
         working-directory: tests
-        run: ./node_modules/.bin/vitest run unit/gateway-claudeprep-parity.test.js
+        run: ./node_modules/.bin/vitest run unit/gateway-claudeprep-parity.test.js unit/gateway-catalog-parity.test.js
       - name: Record the large corpus with this PR's Node
         working-directory: tests
         env:

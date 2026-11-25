@@ -75,6 +75,28 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+func TestLoadShadow(t *testing.T) {
+	cases := []struct {
+		mode, shadow string
+		on           bool
+		warnings     int
+	}{
+		{"native", "1", true, 0},
+		{"native", " 1 ", true, 0},
+		{"native", "", false, 0},
+		{"native", "0", false, 0},
+		{"native", "yes", false, 1},
+		{"proxy", "1", false, 1},
+		{"off", "1", false, 1},
+	}
+	for _, c := range cases {
+		got := Load(env(map[string]string{"GATEWAY_MODE": c.mode, "GATEWAY_SHADOW": c.shadow}))
+		if got.Shadow != c.on || len(got.Warnings) != c.warnings {
+			t.Errorf("GATEWAY_MODE=%s GATEWAY_SHADOW=%q: shadow %v, warnings %v", c.mode, c.shadow, got.Shadow, got.Warnings)
+		}
+	}
+}
+
 // Next's standalone server.js: parseInt, and only a positive value counts.
 func TestParseKeepAlive(t *testing.T) {
 	for value, want := range map[string]time.Duration{

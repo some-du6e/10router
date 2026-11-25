@@ -253,6 +253,14 @@ describe("dashboard guard local-only access", () => {
     mocks.getMeta.mockResolvedValue("0");
   });
 
+  // The Go gateway's events route makes its own check (token and this
+  // machine, src/lib/gatewayEvents.ts); the rest of /api/internal stays shut.
+  it("lets the gateway events route reach its own check, and nothing else under /api/internal", async () => {
+    expect(await proxy(localRequest("/api/internal/gateway/events", { host: "127.0.0.1:20129" }))).toBe(mocks.nextResponse);
+    expect((await proxy(localRequest("/api/internal/gateway/other", { host: "127.0.0.1:20129" }))).status).toBe(401);
+    expect((await proxy(localRequest("/api/internal/gateway/events-x", { host: "127.0.0.1:20129" }))).status).toBe(401);
+  });
+
   it("rejects local-only route from non-loopback host without CLI token", async () => {
     const response = await proxy(request("/api/mcp/filesystem/sse", {
       host: "router.example.com",

@@ -32,6 +32,10 @@ const PUBLIC_API_PATHS = [
   "/api/auth/saml/metadata",
   "/api/version",
   "/api/settings/require-login",
+  // The Go gateway's writes; the route takes only a request from this machine
+  // with the gateway's token (src/lib/gatewayEvents.ts), and answers 404 to
+  // anything else.
+  "/api/internal/gateway/events",
 ];
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).

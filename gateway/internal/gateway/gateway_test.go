@@ -806,3 +806,86 @@ func TestSupervisedChildCrashEndsTheGateway(t *testing.T) {
 		t.Fatalf("exit code %d, want the child's 3; log:\n%s", code, g.logs.String())
 	}
 }
+
+// In shadow mode the gateway takes Node's reports itself, never lets a
+// client's shadow id through, and counts what it saw; without it, the
+// report path is Node's like any other.
+func TestShadowModeRouting(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.URL.Path+" id="+r.Header.Get("X-9r-Shadow-Id"))
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer app.Close()
+	cfg := baseConfig(portOf(t, app.URL))
+	cfg.Mode, cfg.Shadow = config.ModeNative, true
+	g := New(cfg, log.New(io.Discard, "", 0), "test")
+	g.nativeOff = func() string { return "" }
+
+	report := httptest.NewRequest(http.MethodPost, "/_gateway/shadow", strings.NewReader(`{"id":"x"}`))
+	report.RemoteAddr = "127.0.0.1:4000"
+	report.Header.Set("X-9r-Shadow-Token", cfg.PeerToken)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, report)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("report: %d %s", w.Code, w.Body.String())
+	}
+
+	msg := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"main","stream":true}`))
+	msg.RemoteAddr = "203.0.113.7:4000"
+	msg.Header.Set("X-9r-Shadow-Id", strings.Repeat("a", 32))
+	w = httptest.NewRecorder()
+	g.ServeHTTP(w, msg)
+	if w.Code != http.StatusOK {
+		t.Fatalf("relay: %d", w.Code)
+	}
+	mu.Lock()
+	got := strings.Join(seen, "; ")
+	mu.Unlock()
+	if got != "/v1/messages id=" {
+		t.Fatalf("the app saw %q", got)
+	}
+
+	health := httptest.NewRequest(http.MethodGet, HealthPath, nil)
+	health.RemoteAddr = "127.0.0.1:4000"
+	w = httptest.NewRecorder()
+	g.ServeHTTP(w, health)
+	var body struct {
+		Shadow map[string]any `json:"shadow"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	if body.Shadow["requests"] != 1.0 || body.Shadow["declined"] != 1.0 || body.Shadow["sends"] != 1.0 || body.Shadow["unknown"] != 1.0 {
+		t.Fatalf("health shadow %v", body.Shadow)
+	}
+
+	plain := New(baseConfig(portOf(t, app.URL)), log.New(io.Discard, "", 0), "test")
+	report = httptest.NewRequest(http.MethodPost, "/_gateway/shadow", strings.NewReader(`{}`))
+	report.RemoteAddr = "127.0.0.1:4000"
+	w = httptest.NewRecorder()
+	plain.ServeHTTP(w, report)
+	mu.Lock()
+	last := seen[len(seen)-1]
+	mu.Unlock()
+	if w.Code != http.StatusOK || last != "/_gateway/shadow id=" {
+		t.Fatalf("without shadow mode the path is Node's: %d, app saw %q", w.Code, last)
+	}
+}
+
+func TestShadowURL(t *testing.T) {
+	for host, want := range map[string]string{
+		"0.0.0.0":     "http://127.0.0.1:20128/_gateway/shadow",
+		"::":          "http://127.0.0.1:20128/_gateway/shadow",
+		"127.0.0.1":   "http://127.0.0.1:20128/_gateway/shadow",
+		"::1":         "http://[::1]:20128/_gateway/shadow",
+		"localhost":   "http://127.0.0.1:20128/_gateway/shadow",
+		"192.0.2.10":  "",
+		"2001:db8::1": "",
+	} {
+		if got := ShadowURL(config.Config{ListenHost: host, ListenPort: 20128}); got != want {
+			t.Errorf("%s: %q, want %q", host, got, want)
+		}
+	}
+}
