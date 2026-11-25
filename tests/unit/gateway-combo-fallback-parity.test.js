@@ -223,7 +223,9 @@ const SCENARIOS = [
   {
     name: "every key refuses the request",
     connections: [conn("k1", HOT, 1), conn("k2", HOT, 2)],
-    upstream: { k1: [BAD], k2: [err(400, "Unknown parameter: frobnicate")] },
+    // Request errors with different words: nothing is locked and no two
+    // keys agree, so the walk ends with every key tried.
+    upstream: { k1: [err(400, "Unknown parameter: frobnicate")], k2: [err(400, "Unknown parameter: wibble")] },
     requests: [{ model: "hot/m1" }],
   },
   {

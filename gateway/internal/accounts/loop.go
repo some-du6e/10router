@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/some-du6e/10router/gateway/internal/claudeprep"
 	"github.com/some-du6e/10router/gateway/internal/db"
@@ -96,6 +97,10 @@ type LoopInput struct {
 	// Transport is a connection's network path (upstream.Resolved.Transport),
 	// for keysShareOneUpstream.
 	Transport func(*db.Connection) (string, error)
+	// Check runs on each picked key before its attempt: the preflight's
+	// check again (upstream.Preflight), for a row that changed since. Nil:
+	// none.
+	Check func(*db.Connection) error
 }
 
 // Handoff is a failure Node must see again for itself: the request goes to
@@ -189,7 +194,11 @@ func (a *Accounts) accountPass(ctx context.Context, in LoopInput, attempt Attemp
 		if pick.WarmRetryAtMs > 0 {
 			wait := math.Max(0, pick.WarmRetryAtMs-a.nowMs())
 			slept := a.nowMs()
-			if err := in.Sleep(ctx, wait); err != nil {
+			sleep := in.Sleep
+			if sleep == nil {
+				sleep = SleepCtx
+			}
+			if err := sleep(ctx, wait); err != nil {
 				continue
 			}
 			cacheWaited += math.Max(wait, a.nowMs()-slept)
@@ -199,14 +208,22 @@ func (a *Accounts) accountPass(ctx context.Context, in LoopInput, attempt Attemp
 			return a.noAccount(in, pick.AllLocked, exclude, failures, accountErrors, lastStatus, lastError, hasLast, lockedUntil), nil
 		}
 		c := conn{pick.Conn}
+		if in.Check != nil {
+			// Selection re-reads the rows: one changed mid-request (a proxy
+			// pool set) is caught before Go sends where Node wouldn't.
+			if err := in.Check(pick.Conn); err != nil {
+				return Outcome{}, err
+			}
+		}
 		res, err := attempt(ctx, pick.Conn)
 		if err != nil {
 			return Outcome{}, err
 		}
 		if res.Success {
 			// chatCore's onRequestSuccess, as the stream starts. Node logs a
-			// failed clear and serves on; so does this.
-			_ = a.ClearError(ctx, pick.Conn, in.Model)
+			// failed clear and serves on; so does this. The client hanging up
+			// doesn't stop it in Node either.
+			_ = a.ClearError(context.WithoutCancel(ctx), pick.Conn, in.Model)
 			a.Hang.NoteServed(in.Provider, in.Model)
 			if cacheKey != "" {
 				a.Warm.Remember(cacheKey, c.ID, CacheTTLMs(in.Body), a.nowMs())
@@ -286,6 +303,18 @@ func (a *Accounts) accountPass(ctx context.Context, in LoopInput, attempt Attemp
 		}
 		exclude[c.ID] = true
 		lastError, lastStatus, hasLast = res.Error, res.Status, true
+	}
+}
+
+// SleepCtx waits ms, or until ctx ends (its error then).
+func SleepCtx(ctx context.Context, ms float64) error {
+	t := time.NewTimer(time.Duration(ms * float64(time.Millisecond)))
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

@@ -7,17 +7,30 @@ import (
 	"github.com/some-du6e/10router/gateway/internal/db"
 )
 
-// CheckProvider declines, before anything is sent, every key of provider the
-// loop could reach and would have to decline later: a stored field Node reads
-// its own way, a demotion record, a base URL Go can't canonicalize the way
-// WHATWG URL does (keysShareOneUpstream compares them), and whatever check
-// says about it (the sender's route and settings). A decline mid-loop would
-// hand Node rows Go had already written; this keeps config declines ahead of
-// every write. A failure only a send can show (a 401, a network error) still
-// hands off after it.
-func (a *Accounts) CheckProvider(ctx context.Context, provider string, check func(*db.Connection) error) error {
+// CheckProvider declines, before anything is sent, what the loop for
+// provider and model would have to decline later: a selection strategy it
+// doesn't serve (soonest-reset, a value that isn't a string, a sticky limit
+// that isn't a number), and on every key a stored field Node reads its own
+// way, a demotion record, a base URL Go can't canonicalize the way WHATWG URL
+// does (keysShareOneUpstream compares them), and whatever check says about it.
+// check is the sender's: upstream.Preflight, and a dry run of
+// claudeprep.Prepare for the key and model, whose declines on a key's
+// settings or the model's route would otherwise come mid-loop. A decline
+// mid-loop hands Node rows Go has already written; this keeps config declines
+// ahead of every write. A failure only a send can show (a 401, a network
+// error) still hands off after it.
+func (a *Accounts) CheckProvider(ctx context.Context, provider string, s Settings, check func(*db.Connection) error) error {
 	if !strings.HasPrefix(provider, "openai-compatible-") {
 		return declined("provider %s is not an openai-compatible node", provider)
+	}
+	strategy, err := Strategy(s, provider)
+	if err != nil {
+		return err
+	}
+	if strategy == "round-robin" {
+		if _, err := stickyLimit(s, provider); err != nil {
+			return err
+		}
 	}
 	rows, err := a.Store.ListConnections(ctx, provider, nil)
 	if err != nil {

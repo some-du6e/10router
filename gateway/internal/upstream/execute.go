@@ -61,6 +61,9 @@ func (s *Sender) Execute(ctx context.Context, in Input) (Result, error) {
 	if in.Env == nil {
 		in.Env = os.Getenv
 	}
+	if in.Sleep == nil {
+		in.Sleep = sleepCtx
+	}
 	// Preflight declines these before any send; this is the same check where
 	// the setting is read, should the row change meanwhile.
 	if o := in.Node.Overrides; o != nil && (o.Timeout != "" || o.Retries != "" || o.Proxy != "") {
@@ -109,6 +112,17 @@ func (s *Sender) Execute(ctx context.Context, in Input) (Result, error) {
 		in.LearnedBetas(dropped)
 	}
 	return res.Result, nil
+}
+
+func sleepCtx(ctx context.Context, ms float64) error {
+	t := time.NewTimer(time.Duration(ms * float64(time.Millisecond)))
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // attempt is a Result with the failure body's text, which the beta loop reads.
@@ -222,16 +236,18 @@ const maxErrorBody = 8 << 20
 func failure(ctx context.Context, resp *http.Response, req *claudeprep.Request) (attempt, error) {
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody+1))
-	if err != nil {
-		if ctx.Err() != nil {
-			return attempt{}, ctx.Err()
-		}
-		return attempt{}, fmt.Errorf("%w: reading the error body: %v", ErrNetwork, err)
+	if err != nil && ctx.Err() != nil {
+		return attempt{}, ctx.Err()
 	}
 	if len(raw) > maxErrorBody {
 		return attempt{}, fmt.Errorf("%w: an error body over %d bytes", ErrNetwork, maxErrorBody)
 	}
-	text := claudeprep.DecodeText(raw)
+	// parseUpstreamError reads the body with text() and takes "" when that
+	// throws (a reset, the 300 s body timeout, a broken gzip stream).
+	text := ""
+	if err == nil {
+		text = claudeprep.DecodeText(raw)
+	}
 	message := text
 	if message == "" {
 		message = "HTTP " + strconv.Itoa(resp.StatusCode)

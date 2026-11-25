@@ -88,7 +88,8 @@ func init() {
 		loadErr = errors.Join(loadErr, fmt.Errorf("upstream: tables.json: %w", err))
 		return
 	}
-	if len(tbl.RetryConfig) == 0 || tbl.HeadersTimeoutText == "" || tbl.ProxyDirect == "" || tbl.Executor.FallbackCount == 0 {
+	if len(tbl.RetryConfig) == 0 || tbl.HeadersTimeoutText == "" || tbl.ProxyDirect == "" || tbl.Executor.FallbackCount <= 0 ||
+		tbl.MaxTimerMs <= 0 || tbl.FetchConnectTimeoutMs <= 0 || tbl.HeadersTimeoutAttempts <= 0 || len(tbl.BetaHeaderKeys) == 0 {
 		loadErr = errors.Join(loadErr, errors.New("upstream: tables.json is incomplete"))
 		return
 	}

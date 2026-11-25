@@ -190,10 +190,11 @@ type Leaf func(ctx context.Context, provider, model string) (accounts.Outcome, e
 // Env is what Run calls out to.
 type Env struct {
 	Leaf Leaf
-	// Preflight declines, before anything is sent, a provider whose keys the
-	// loop would have to decline on later (accounts.CheckProvider with the
-	// sender's route and settings checks). Run calls it once per provider.
-	Preflight func(ctx context.Context, provider string) error
+	// Preflight declines, before anything is sent, a provider model whose
+	// loop would have to decline later (accounts.CheckProvider with the
+	// sender's checks and a Prepare dry run per key). Run calls it once per
+	// provider and model the tree reaches.
+	Preflight func(ctx context.Context, provider, model string) error
 	// Sleep waits ms or until ctx ends (the transient wait).
 	Sleep func(ctx context.Context, ms float64) error
 	// NowMs is the clock (unavailableResponse's Retry-After).
@@ -221,11 +222,12 @@ func Run(ctx context.Context, t *Target, env Env) (Result, error) {
 		var walk func(*Target) error
 		walk = func(t *Target) error {
 			if t.Combo == "" {
-				if seen[t.Provider] {
+				key := t.Provider + "\x00" + t.Model
+				if seen[key] {
 					return nil
 				}
-				seen[t.Provider] = true
-				return env.Preflight(ctx, t.Provider)
+				seen[key] = true
+				return env.Preflight(ctx, t.Provider, t.Model)
 			}
 			for _, m := range t.Members {
 				if err := walk(m); err != nil {

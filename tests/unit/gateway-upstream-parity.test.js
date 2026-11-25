@@ -235,6 +235,8 @@ const WIRE = [
   { name: "a gzip error body", script: [{ status: 500, body: JSON.stringify({ error: { message: "zipped" } }), gzip: true }] },
   { name: "an error body in broken UTF-8", script: [{ status: 500, bodyBytes: [0x7b, 0xff, 0xfe, 0x78, 0xe2, 0x82, 0x7d] }] },
   { name: "a BOM before the error", script: [{ status: 500, bodyBytes: [0xef, 0xbb, 0xbf, 0x6f, 0x6b] }] },
+  // The error body breaks off: text() throws, and chatCore takes "".
+  { name: "an error body cut short", script: [{ status: 500, body: "{\"error\":", cut: true }] },
   { name: "no headers in time", script: ["hang"] },
   // The beta retry runs out of time: Node throws, so it saves no flag.
   { name: "a rejected flag, then no headers", script: [rejected("interleaved-thinking-2025-05-14"), "hang"] },
@@ -268,6 +270,12 @@ function startServer(script, seen) {
       if (step === "ok") { res.writeHead(200, { "content-type": "text/event-stream" }); res.end(SSE_OK); return; }
       let body = step.bodyBytes ? Buffer.from(step.bodyBytes) : Buffer.from(step.body, "utf8");
       const headers2 = { "content-type": "application/json" };
+      if (step.cut) {
+        // Promise more than is sent, then drop the connection.
+        res.writeHead(step.status, { ...headers2, "content-length": String(body.length + 100) });
+        res.write(body, () => res.socket.destroy());
+        return;
+      }
       if (step.gzip) { body = gzipSync(body); headers2["content-encoding"] = "gzip"; }
       res.writeHead(step.status, headers2);
       res.end(body);

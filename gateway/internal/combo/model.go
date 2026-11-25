@@ -15,10 +15,12 @@ package combo
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 
+	"github.com/some-du6e/10router/gateway/internal/accounts"
 	"github.com/some-du6e/10router/gateway/internal/db/jsjson"
 	"github.com/some-du6e/10router/gateway/internal/decline"
 )
@@ -61,10 +63,10 @@ type prefixProvider struct {
 // loadErr is why the embedded tables can't be used (nil when they can).
 var loadErr error
 
-// Ready reports whether the embedded tables loaded. The native route stays
-// off when they didn't: a bad embed must not crash a gateway that only
-// relays.
-func Ready() error { return loadErr }
+// Ready reports whether the embedded tables loaded, this package's and the
+// accounts' it runs. The native route stays off when they didn't: a bad
+// embed must not crash a gateway that only relays.
+func Ready() error { return errors.Join(loadErr, accounts.Ready()) }
 
 func init() {
 	if err := json.Unmarshal(tablesJSON, &tbl); err != nil {

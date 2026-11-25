@@ -1854,6 +1854,110 @@
   }
  },
  {
+  "name": "an error body cut short",
+  "env": {
+   "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"
+  },
+  "script": [
+   {
+    "status": 500,
+    "body": "{\"error\":",
+    "cut": true
+   }
+  ],
+  "provider": "openai-compatible-chat-hot",
+  "clientHeaders": {
+   "content-type": "application/json",
+   "user-agent": "claude-cli/2.1.258 (external, cli)",
+   "x-app": "cli",
+   "anthropic-version": "2023-06-01",
+   "anthropic-beta": "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+  },
+  "clientBody": "{\"model\":\"hot/m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}]}",
+  "psd": {
+   "apiType": "chat",
+   "baseUrl": "<base>",
+   "modelRoutes": {
+    "m1": "anthropic"
+   }
+  },
+  "requests": [
+   {
+    "method": "POST",
+    "path": "/v1/messages",
+    "headers": [
+     [
+      "connection",
+      "keep-alive"
+     ],
+     [
+      "content-type",
+      "application/json"
+     ],
+     [
+      "anthropic-version",
+      "2023-06-01"
+     ],
+     [
+      "x-api-key",
+      "key-k1"
+     ],
+     [
+      "anthropic-beta",
+      "interleaved-thinking-2025-05-14,context-management-2025-06-27,fine-grained-tool-streaming-2025-05-14"
+     ],
+     [
+      "authorization",
+      "Bearer key-k1"
+     ],
+     [
+      "accept",
+      "text/event-stream"
+     ],
+     [
+      "accept-language",
+      "*"
+     ],
+     [
+      "sec-fetch-mode",
+      "cors"
+     ],
+     [
+      "user-agent",
+      "node"
+     ],
+     [
+      "accept-encoding",
+      "gzip, deflate"
+     ],
+     [
+      "content-length",
+      "446"
+     ]
+    ],
+    "body": "{\"model\":\"m1\",\"max_tokens\":1024,\"stream\":true,\"system\":[{\"type\":\"text\",\"text\":\"You are a helper.\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain the build failure in step three.\"}]}],\"tools\":[{\"name\":\"Read\",\"description\":\"Read a file\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"},\"type\":\"custom\"}]}"
+   }
+  ],
+  "events": [
+   {
+    "budget": 1500
+   },
+   {
+    "attempt": {
+     "connectionId": "k1",
+     "success": false,
+     "status": 500,
+     "error": "[500]: HTTP 500",
+     "headersTimeout": null
+    }
+   }
+  ],
+  "savedBetas": {
+   "connection": null,
+   "node": null
+  }
+ },
+ {
   "name": "no headers in time",
   "env": {
    "UPSTREAM_STREAM_HEADERS_TIMEOUT_MS": "1500"

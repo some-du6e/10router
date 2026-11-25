@@ -213,13 +213,10 @@ func TestFallbackMatchesNode(t *testing.T) {
 							r, err := upstream.ResolveRoute(ctx, c.ProviderSpecificData(), c.Provider, snap.Settings, d)
 							return r.Transport(), err
 						},
+						Check: func(c *db.Connection) error { return upstream.Preflight(ctx, c, snap.Settings, d, noEnv) },
 					}, attempt)
 				}
-				preflight := func(ctx context.Context, provider string) error {
-					return a.CheckProvider(ctx, provider, func(c *db.Connection) error {
-						return upstream.Preflight(ctx, c, snap.Settings, d, func(string) string { return "" })
-					})
-				}
+				preflight := realPreflight(t, a, snap.Settings, d, body)
 				res, err := Run(ctx, plan, Env{Leaf: leaf, Preflight: preflight, Sleep: sleeper("combo"), NowMs: nowMs})
 				if sc.GoHandoff != "" && i == len(sc.Requests)-1 {
 					var h *accounts.Handoff
@@ -405,6 +402,120 @@ func TestPlanDeclines(t *testing.T) {
 	}
 }
 
+func noEnv(string) string { return "" }
+
+// realPreflight is the preflight part 3 wires: the provider's strategy and
+// keys (accounts.CheckProvider), each key's sending settings
+// (upstream.Preflight), and a dry run of Prepare for the key and model.
+func realPreflight(t *testing.T, a *accounts.Accounts, s db.Settings, d *db.DB, body *claudeprep.Value) func(context.Context, string, string) error {
+	t.Helper()
+	raw := claudeprep.Marshal(body)
+	return func(ctx context.Context, provider, model string) error {
+		return a.CheckProvider(ctx, provider, s, func(c *db.Connection) error {
+			if err := upstream.Preflight(ctx, c, s, d, noEnv); err != nil {
+				return err
+			}
+			node, err := claudeprep.ParseNodeSettings(jsjson.Marshal(c.ProviderSpecificData()))
+			if err != nil {
+				return err
+			}
+			key, _ := c.Data.Get("apiKey")
+			apiKey, _ := key.(string)
+			_, err = claudeprep.Prepare(raw, claudeprep.Inputs{Provider: provider, Model: model, ClientHeaders: ccHeaders, Connection: claudeprep.Connection{APIKey: apiKey, Node: node}})
+			return err
+		})
+	}
+}
+
+// What a member's loop would decline on configuration alone, a provider's
+// strategy or a key Prepare refuses, is declined before the first member
+// sends anything.
+func TestPreflightCatchesStrategiesAndPrepare(t *testing.T) {
+	raw, err := os.ReadFile("testdata/fallback.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file fallbackFile
+	if err := json.Unmarshal(raw, &file); err != nil {
+		t.Fatal(err)
+	}
+	var base *struct {
+		initial map[string][]map[string]any
+	}
+	for _, sc := range file {
+		if sc.Name == "a combo falls through to its next member" {
+			base = &struct{ initial map[string][]map[string]any }{sc.Initial}
+		}
+	}
+	if base == nil {
+		t.Fatal("no base scenario")
+	}
+	cases := []struct {
+		name, settings, want string
+		edit                 func(rows []map[string]any)
+	}{
+		{name: "a member's provider uses soonest-reset", want: "soonest-reset",
+			settings: `{"requireApiKey":false,"providerStrategies":{"openai-compatible-chat-cold":{"fallbackStrategy":"soonest-reset"}}}`},
+		{name: "a member's sticky limit isn't a number", want: "stickyRoundRobinLimit",
+			settings: `{"requireApiKey":false,"providerStrategies":{"openai-compatible-chat-cold":{"fallbackStrategy":"round-robin","stickyRoundRobinLimit":"3"}}}`},
+		{name: "a key whose model isn't routed to Messages", want: "claudeprep", settings: `{"requireApiKey":false}`,
+			edit: func(rows []map[string]any) {
+				for _, r := range rows {
+					if r["id"] == "c1" {
+						r["data"] = `{"apiKey":"key-c1","providerSpecificData":{"apiType":"chat","baseUrl":"https://gateway.example.test/v1","modelRoutes":{"m2":"anthropic"}}}`
+					}
+				}
+			}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			initial := map[string][]map[string]any{}
+			for k, rows := range base.initial {
+				for _, r := range rows {
+					cp := map[string]any{}
+					for kk, v := range r {
+						cp[kk] = v
+					}
+					initial[k] = append(initial[k], cp)
+				}
+			}
+			if c.edit != nil {
+				c.edit(initial["providerConnections"])
+			}
+			path, node := dbtest.New(t, dbtest.Options{})
+			dbtest.InsertRows(t, node, initial)
+			dbtest.Exec(t, node, `INSERT INTO settings(id, data) VALUES(1, ?)`, c.settings)
+			d, err := db.Open(path, db.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			ctx := context.Background()
+			snap, err := d.LoadSnapshot(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := bodyFor(t, "main", 0)
+			plan, err := Plan(PlanInput{Config: FromSnapshot(snap), Settings: snap.Settings, Model: "main", Body: body, Headers: ccHeaders})
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := accounts.New(d)
+			_, err = Run(ctx, plan, Env{
+				Leaf: func(context.Context, string, string) (accounts.Outcome, error) {
+					t.Fatal("a member ran before the preflight declined")
+					return accounts.Outcome{}, nil
+				},
+				Preflight: realPreflight(t, a, snap.Settings, d, body),
+				NowMs:     func() float64 { return 0 },
+			})
+			if !decline.Is(err) || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("want a decline naming %q, got %v", c.want, err)
+			}
+		})
+	}
+}
+
 // A provider the loop would have to decline later is declined before the
 // first member sends anything.
 func TestPreflightDeclinesBeforeAnySend(t *testing.T) {
@@ -418,7 +529,7 @@ func TestPreflightDeclinesBeforeAnySend(t *testing.T) {
 			t.Fatal("a member ran before the preflight finished")
 			return accounts.Outcome{}, nil
 		},
-		Preflight: func(_ context.Context, provider string) error {
+		Preflight: func(_ context.Context, provider, _ string) error {
 			checked = append(checked, provider)
 			if provider == "openai-compatible-chat-b" {
 				return decline.New("upstream", "a proxy pool")

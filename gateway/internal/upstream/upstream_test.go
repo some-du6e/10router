@@ -255,6 +255,8 @@ type scriptStep struct {
 	Body     string `json:"body"`
 	RawBytes []int  `json:"bodyBytes"`
 	Gzip     bool   `json:"gzip"`
+	// Cut: promise more than is sent, then drop the connection.
+	Cut bool `json:"cut"`
 }
 
 const sseOK = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
@@ -307,6 +309,17 @@ func scripted(t *testing.T, script []json.RawMessage) (*httptest.Server, *[]wire
 			}
 		}
 		w.Header().Set("content-type", "application/json")
+		if step.Cut {
+			conn, buf, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			fmt.Fprintf(buf, "HTTP/1.1 %d X\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", step.Status, len(out)+100, out)
+			_ = buf.Flush()
+			_ = conn.Close()
+			return
+		}
 		if step.Gzip {
 			var buf bytes.Buffer
 			zw := gzip.NewWriter(&buf)

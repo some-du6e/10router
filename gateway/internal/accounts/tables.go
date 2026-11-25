@@ -93,10 +93,12 @@ var tbl struct {
 	} `json:"errorTypes"`
 }
 
+// The regexes start as never, so a table that didn't load leaves nothing nil
+// for a caller that didn't check Ready.
 var (
-	dataURIRe, claudeSessionRe, billingHeaderRe *regexp.Regexp
+	dataURIRe, claudeSessionRe, billingHeaderRe = never, never, never
 	sameLimitRes, sameShapeRes                  []*regexp.Regexp
-	sameKeyLimitRe, keyRefusalRe                *regexp.Regexp
+	sameKeyLimitRe, keyRefusalRe                = never, never
 	requestErrorStatus                          = map[int]bool{}
 	sameRequestStatus                           = map[int]bool{}
 	affinityProvider                            = map[string]bool{}
@@ -128,7 +130,9 @@ func init() {
 		loadErr = errors.Join(loadErr, fmt.Errorf("accounts: tables.json: %w", err))
 		return
 	}
-	if len(tbl.ErrorRules) == 0 || tbl.HeadersTimeout.Text == "" || tbl.CacheAffinity.MaxWarmKeys == 0 {
+	h, c := tbl.HeadersTimeout, tbl.CacheAffinity
+	if len(tbl.ErrorRules) == 0 || h.Text == "" || len(h.HungWindowMs) == 0 || h.MaxKeysPerRequest <= 0 ||
+		c.MaxWarmKeys <= 0 || c.MaxEntries <= 0 || tbl.SameRequestError.StopAfter <= 0 || tbl.Backoff.Base <= 0 {
 		loadErr = errors.Join(loadErr, errors.New("accounts: tables.json is incomplete"))
 		return
 	}

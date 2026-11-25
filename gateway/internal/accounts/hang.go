@@ -10,6 +10,11 @@ import (
 type ModelHang struct {
 	mu     sync.Mutex
 	models map[string]*hangEntry
+	// BudgetMs is UPSTREAM_STREAM_HEADERS_TIMEOUT_MS as this process reads
+	// it (upstream.HeadersBudget(env, true).Ms): a probe's lease and the
+	// Retry-After while one runs go by it until the executor reports its own.
+	// NewModelHang starts it at Node's default.
+	BudgetMs float64
 }
 
 type hangEntry struct {
@@ -37,7 +42,9 @@ type hangProbe struct {
 const maxHangModels = 10 * 1000
 
 // NewModelHang makes an empty tracker.
-func NewModelHang() *ModelHang { return &ModelHang{models: map[string]*hangEntry{}} }
+func NewModelHang() *ModelHang {
+	return &ModelHang{models: map[string]*hangEntry{}, BudgetMs: tbl.UpstreamStreamHeadersTimeoutMs}
+}
 
 func hangKey(provider, model string) string { return provider + "|" + model }
 
@@ -62,11 +69,11 @@ type HangStatus struct {
 	AvoidKeys []string
 }
 
-func statusOf(h *hung, now float64) HangStatus {
+func statusOf(h *hung, now, budgetMs float64) HangStatus {
 	if now < h.until {
 		return HangStatus{RetryAtMs: h.until, Reason: h.reason}
 	}
-	probeEnd := now + tbl.UpstreamStreamHeadersTimeoutMs
+	probeEnd := now + budgetMs
 	if h.probe != nil {
 		probeEnd = h.probe.at + h.probe.budgetMs
 	}
@@ -91,16 +98,16 @@ func (m *ModelHang) Check(provider, model, requestID string, now float64) HangSt
 		return probe
 	}
 	if now < h.until || (h.probe != nil && now-h.probe.at < leaseMs(h.probe)) {
-		st := statusOf(h, now)
+		st := statusOf(h, now, m.BudgetMs)
 		st.Blocked = true
 		return st
 	}
-	h.probe = &hangProbe{id: requestID, at: now, budgetMs: tbl.UpstreamStreamHeadersTimeoutMs}
+	h.probe = &hangProbe{id: requestID, at: now, budgetMs: m.BudgetMs}
 	return probe
 }
 
-// keysOf is [...set] for the insertion-ordered key sets (kept as maps plus
-// the order they were added in, which hangEntry tracks through addKey).
+// keysOf is [...set] in no particular order: every caller reads the keys as
+// a set (the account loop's avoid list).
 func keysOf(set map[string]bool) []string {
 	out := make([]string, 0, len(set))
 	for k := range set {
@@ -133,7 +140,7 @@ func (m *ModelHang) NoteHeadersTimeout(provider, model, requestID, connectionID 
 			}
 			e.hung = &hung{level: level, until: now + hungWindowMs(level), reason: r, stalled: h.stalled, stalledOrder: h.stalledOrder}
 		}
-		return statusOf(e.hung, now), true
+		return statusOf(e.hung, now, m.BudgetMs), true
 	}
 	if !stream {
 		return HangStatus{}, false
@@ -164,7 +171,7 @@ func (m *ModelHang) NoteHeadersTimeout(provider, model, requestID, connectionID 
 	}
 	e.hung = &hung{level: 0, until: now + hungWindowMs(0), reason: e.reason, stalled: stalled, stalledOrder: order}
 	e.requests, e.keys = map[string]bool{}, map[string]bool{}
-	return statusOf(e.hung, now), true
+	return statusOf(e.hung, now, m.BudgetMs), true
 }
 
 // NoteProbeBudget is noteProbeBudget: the probe's call has this budget.

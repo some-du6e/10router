@@ -2562,7 +2562,7 @@
        "model": "m1",
        "success": false,
        "status": 400,
-       "error": "[400]: {\"error\":{\"message\":\"improperly formed request\"}}",
+       "error": "[400]: {\"error\":{\"message\":\"Unknown parameter: frobnicate\"}}",
        "resetsAtMs": 0,
        "headersTimeout": null
       }
@@ -2577,7 +2577,7 @@
        "model": "m1",
        "success": false,
        "status": 400,
-       "error": "[400]: {\"error\":{\"message\":\"Unknown parameter: frobnicate\"}}",
+       "error": "[400]: {\"error\":{\"message\":\"Unknown parameter: wibble\"}}",
        "resetsAtMs": 0,
        "headersTimeout": null
       }
@@ -2587,16 +2587,16 @@
      "status": 400,
      "headers": {
       "content-type": "application/json",
-      "retry-after": "120"
+      "access-control-allow-origin": "*"
      },
-     "body": "{\"error\":{\"message\":\"All 2 accounts unavailable for [openai-compatible-chat-hot/m1]. k1 (HTTP 400): improperly formed request | k2 (HTTP 400): Unknown parameter: frobnicate (reset after 2m)\"}}"
+     "body": "{\"error\":{\"message\":\"All 2 accounts unavailable for [openai-compatible-chat-hot/m1]. k1 (HTTP 400): Unknown parameter: frobnicate | k2 (HTTP 400): Unknown parameter: wibble\",\"type\":\"invalid_request_error\",\"code\":\"bad_request\"}}"
     },
     "rows": [
      {
       "id": "k1",
       "isActive": 1,
-      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\",\"modelRoutes\":{\"m1\":\"anthropic\",\"m2\":\"anthropic\"}},\"modelLock_m1\":\"2026-03-01T12:02:00.000Z\",\"modelLimit_m1\":false,\"providerReset_m1\":null,\"testStatus\":\"unavailable\",\"lastError\":\"[400]: {\\\"error\\\":{\\\"message\\\":\\\"improperly formed request\\\"}}\",\"errorCode\":400,\"lastErrorAt\":\"2026-03-01T12:00:00.000Z\",\"backoffLevel\":0}",
-      "updatedAt": "2026-03-01T12:00:00.000Z"
+      "data": "{\"apiKey\":\"key-k1\",\"providerSpecificData\":{\"apiType\":\"chat\",\"baseUrl\":\"https://gateway.example.test/v1\",\"modelRoutes\":{\"m1\":\"anthropic\",\"m2\":\"anthropic\"}}}",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
      },
      {
       "id": "k2",

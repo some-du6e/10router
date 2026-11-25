@@ -491,6 +491,56 @@ func pickJSON(p Pick) map[string]any {
 	return map[string]any{"none": true}
 }
 
+func TestCheckProviderDeclinesWhatTheLoopWould(t *testing.T) {
+	var file scenarioFile
+	readJSON(t, "testdata/scenarios.json", &file)
+	template := file[0].Initial[0]
+	row := func(id, data string) map[string]any {
+		r := map[string]any{}
+		for k, v := range template {
+			r[k] = v
+		}
+		r["id"], r["data"] = id, data
+		return r
+	}
+	ok := `{"apiKey":"key-k1","providerSpecificData":{"baseUrl":"https://upstream.test/v1"}}`
+	cases := []struct {
+		name, data, settings, want string
+		check                      error
+	}{
+		{name: "plain", data: ok},
+		{name: "demotion", data: `{"authDemote_m":{"count":3},"providerSpecificData":{}}`, want: "demotion"},
+		{name: "a date Node reads its own way", data: `{"lastUsedAt":"yesterday","providerSpecificData":{}}`, want: "accounts"},
+		{name: "a base URL WHATWG rewrites", data: `{"providerSpecificData":{"baseUrl":"https://bücher.test/v1"}}`, want: "base URL"},
+		{name: "soonest-reset", data: ok, settings: `{"fallbackStrategy":"soonest-reset"}`, want: "soonest-reset"},
+		{name: "the sender's check", data: ok, check: decline.New("upstream", "a proxy pool"), want: "proxy pool"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path, node := dbtest.New(t, dbtest.Options{})
+			dbtest.InsertRows(t, node, map[string][]map[string]any{"providerConnections": {row("k1", c.data)}})
+			d, err := db.Open(path, db.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			settings := jsjson.NewObject()
+			if c.settings != "" {
+				if settings, err = jsjson.ParseObject([]byte(c.settings)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err = New(d).CheckProvider(context.Background(), "openai-compatible-chat-hot", objSettings{settings}, func(*db.Connection) error { return c.check })
+			switch {
+			case c.want == "" && err != nil:
+				t.Fatal(err)
+			case c.want != "" && (!decline.Is(err) || !strings.Contains(err.Error(), c.want)):
+				t.Fatalf("want a decline naming %q, got %v", c.want, err)
+			}
+		})
+	}
+}
+
 func TestJSLengthAndPlainBaseURL(t *testing.T) {
 	// A lone surrogate half (WTF-8 ED A0 BD) is one code unit; an emoji two.
 	if n := utf16Len("a\xed\xa0\xbdb\U0001F600"); n != 5 {

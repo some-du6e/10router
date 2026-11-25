@@ -167,7 +167,6 @@ var upstreamFields = []string{"baseUrl", "azureEndpoint", "region", "location", 
 var trailingAPIPath = regexp.MustCompile(`(?i)/(chat/completions|messages|responses)$`)
 var trailingSlashes = regexp.MustCompile(`/+$`)
 
-// normalizeEndpointURL is endpointUrl.ts's normalizeEndpointUrl.
 // KeysShareOneUpstream is auth.js's keysShareOneUpstream: every active key
 // of the provider reaches the same upstream (no key on its own base URL, one
 // connectionUpstream) the same way. transport is networkPath(connection)'s
@@ -204,6 +203,7 @@ func (a *Accounts) KeysShareOneUpstream(ctx context.Context, provider string, tr
 	return len(transports) <= 1, nil
 }
 
+// normalizeEndpointURL is endpointUrl.ts's normalizeEndpointUrl.
 func normalizeEndpointURL(s string) string {
 	s = jsTrim(s)
 	q := strings.IndexByte(s, '?')

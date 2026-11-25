@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -45,13 +46,32 @@ type Sender struct {
 // 10 s connect timeout, idle connections kept 4 s, and Node's 16 KB limit on
 // response headers. Redirects aren't followed: the caller hands them to Node.
 func NewSender() *Sender {
-	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	dialer := &net.Dialer{Timeout: connectTimeout, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
-		Proxy:                  nil,
-		DialContext:            dialer.DialContext,
+		Proxy:       nil,
+		DialContext: dialer.DialContext,
+		// undici's connect timeout covers the TCP connect and the TLS
+		// handshake together.
+		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			ctx, cancel := context.WithTimeout(ctx, connectTimeout)
+			defer cancel()
+			raw, err := dialer.DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			host, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				host = addr
+			}
+			c := tls.Client(raw, &tls.Config{ServerName: host, NextProtos: []string{"http/1.1"}})
+			if err := c.HandshakeContext(ctx); err != nil {
+				raw.Close()
+				return nil, err
+			}
+			return c, nil
+		},
 		ForceAttemptHTTP2:      false,
 		TLSNextProto:           map[string]func(string, *tls.Conn) http.RoundTripper{},
-		TLSHandshakeTimeout:    10 * time.Second,
 		IdleConnTimeout:        4 * time.Second,
 		MaxIdleConnsPerHost:    64,
 		MaxResponseHeaderBytes: 16 << 10,
@@ -102,7 +122,7 @@ var ErrNetwork = errors.New("upstream: network error")
 func (s *Sender) Send(ctx context.Context, req *claudeprep.Request) (*http.Response, error) {
 	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, req.URL, bytes.NewReader(req.Body))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrNetwork, err)
+		return nil, fmt.Errorf("%w: the request URL doesn't parse", ErrNetwork)
 	}
 	for _, kv := range WireHeaders(req.URL, req.Header) {
 		hr.Header[http.CanonicalHeaderKey(kv[0])] = []string{kv[1]}
@@ -112,8 +132,14 @@ func (s *Sender) Send(ctx context.Context, req *claudeprep.Request) (*http.Respo
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		// Not the *url.Error's text: it quotes the URL, query and all.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
 		return nil, fmt.Errorf("%w: %v", ErrNetwork, err)
 	}
+	resp.Body = newIdleBody(resp.Body, bodyIdleTimeout)
 	switch resp.StatusCode {
 	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect, http.StatusMisdirectedRequest:
 		resp.Body.Close()
@@ -131,6 +157,32 @@ func (s *Sender) Send(ctx context.Context, req *claudeprep.Request) (*http.Respo
 		return nil, fmt.Errorf("%w: content-encoding %q", ErrNetwork, enc)
 	}
 	return resp, nil
+}
+
+// connectTimeout is undici's default connect timeout.
+const connectTimeout = 10 * time.Second
+
+// bodyIdleTimeout is undici's default bodyTimeout, which Node's fetch keeps
+// (proxyFetch.js turns off only the headers timeout): a body silent this long
+// fails its read.
+const bodyIdleTimeout = 300 * time.Second
+
+// idleBody fails a Read that waits longer than idle for data, by closing the
+// body under it.
+type idleBody struct {
+	io.ReadCloser
+	idle time.Duration
+}
+
+func newIdleBody(b io.ReadCloser, idle time.Duration) io.ReadCloser { return &idleBody{b, idle} }
+
+func (b *idleBody) Read(p []byte) (int, error) {
+	t := time.AfterFunc(b.idle, func() { _ = b.ReadCloser.Close() })
+	n, err := b.ReadCloser.Read(p)
+	if !t.Stop() && err == nil {
+		err = errors.New("upstream: body timeout")
+	}
+	return n, err
 }
 
 // gunzip opens the gzip stream on the first Read.
