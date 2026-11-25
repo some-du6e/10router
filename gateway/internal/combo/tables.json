@@ -194,7 +194,8 @@
     "alitp-intl": "alitp-intl",
     "xquik": "xquik",
     "opencode-zen": "opencode-zen",
-    "ocz": "opencode-zen"
+    "ocz": "opencode-zen",
+    "hackclub-exa": "hackclub-exa"
   },
   "localProviderAliases": {
     "xmtp": "xiaomi-tokenplan",
@@ -291,6 +292,7 @@
     "grok-web",
     "groq",
     "gw",
+    "hackclub-exa",
     "hf",
     "huggingface",
     "hunyuan",
