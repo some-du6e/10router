@@ -1,0 +1,7 @@
+# check=skip=InvalidDefaultArgInFrom
+# What a server that deploys the `deploy` branch builds in place of Dockerfile:
+# the image .github/workflows/deploy-image.yml built and tested for this commit.
+# Coolify passes SOURCE_COMMIT while include_source_commit_in_build is on. It
+# has no default on purpose: unset, the reference is invalid and the build stops.
+ARG SOURCE_COMMIT
+FROM ghcr.io/some-du6e/10router:${SOURCE_COMMIT}

@@ -86,7 +86,7 @@ docker rm -f 10router
 ## Build image locally (test)
 
 ```bash
-cd app && docker build -t 10router .
+docker build -t 10router .
 
 docker run --rm -p 20128:20128 \
   -v "$HOME/.9router:/app/data" \
@@ -118,4 +118,19 @@ node scripts/release.js "Release title" "Notes"
 git tag v0.4.x && git push origin v0.4.x
 ```
 
-Workflow: `app/.github/workflows/docker-publish.yml`
+Workflow: `.github/workflows/docker-publish.yml`
+
+### Master builds
+
+After each push to master that changes what goes into the image, `.github/workflows/deploy-image.yml` builds master's head. Pushes that land while a run is waiting or running are built together by the next run, so not every commit gets an image. It builds for `linux/amd64` only and runs the gateway E2E on the image (`.github/e2e/gateway/run.sh`). It then pushes `ghcr.io/some-du6e/10router:<full commit sha>`, checks that an anonymous pull works, and fast-forwards the `deploy` branch to that commit. The run that moves `deploy` pushed the image its own E2E tested. A run that finds `deploy` already at or past its commit pushes nothing. The push and the move happen in a separate job that holds the only write token and runs no repository or dependency code. `deploy` only moves forward. If master is ever rewritten, every run fails at that step until someone resets `deploy` by hand. Reset it only to a commit whose image a run has already pushed, or the server has nothing to pull.
+
+To retry a run, re-run all its jobs, or start the workflow on master: either builds master's newest commit. Re-running only the failed jobs publishes that run's own build, and only while its one-day artifact lasts.
+
+A server that deploys the `deploy` branch builds `Dockerfile.deploy` instead of `Dockerfile`, passing the commit as the `SOURCE_COMMIT` build arg. That file is only `FROM` the commit's image, so the server compiles nothing and never gets an image that failed the E2E.
+
+`next build` runs in CI with only `SOURCE_COMMIT` set, so the image fixes what it reads at the default or unset value:
+- `NEXT_PUBLIC_GA_ID`: empty, so no analytics.
+- `NEXT_PUBLIC_CLOUD_URL` in browser code.
+- `next.config.mjs` settings such as `TENROUTER_PROXY_CLIENT_MAX_BODY_SIZE`: 128mb.
+
+A server that needs one of these has to build `Dockerfile` itself. `TENROUTER_PROXY_CLIENT_MAX_BODY_SIZE` also needs an `ARG` added to the builder stage. Server code reads everything else from the container's environment at runtime, `NEXT_PUBLIC_BASE_URL` and `NEXT_PUBLIC_CLOUD_URL` included.
