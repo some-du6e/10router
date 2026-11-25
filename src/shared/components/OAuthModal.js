@@ -16,6 +16,18 @@ import {
 } from "@/shared/utils/oauthCallbackBinding.js";
 
 const openWindow = (url, target, features) => window.open(url, target, features);
+const CODEX_CALLBACK_URL = "http://127.0.0.1:1455/auth/callback";
+
+// The local proxy is shared. Finish a cancelled startup and its shutdown
+// before a reopened modal can start another proxy.
+let codexProxyOperation = Promise.resolve();
+function queueCodexProxyOperation(operation) {
+  const next = codexProxyOperation.then(operation);
+  codexProxyOperation = next.catch(() => {});
+  return next;
+}
+
+const stopCodexProxy = () => fetch("/api/oauth/codex/stop-proxy").catch(() => {});
 
 // Providers offering a paste-token fallback (import-token flow).
 // UX warns if the IDE (which issues the token) is not installed.
@@ -44,7 +56,7 @@ const PASTE_TOKEN_PROVIDERS = {
  * - Remote: Manual paste callback URL
  */
 export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, onClose, oauthMeta, idcConfig }) {
-  const [step, setStep] = useState("waiting"); // waiting | input | success | error
+  const [step, setStep] = useState(provider === "codex" ? "choose" : "waiting");
   const [authData, setAuthData] = useState(null);
   const [callbackUrl, setCallbackUrl] = useState("");
   const [error, setError] = useState(null);
@@ -57,7 +69,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const [ideStatus, setIdeStatus] = useState(null);
   const [ignoredCallback, setIgnoredCallback] = useState(false);
   const popupRef = useRef(null);
-  const pollingAbortRef = useRef(false);
+  const codexProxyRef = useRef(false);
+  const signInAttemptRef = useRef(null);
   const openedRef = useRef(false);
   const { copied, copy } = useCopyToClipboard();
 
@@ -65,6 +78,22 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const [isLocalhost, setIsLocalhost] = useState(false);
   const [placeholderUrl, setPlaceholderUrl] = useState("/callback?code=...");
   const callbackProcessedRef = useRef(false);
+
+  const cancelSignIn = useCallback(() => {
+    signInAttemptRef.current?.abort();
+    signInAttemptRef.current = null;
+    if (codexProxyRef.current) {
+      codexProxyRef.current = false;
+      queueCodexProxyOperation(stopCodexProxy);
+    }
+  }, []);
+
+  useEffect(() => () => {
+    // StrictMode can restart the mount effects after cancelling an automatic
+    // device request. Let the open effect issue its replacement.
+    if (signInAttemptRef.current) openedRef.current = false;
+    cancelSignIn();
+  }, [cancelSignIn]);
 
   // Detect if running on localhost (client-side only)
   useEffect(() => {
@@ -128,8 +157,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   }, [authData, onSuccess]);
 
   // Poll for device code token
-  const startPolling = useCallback(async (deviceCode, codeVerifier, interval, extraData, deadlineMs) => {
-    pollingAbortRef.current = false;
+  const startPolling = useCallback(async (deviceCode, codeVerifier, interval, extraData, deadlineMs, signal) => {
     setPolling(true);
     // Honor the upstream's expires_in when supplied (qoder sets 300s) so we
     // don't time out earlier than the device code itself. Default 120s
@@ -138,47 +166,38 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     const deadline = startedAt + (Number.isFinite(deadlineMs) && deadlineMs > 0 ? deadlineMs : 120_000);
 
     while (Date.now() < deadline) {
-      // Check if polling should be aborted
-      if (pollingAbortRef.current) {
-        console.log("[OAuthModal] Polling aborted");
-        setPolling(false);
-        return;
-      }
-
-      await new Promise((r) => setTimeout(r, interval * 1000));
-
-      // Check again after sleep
-      if (pollingAbortRef.current) {
-        console.log("[OAuthModal] Polling aborted after sleep");
-        setPolling(false);
-        return;
-      }
+      await new Promise((r) => setTimeout(r, Math.min(interval * 1000, deadline - Date.now())));
+      if (signal.aborted) return;
+      if (Date.now() >= deadline) break;
 
       try {
         const res = await fetch(`/api/oauth/${provider}/poll`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ deviceCode, codeVerifier, extraData }),
+          signal,
         });
 
         const data = await res.json();
+        if (signal.aborted) return;
 
         if (data.success) {
-          pollingAbortRef.current = true; // Stop polling immediately
           setStep("success");
           setPolling(false);
           onSuccess?.(data);
           return;
         }
 
-        if (data.error === "expired_token" || data.error === "access_denied") {
-          throw new Error(data.errorDescription || data.error);
+        if (data.error === "expired_token" || data.error === "access_denied"
+          || (provider === "codex" && (!res.ok || !data.pending))) {
+          throw new Error(data.errorDescription || data.error || "Device authorization failed");
         }
 
         if (data.error === "slow_down") {
           interval = Math.min(interval + 5, 30);
         }
       } catch (err) {
+        if (signal.aborted) return;
         setError(err.message);
         setStep("error");
         setPolling(false);
@@ -223,8 +242,13 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   }, []);
 
   // Start OAuth flow
-  const startOAuthFlow = useCallback(async () => {
+  const startOAuthFlow = useCallback(async (codexMethod) => {
     if (!provider) return;
+    if (provider === "codex" && !codexMethod) {
+      setStep("choose");
+      return;
+    }
+    let attemptSignal;
     try {
       setError(null);
 
@@ -247,8 +271,13 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         "qoder",
         "grok-cli",
       ];
-      if (deviceCodeProviders.includes(provider)) {
+      if (deviceCodeProviders.includes(provider) || (provider === "codex" && codexMethod === "device")) {
+        cancelSignIn();
+        const attempt = new AbortController();
+        signInAttemptRef.current = attempt;
+        attemptSignal = attempt.signal;
         setIsDeviceCode(true);
+        setDeviceData(null);
         setStep("waiting");
 
         const deviceCodeUrl = new URL(`/api/oauth/${provider}/device-code`, window.location.origin);
@@ -259,8 +288,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           }
           deviceCodeUrl.searchParams.set("auth_method", "idc");
         }
-        const res = await fetch(deviceCodeUrl.toString());
+        const res = await fetch(deviceCodeUrl.toString(), { signal: attemptSignal });
         const data = await res.json();
+        if (attemptSignal.aborted) return;
         if (!res.ok) throw new Error(data.error);
 
         setDeviceData(data);
@@ -269,26 +299,26 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         const verifyUrl = data.verification_uri_complete || data.verification_uri;
         if (verifyUrl) window.open(verifyUrl, "_blank", "noopener,noreferrer");
 
-        // Pass extraData for Kiro (contains _clientId, _clientSecret) and
-        // Qoder (contains _qoderMachineId / _qoderNonce — needed so mapTokens
-        // can persist the machine id alongside the token).
-        const extraData = provider === "kiro"
-          ? {
-              _clientId: data._clientId,
-              _clientSecret: data._clientSecret,
-              _region: data._region,
-              _authMethod: data._authMethod,
-              _startUrl: data._startUrl,
-            }
-          : provider === "qoder"
-          ? {
-              _qoderNonce: data._qoderNonce,
-              _qoderMachineId: data._qoderMachineId,
-              _qoderVerifier: data.codeVerifier,
-            }
-          : (provider === "kimi" || provider === "kimi-coding")
-          ? { _kimiDeviceId: data._kimiDeviceId }
-          : null;
+        let extraData = null;
+        if (provider === "codex") {
+          extraData = { userCode: data.user_code };
+        } else if (provider === "kiro") {
+          extraData = {
+            _clientId: data._clientId,
+            _clientSecret: data._clientSecret,
+            _region: data._region,
+            _authMethod: data._authMethod,
+            _startUrl: data._startUrl,
+          };
+        } else if (provider === "qoder") {
+          extraData = {
+            _qoderNonce: data._qoderNonce,
+            _qoderMachineId: data._qoderMachineId,
+            _qoderVerifier: data.codeVerifier,
+          };
+        } else if (provider === "kimi" || provider === "kimi-coding") {
+          extraData = { _kimiDeviceId: data._kimiDeviceId };
+        }
         startPolling(
           data.device_code,
           data.codeVerifier,
@@ -299,6 +329,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           Number.isFinite(data.expires_in) && data.expires_in > 0
             ? data.expires_in * 1000
             : undefined,
+          attemptSignal,
         );
         return;
       }
@@ -307,7 +338,11 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       const appPort = window.location.port || (window.location.protocol === "https:" ? "443" : "80");
       let redirectUri;
       if (provider === "codex") {
-        redirectUri = "http://localhost:1455/auth/callback";
+        cancelSignIn();
+        const attempt = new AbortController();
+        signInAttemptRef.current = attempt;
+        attemptSignal = attempt.signal;
+        redirectUri = CODEX_CALLBACK_URL;
       } else if (provider === "xai") {
         redirectUri = "http://127.0.0.1:56121/callback";
       } else {
@@ -320,27 +355,41 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       if (oauthMeta) {
         Object.entries(oauthMeta).forEach(([k, v]) => { if (v) authorizeUrl.searchParams.set(k, v); });
       }
-      const res = await fetch(authorizeUrl.toString());
+      const res = attemptSignal
+        ? await fetch(authorizeUrl.toString(), { signal: attemptSignal })
+        : await fetch(authorizeUrl.toString());
       const data = await res.json();
+      if (attemptSignal?.aborted) return;
       if (!res.ok) throw new Error(data.error);
 
       // Codex: start proxy with server-side session (auto-exchange) + fallback to channels
       let codexProxyActive = false;
       let codexServerSide = false;
-      if (provider === "codex") {
+      if (provider === "codex" && isLocalhost) {
         try {
           const proxyUrl = new URL(`/api/oauth/codex/start-proxy`, window.location.origin);
           proxyUrl.searchParams.set("app_port", appPort);
           proxyUrl.searchParams.set("state", data.state);
           proxyUrl.searchParams.set("code_verifier", data.codeVerifier);
           proxyUrl.searchParams.set("redirect_uri", redirectUri);
-          const proxyRes = await fetch(proxyUrl.toString());
-          const proxyData = await proxyRes.json();
-          codexProxyActive = proxyData.success;
-          codexServerSide = !!proxyData.serverSide;
+          await queueCodexProxyOperation(async () => {
+            if (attemptSignal.aborted) return;
+            // Keep the request alive after closing so we can release a proxy
+            // the server finishes starting.
+            const proxyRes = await fetch(proxyUrl.toString());
+            const proxyData = await proxyRes.json();
+            if (attemptSignal.aborted) {
+              if (proxyData.success) await stopCodexProxy();
+              return;
+            }
+            codexProxyActive = proxyData.success;
+            codexServerSide = !!proxyData.serverSide;
+            codexProxyRef.current = codexProxyActive;
+          });
         } catch {
           codexProxyActive = false;
         }
+        if (attemptSignal.aborted) return;
       }
 
       // xAI: same fixed-port server-side proxy pattern as codex (port 56121)
@@ -406,10 +455,11 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         }
       }
     } catch (err) {
+      if (attemptSignal?.aborted) return;
       setError(err.message);
       setStep("error");
     }
-  }, [provider, isLocalhost, startPolling, oauthMeta, idcConfig, authMode, startProxyFlow]);
+  }, [provider, isLocalhost, startPolling, oauthMeta, idcConfig, authMode, startProxyFlow, cancelSignIn]);
 
   // Reset state and start OAuth when modal opens
   useEffect(() => {
@@ -427,7 +477,6 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       setPasteToken("");
       setIdeStatus(null);
       setIgnoredCallback(false);
-      pollingAbortRef.current = false;
       // Best-effort IDE detection for paste-token providers (Trae/Windsurf)
       if (PASTE_TOKEN_PROVIDERS[provider]) {
         fetch(`/api/oauth/${provider}/ide-status`)
@@ -438,11 +487,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       startOAuthFlow();
     } else if (!isOpen) {
       // Abort polling and cleanup proxy when modal closes
-      pollingAbortRef.current = true;
+      cancelSignIn();
       openedRef.current = false;
-      if (provider === "codex") {
-        fetch("/api/oauth/codex/stop-proxy").catch(() => {});
-      } else if (provider === "xai") {
+      if (provider === "xai") {
         fetch("/api/oauth/xai/stop-proxy").catch(() => {});
       } else if (provider === "trae") {
         fetch("/api/oauth/trae/stop-proxy").catch(() => {});
@@ -452,7 +499,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         fetch("/api/oauth/zed/stop-proxy").catch(() => {});
       }
     }
-  }, [isOpen, provider, startOAuthFlow]);
+  }, [isOpen, provider, startOAuthFlow, cancelSignIn]);
 
   // Server-side proxy mode (codex/xai fixed-port + trae/windsurf dynamic-port):
   // poll status until the proxy auto-exchanges and saves the connection.
@@ -645,9 +692,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
   // Clear session on modal close + cleanup proxy
   const handleClose = useCallback(() => {
-    if (provider === "codex") {
-      fetch("/api/oauth/codex/stop-proxy").catch(() => {});
-    } else if (provider === "xai") {
+    cancelSignIn();
+    if (provider === "xai") {
       fetch("/api/oauth/xai/stop-proxy").catch(() => {});
     } else if (provider === "trae") {
       fetch("/api/oauth/trae/stop-proxy").catch(() => {});
@@ -657,7 +703,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       fetch("/api/oauth/zed/stop-proxy").catch(() => {});
     }
     onClose();
-  }, [onClose, provider]);
+  }, [onClose, provider, cancelSignIn]);
 
   if (!provider || !providerInfo) return null;
   const isXaiProvider = provider === "xai";
@@ -666,13 +712,31 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const modalTitle = isXaiProvider ? "Connect Grok Build OAuth" : `Connect ${providerInfo.name}`;
   const manualPlaceholder = isXaiProvider
     ? "http://127.0.0.1:56121/callback?code=... or copied code"
-    : isKimchiProvider
-      ? `${placeholderUrl.replace("code=...", "token=...")} or copied token`
-      : placeholderUrl;
+    : provider === "codex"
+      ? `${CODEX_CALLBACK_URL}?code=...`
+      : isKimchiProvider
+        ? `${placeholderUrl.replace("code=...", "token=...")} or copied token`
+        : placeholderUrl;
 
   return (
     <Modal isOpen={isOpen} title={modalTitle} onClose={handleClose} size="lg">
       <div className="flex flex-col gap-4">
+        {provider === "codex" && step === "choose" && (
+          <>
+            <p className="text-sm text-text-muted">
+              Use a device code if 10router is running on another machine or the browser callback fails.
+              Device sign-in must be enabled in your ChatGPT security settings.
+            </p>
+            <div className="flex gap-2">
+              <Button onClick={() => { setStep("waiting"); return startOAuthFlow("browser"); }} variant="secondary" fullWidth>
+                Sign in with browser
+              </Button>
+              <Button onClick={() => startOAuthFlow("device")} fullWidth>
+                Use device code
+              </Button>
+            </div>
+          </>
+        )}
         {ignoredCallback && (step === "waiting" || step === "input") && (
           <p className="text-xs text-text-muted">A sign-in callback that wasn&apos;t for this login was ignored.</p>
         )}
@@ -891,8 +955,19 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
             <h3 className="text-lg font-semibold mb-2">Connection Failed</h3>
             <p className="text-sm text-red-600 mb-4">{error}</p>
             <div className="flex gap-2">
-              <Button onClick={startOAuthFlow} variant="secondary" fullWidth>
-                Try Again
+              <Button onClick={() => {
+                if (provider === "codex") {
+                  cancelSignIn();
+                  setAuthData(null);
+                  setCallbackUrl("");
+                  setIsDeviceCode(false);
+                  setIgnoredCallback(false);
+                  setStep("choose");
+                } else {
+                  startOAuthFlow();
+                }
+              }} variant="secondary" fullWidth>
+                {provider === "codex" ? "Back to sign-in options" : "Try Again"}
               </Button>
               <Button onClick={handleClose} variant="ghost" fullWidth>
                 Cancel
